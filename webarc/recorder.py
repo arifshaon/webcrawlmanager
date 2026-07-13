@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from typing import Callable, Optional
 
 from .browser import BrowserDriver
@@ -59,6 +60,91 @@ CMD_CAPTURE_PAGE = "capture_page"
 CMD_STOP = "stop"
 
 _SKIP_URLS = ("about:blank", "about:srcdoc", "")
+
+# In-page control widget. Injected as a context init script so it reappears
+# on every navigation and in every new tab. Rendered inside a Shadow DOM so
+# page styles cannot break it. It lives only in the live DOM — capture is of
+# network responses, so the widget never appears in the archived pages.
+# Buttons call back into Python via the swmControl binding; the recorder
+# pushes state changes to every page via window.__swmSetState.
+_WIDGET_JS = """
+(() => {
+  if (window.__swmWidgetInstalled) return;
+  window.__swmWidgetInstalled = true;
+  let state = "recording";
+  let root = null;
+  const LABELS = {
+    recording: "\\u25CF Recording",
+    paused: "\\u23F8 Capture paused",
+    stopped: "Stopped"
+  };
+  function buttons() {
+    if (state === "recording")
+      return [["pause", "Pause capture"], ["stop", "Stop"]];
+    if (state === "paused")
+      return [["resume", "Resume capture"],
+              ["capture_page", "Capture this page"],
+              ["stop", "Stop"]];
+    return [];
+  }
+  function render() {
+    if (!root) return;
+    const st = root.querySelector(".swm-state");
+    st.textContent = LABELS[state] || state;
+    st.className = "swm-state " + state;
+    const bar = root.querySelector(".swm-buttons");
+    bar.innerHTML = "";
+    for (const [cmd, label] of buttons()) {
+      const b = document.createElement("button");
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        if (window.swmControl)
+          window.swmControl(cmd).then(s => { state = s; render(); });
+      });
+      bar.appendChild(b);
+    }
+  }
+  window.__swmSetState = (s) => { state = s; render(); };
+  function install() {
+    if (!document.documentElement || root) return;
+    const host = document.createElement("div");
+    const shadow = host.attachShadow({ mode: "open" });
+    shadow.innerHTML = `
+      <style>
+        .swm-box { position: fixed; right: 16px; bottom: 16px;
+          z-index: 2147483647; font: 12px/1.4 system-ui, sans-serif;
+          background: #1b1e23; color: #fff; border-radius: 8px;
+          padding: 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.35);
+          min-width: 180px; }
+        .swm-title { font-weight: 600; opacity: .7; font-size: 10px;
+          text-transform: uppercase; letter-spacing: .08em;
+          margin-bottom: 4px; }
+        .swm-state { margin-bottom: 8px; }
+        .swm-state.recording { color: #ff5f56; }
+        .swm-state.paused { color: #ffbd2e; }
+        .swm-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+        button { font: 11px system-ui, sans-serif;
+          border: 1px solid rgba(255,255,255,.25);
+          background: rgba(255,255,255,.08); color: #fff;
+          border-radius: 5px; padding: 4px 8px; cursor: pointer; }
+        button:hover { background: rgba(255,255,255,.18); }
+      </style>
+      <div class="swm-box">
+        <div class="swm-title">SWM Recording</div>
+        <div class="swm-state"></div>
+        <div class="swm-buttons"></div>
+      </div>`;
+    root = shadow;
+    document.documentElement.appendChild(host);
+    render();
+    if (window.swmControl)
+      window.swmControl("state").then(s => { state = s; render(); });
+  }
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", install, { once: true });
+  else install();
+})();
+"""
 
 
 class RecordingSession:
@@ -85,6 +171,8 @@ class RecordingSession:
         self._eligible: set = set()       # requests that began while recording
         self._closed = False              # browser/context gone
         self._context = None
+        self._commands: deque[str] = deque()  # queued by the in-page widget
+        self._state_dirty = False         # widgets need a state push
 
     # -- state transitions -------------------------------------------------
     def apply(self, command: str) -> None:
@@ -92,17 +180,43 @@ class RecordingSession:
         commands are ignored (callers may deliver duplicates)."""
         if command == CMD_PAUSE and self.state == RECORDING:
             self.state = PAUSED
+            self._state_dirty = True
             log.info("Capture paused — browsing continues unrecorded")
         elif command == CMD_RESUME and self.state == PAUSED:
             self.state = RECORDING
+            self._state_dirty = True
             log.info("Capture resumed (future traffic only)")
         elif command == CMD_CAPTURE_PAGE and self.state == PAUSED:
             self.state = RECORDING
+            self._state_dirty = True
             log.info("Capture resumed — reloading current page to record it")
             self._reload_current_page()
         elif command == CMD_STOP and self.state != STOPPED:
             self.state = STOPPED
+            self._state_dirty = True
             log.info("Stopping recording")
+
+    def _on_widget_command(self, _source, command: str = "state") -> str:
+        """Playwright binding target. Never touches Playwright objects —
+        binding handlers run re-entrantly, so commands are queued and the
+        main loop applies them. Returns the current state so the widget
+        can render optimistically."""
+        if command in (CMD_PAUSE, CMD_RESUME, CMD_CAPTURE_PAGE, CMD_STOP):
+            self._commands.append(command)
+        return self.state
+
+    def _sync_widgets(self) -> None:
+        """Push the authoritative state to every open page's widget."""
+        if not self._context:
+            return
+        for page in list(self._context.pages):
+            try:
+                page.evaluate(
+                    "s => window.__swmSetState && window.__swmSetState(s)",
+                    self.state)
+            except Exception:
+                pass  # page mid-navigation or closed; init script will ask
+        self._state_dirty = False
 
     def _reload_current_page(self) -> None:
         if not self._context:
@@ -193,6 +307,12 @@ class RecordingSession:
                 "Interactive recording needs a visible browser: set browser "
                 "mode to 'headed' (recommended) or 'native', not "
                 f"{mode!r}")
+        if mode == "native":
+            log.warning(
+                "native mode attaches to an existing browser context, so "
+                "service workers cannot be blocked there — sites that route "
+                "media through a service worker may not capture fully. "
+                "Use 'headed' mode for maximum capture fidelity.")
         try:
             with BrowserDriver(self.browser_cfg, BehaviorConfig()) as driver:
                 return self.run_with_context(driver.context)
@@ -209,6 +329,13 @@ class RecordingSession:
         context.on("requestfailed", self._on_request_done)
         context.on("page", self._on_page)
         context.on("close", self._mark_closed)
+        try:
+            context.expose_binding("swmControl", self._on_widget_command)
+            context.add_init_script(_WIDGET_JS)
+        except Exception as exc:
+            log.warning("In-page control widget unavailable: %s "
+                        "(recording continues; use Ctrl+C / dashboard to "
+                        "control it)", exc)
         for page in context.pages:
             self._on_page(page)
 
@@ -232,6 +359,10 @@ class RecordingSession:
                 command = self.control_poll()
                 if command:
                     self.apply(command)
+                while self._commands:          # widget-queued commands
+                    self.apply(self._commands.popleft())
+                if self._state_dirty:
+                    self._sync_widgets()
                 now = time.monotonic()
                 if now - last_report >= 1.0:
                     self._report()

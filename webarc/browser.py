@@ -93,6 +93,11 @@ class BrowserDriver:
                 "viewport": {"width": self.cfg.viewport[0],
                              "height": self.cfg.viewport[1]},
                 "ignore_https_errors": bool(self.cfg.proxy),
+                # service-worker-mediated fetches (common for video/media
+                # players) bypass Playwright's network events entirely;
+                # blocking SWs forces that traffic through the page where
+                # the capture layer can see it
+                "service_workers": "block",
             }
             if self.cfg.user_agent:
                 ctx_kwargs["user_agent"] = self.cfg.user_agent

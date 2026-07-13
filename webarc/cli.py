@@ -103,7 +103,9 @@ def main(argv: list[str] | None = None) -> int:
         print("every page and resource the browser loads is written to WARC.")
         print("NOTE: this includes cookies, logins, form submissions and any")
         print("private content you access during the session.")
-        print("\nClose the browser window (or press Ctrl+C here) to finish.\n")
+        print("\nUse the 'SWM Recording' widget (bottom-right of every page) to")
+        print("pause capture, resume, or capture the current page. Close the")
+        print("browser window (or press Ctrl+C here) to finish.\n")
 
         warc = WarcSession(
             out_dir, name, args.url, 1, args.operator, WarcConfig(),
