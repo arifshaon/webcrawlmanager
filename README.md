@@ -1,4 +1,4 @@
-# webarc — configurable per-seed browser-based web archiving
+# Simple Webcrawl Manager (SWM) — configurable per-seed browser-based web archiving
 
 A Python crawler that archives websites to standards-compliant **WARC/1.1** files,
 driving a real browser per seed with per-seed configuration:
