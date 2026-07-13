@@ -127,6 +127,23 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
         ".wacz": "application/octet-stream",
     }
 
+    # Requests land here when the replay service worker finds no match in
+    # the archive and lets them fall through. Make that self-explanatory
+    # instead of serving Python's default error page.
+    error_message_format = """<!DOCTYPE html>
+<html><head><title>Not in this archive</title>
+<style>body{font-family:system-ui,sans-serif;max-width:40em;margin:15vh auto;
+color:#333}h1{font-size:1.2em}code{background:#f0f0f0;padding:1px 4px}</style>
+</head><body>
+<h1>Not captured in this archive (HTTP %(code)d)</h1>
+<p>The replayed page requested a resource that is not in the archive.
+Only resources that were actually loaded during the crawl or recording
+session are captured.</p>
+<p>Common causes: this link or player was not opened while recording;
+or the page generates its URLs dynamically (timestamps, tokens, signed
+video URLs), so the URL requested now differs from the one captured.</p>
+</body></html>"""
+
     def log_message(self, *args):  # keep the console quiet
         pass
 
