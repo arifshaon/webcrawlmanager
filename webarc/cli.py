@@ -38,6 +38,22 @@ def main(argv: list[str] | None = None) -> int:
         help="run browserless fake crawls (demo/test the UI)",
     )
 
+    p_rec = sub.add_parser(
+        "record",
+        help="Interactive recording: you browse, SWM archives what loads",
+    )
+    p_rec.add_argument("url", help="Starting URL (opened in a visible browser)")
+    p_rec.add_argument("--name", help="Session name (default: derived from host)")
+    p_rec.add_argument("--output", default="./warcs",
+                       help="WARC root; session writes to <output>/<name>/")
+    p_rec.add_argument("--browser", choices=["headed", "native"],
+                       default="headed",
+                       help="headed = Playwright-managed Chrome (recommended); "
+                       "native = attach to system Chrome via CDP (advanced)")
+    p_rec.add_argument("--operator", default="webarc",
+                       help="Operator recorded in the WARC metadata")
+    p_rec.add_argument("-v", "--verbose", action="store_true")
+
     p_rep = sub.add_parser("replay", help="Replay captured WARCs with ReplayWeb.page")
     p_rep.add_argument("warc_dir", help="Directory containing .warc.gz files")
     p_rep.add_argument("--url", help="Seed URL to deep-link (optional)")
@@ -64,6 +80,61 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    if args.command == "record":
+        import re
+        from pathlib import Path as _P
+        from urllib.parse import urlsplit
+
+        from .capture import WarcSession
+        from .config import BrowserConfig, WarcConfig
+        from .recorder import RecordingSession
+
+        host = urlsplit(args.url).hostname or "session"
+        name = args.name or f"rec-{host}"
+        name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "rec-session"
+        out_dir = _P(args.output) / name
+
+        print(f"\n{APP_NAME} — interactive recording")
+        print(f"  Session : {name}")
+        print(f"  Output  : {out_dir}")
+        print(f"  Browser : {args.browser}")
+        print("\nA browser window will open at the starting URL. Browse normally —")
+        print("every page and resource the browser loads is written to WARC.")
+        print("NOTE: this includes cookies, logins, form submissions and any")
+        print("private content you access during the session.")
+        print("\nClose the browser window (or press Ctrl+C here) to finish.\n")
+
+        warc = WarcSession(
+            out_dir, name, args.url, 1, args.operator, WarcConfig(),
+            info_extra={
+                "robots": "none",
+                "description": f"Interactive session recording starting "
+                               f"at {args.url}",
+            })
+        last = {"visited": -1}
+
+        def on_progress(state, visited, bytes_written, current_url):
+            if visited != last["visited"]:
+                last["visited"] = visited
+                print(f"  [{state}] {visited} page(s), "
+                      f"{bytes_written / 1024:.0f} KB — {current_url}")
+
+        session = RecordingSession(
+            args.url, BrowserConfig(mode=args.browser), warc,
+            on_progress=on_progress)
+        try:
+            stats = session.run()
+        except KeyboardInterrupt:
+            session.apply("stop")
+            stats = {"visited": session.visited,
+                     "bytes": warc.total_bytes}
+            warc.close()
+            print("\nInterrupted — finalising WARC.")
+        print(f"\nRecording finished: {stats['visited']} page(s), "
+              f"{stats['bytes'] / 1024:.0f} KB in {out_dir}")
+        print(f"Replay it with:\n  python -m webarc.cli replay {out_dir}")
+        return 0
 
     if args.command == "replay":
         import webbrowser
