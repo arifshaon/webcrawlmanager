@@ -1,4 +1,4 @@
-# webarc crawl configuration
+# Simple Webcrawl Manager (SWM) crawl configuration
 crawl_name: qnl-webarchive-test
 output_dir: ./warcs
 operator: "Qatar National Library — Digital Curation"

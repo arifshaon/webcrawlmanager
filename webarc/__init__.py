@@ -1,3 +1,3 @@
-"""webarc — per-seed configurable browser-based web archiving to WARC."""
+"""Simple Webcrawl Manager (SWM) — browser-based web archiving to WARC."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
