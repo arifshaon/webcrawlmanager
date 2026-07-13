@@ -9,7 +9,8 @@ defaults:
     mode: headless          # headless | headed | native
     chrome_path: null       # autodetect if null (native/headed modes)
     cdp_port: 9222          # native mode: remote debugging port
-    user_data_dir: null     # native mode: dedicated profile dir (recommended)
+    user_data_dir: null     # native mode: profile dir (null = ./chrome-profile-webarc;
+                            # Chrome needs a non-default profile for CDP debugging)
     proxy: null             # e.g. http://localhost:8000 to route via warcprox
     viewport: [1366, 900]
     user_agent: null        # null = browser default (+ archive notice appended)

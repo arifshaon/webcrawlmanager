@@ -15,6 +15,8 @@ import random
 import shutil
 import subprocess
 import time
+import urllib.request
+from pathlib import Path
 from typing import Callable
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
@@ -83,20 +85,52 @@ class BrowserDriver:
 
     def _launch_native_chrome(self) -> None:
         chrome = _find_chrome(self.cfg.chrome_path)
+        # Chrome 111+ silently ignores --remote-debugging-port on the default
+        # profile: without a dedicated --user-data-dir the debug endpoint never
+        # opens and the window just sits at about:blank. Always use one.
+        user_data_dir = self.cfg.user_data_dir
+        if not user_data_dir:
+            user_data_dir = str(Path("./chrome-profile-webarc").resolve())
+            log.info("native mode: no browser.user_data_dir configured; using "
+                     "dedicated profile %s (Chrome requires a non-default "
+                     "profile for CDP remote debugging)", user_data_dir)
+        Path(user_data_dir).mkdir(parents=True, exist_ok=True)
         args = [
             chrome,
             f"--remote-debugging-port={self.cfg.cdp_port}",
+            f"--user-data-dir={user_data_dir}",
             "--no-first-run", "--no-default-browser-check",
         ]
-        if self.cfg.user_data_dir:
-            args.append(f"--user-data-dir={self.cfg.user_data_dir}")
         if self.cfg.proxy:
             args.append(f"--proxy-server={self.cfg.proxy}")
         args.append("about:blank")
         log.info("Launching native Chrome: %s (CDP port %d)", chrome, self.cfg.cdp_port)
         self._native_proc = subprocess.Popen(
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(2.5)  # give the debugging endpoint time to come up
+        self._wait_for_cdp(timeout=20.0)
+
+    def _wait_for_cdp(self, timeout: float) -> None:
+        """Poll the DevTools endpoint until it answers (or fail with a clear error)."""
+        url = f"http://127.0.0.1:{self.cfg.cdp_port}/json/version"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._native_proc and self._native_proc.poll() is not None:
+                raise RuntimeError(
+                    f"Chrome exited immediately (code {self._native_proc.returncode}). "
+                    "This usually means another Chrome instance is already running "
+                    "on the same profile — close it, or set a different "
+                    "browser.user_data_dir / cdp_port.")
+            try:
+                with urllib.request.urlopen(url, timeout=1) as resp:
+                    if resp.status == 200:
+                        return
+            except OSError:
+                pass
+            time.sleep(0.25)
+        raise RuntimeError(
+            f"Chrome's CDP endpoint did not come up on port {self.cfg.cdp_port} "
+            f"within {timeout:.0f}s. Check that nothing else uses the port and "
+            "that browser.user_data_dir points to a profile not already in use.")
 
     def __exit__(self, *exc) -> None:
         try:
@@ -112,7 +146,16 @@ class BrowserDriver:
 
     # -- page work ---------------------------------------------------------
     def new_page(self, on_response: Callable) -> Page:
-        page = self._context.new_page()
+        page = None
+        if self.cfg.mode == "native":
+            # reuse the launch tab (about:blank) rather than opening a second
+            # tab and leaving a blank one in the foreground
+            for existing in self._context.pages:
+                if existing.url in ("about:blank", ""):
+                    page = existing
+                    break
+        if page is None:
+            page = self._context.new_page()
         page.on("response", on_response)
         return page
 

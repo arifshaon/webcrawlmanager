@@ -181,8 +181,11 @@ python -m webarc.cli crawl config.yaml
 
 For `mode: native`, webarc launches your installed Chrome with
 `--remote-debugging-port` and attaches over CDP, so the crawl runs in a real,
-visible, default-profile-like Chrome window. Close other Chrome instances first
-(or set a dedicated `user_data_dir` in the config, which is the safer default).
+visible Chrome window. Chrome (111+) only enables CDP remote debugging on a
+non-default profile, so webarc always runs it with a dedicated `user_data_dir`
+— yours from the config, or `./chrome-profile-webarc` if unset. If a Chrome
+instance is already running on that profile, close it first (or point
+`user_data_dir` elsewhere).
 
 ## Dashboard (v2)
 
