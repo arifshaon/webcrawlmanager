@@ -12,15 +12,15 @@
     --muted:   #6B7178;
     --faint:   #9AA0A6;
     --rule:    #E4E0D6;
-    --run:     #0F766E;  /* petrol — active */
+    --run:     #0F766E;
     --run-bg:  #E1F0EE;
-    --pause:   #B45309;  /* amber — paused */
+    --pause:   #B45309;
     --pause-bg:#F7ECD9;
-    --stop:    #9F1239;  /* rose — stopped/failed */
+    --stop:    #9F1239;
     --stop-bg: #F6E1E7;
-    --block:   #6D28D9;  /* violet — blocked by WAF (external) */
+    --block:   #6D28D9;
     --block-bg:#EAE3F8;
-    --done:    #4B5563;  /* slate — completed */
+    --done:    #4B5563;
     --done-bg: #ECEAE3;
     --mono: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
     --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -36,16 +36,12 @@
   }
   header .mark { font-family: var(--mono); font-weight: 600; font-size: 18px; letter-spacing: -.02em; }
   header .mark b { color: var(--run); }
-  header .sub { color: var(--muted); font-size: 12px; }
   header .clock { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--faint); }
-
   main { max-width: 1100px; margin: 0 auto; padding: 24px 28px 64px; }
   .eyebrow {
     font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
     text-transform: uppercase; color: var(--faint); margin: 28px 0 10px;
   }
-
-  /* storage strip */
   .storage { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
     background: var(--rule); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
   .storage .cell { background: var(--paper); padding: 14px 16px; }
@@ -54,8 +50,6 @@
   .storage .v { font-family: var(--mono); font-size: 20px; margin-top: 4px; }
   .bar { height: 5px; background: var(--surface); border-radius: 3px; margin-top: 10px; overflow: hidden; }
   .bar span { display: block; height: 100%; background: var(--run); }
-
-  /* crawl manifest */
   .manifest { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
   .crawl { border-bottom: 1px solid var(--rule); }
   .crawl:last-child { border-bottom: 0; }
@@ -71,7 +65,6 @@
   .crawl .name { font-weight: 600; }
   .crawl .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 2px; }
   .crawl .meta .id { color: var(--faint); }
-
   .badge { font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
     text-transform: uppercase; padding: 3px 9px; border-radius: 100px; white-space: nowrap; }
   .b-running { color: var(--run); background: var(--run-bg); }
@@ -82,22 +75,23 @@
   .b-pending { color: var(--muted); background: var(--surface); }
   .b-running::before { content: "●"; margin-right: 5px; animation: pulse 1.4s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
-
   .counts { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
   .counts b { color: var(--ink); font-weight: 600; }
-
   .actions { display: flex; gap: 6px; padding: 0 18px 14px 18px; }
-  button.act {
-    font-family: var(--ui); font-size: 12px; border: 1px solid var(--rule);
-    background: var(--paper); color: var(--ink); padding: 5px 12px;
-    border-radius: 6px; cursor: pointer;
+  button { font-family: var(--ui); border-radius: 6px; cursor: pointer; }
+  button.act, button.secondary {
+    font-size: 12px; border: 1px solid var(--rule);
+    background: var(--paper); color: var(--ink); padding: 6px 12px;
   }
-  button.act:hover { background: var(--surface); }
-  button.act:disabled { opacity: .4; cursor: not-allowed; }
+  button.act:hover, button.secondary:hover { background: var(--surface); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
   button.danger:hover { border-color: var(--stop); color: var(--stop); }
   button.replay:hover { border-color: var(--run); color: var(--run); }
-
-  /* seed detail */
+  button.primary {
+    font-weight: 600; font-size: 13px; background: var(--run); color: #fff;
+    border: 0; padding: 9px 18px;
+  }
+  button.primary:hover { background: #0c5f58; }
   .seeds { padding: 0 18px 16px 18px; display: none; }
   .crawl.open .seeds { display: block; }
   .seed { display: grid; grid-template-columns: 1fr auto; gap: 12px;
@@ -105,34 +99,71 @@
   .seed .url { font-family: var(--mono); font-size: 12px; word-break: break-all; }
   .seed .cur { color: var(--faint); font-size: 11px; margin-top: 2px; }
   .seed .st { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
-
   .empty { padding: 40px; text-align: center; color: var(--muted); }
   .empty code { font-family: var(--mono); }
-
-  /* new crawl */
-  form { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
-  .form-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
-    background: var(--surface); }
-  .form-head .name-in { flex: 1; }
-  input[type=text], textarea {
+  #new-form { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; background: var(--paper); }
+  .editor-head {
+    display: flex; align-items: center; gap: 14px; padding: 12px 16px;
+    background: var(--surface); border-bottom: 1px solid var(--rule);
+  }
+  .mode-tabs { display: inline-flex; border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; background: var(--paper); }
+  .mode-tab {
+    border: 0; border-right: 1px solid var(--rule); border-radius: 0;
+    padding: 7px 13px; background: var(--paper); color: var(--muted); font-size: 12px;
+  }
+  .mode-tab:last-child { border-right: 0; }
+  .mode-tab.active { background: var(--ink); color: #fff; }
+  .mode-note { color: var(--muted); font-size: 12px; margin-left: auto; }
+  .editor-panel { display: none; }
+  .editor-panel.active { display: block; }
+  .guided { padding: 18px; }
+  .form-section { border: 1px solid var(--rule); border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
+  .form-section:last-child { margin-bottom: 0; }
+  .section-head {
+    display: flex; align-items: center; gap: 10px; padding: 10px 13px;
+    background: var(--surface); border-bottom: 1px solid var(--rule);
+  }
+  .section-title { font-weight: 600; }
+  .section-hint { font-size: 12px; color: var(--muted); }
+  .section-head button { margin-left: auto; }
+  .section-body { padding: 14px; }
+  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .field.wide { grid-column: 1 / -1; }
+  label.field-label { display: block; font-weight: 600; margin-bottom: 5px; }
+  .help { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
+  input[type=text], input[type=url], input[type=number], select, textarea {
     font-family: var(--mono); font-size: 13px; border: 1px solid var(--rule);
     background: var(--paper); color: var(--ink); border-radius: 6px; padding: 8px 10px; width: 100%;
   }
-  textarea { border: 0; border-radius: 0; min-height: 260px; resize: vertical;
-    line-height: 1.55; tab-size: 2; }
-  textarea:focus, input:focus { outline: 2px solid var(--run); outline-offset: -1px; }
-  .form-foot { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
-    border-top: 1px solid var(--rule); }
-  button.primary { font-family: var(--ui); font-weight: 600; font-size: 13px;
-    background: var(--run); color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; cursor: pointer; }
-  button.primary:hover { background: #0c5f58; }
+  select { font-family: var(--ui); }
+  textarea { resize: vertical; line-height: 1.55; tab-size: 2; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--run); outline-offset: -1px; }
+  .inline-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .check-row { display: flex; align-items: flex-start; gap: 9px; padding-top: 5px; }
+  .check-row input { margin-top: 3px; }
+  .check-copy strong { display: block; }
+  .check-copy span { color: var(--muted); font-size: 11px; }
+  .seed-editor-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 8px; }
+  .seed-editor-row:last-child { margin-bottom: 0; }
+  .remove-seed { min-width: 78px; }
+  #raw-panel { background: var(--paper); }
+  .raw-help { padding: 10px 14px; color: var(--muted); font-size: 12px; border-bottom: 1px solid var(--rule); }
+  #config-yaml { border: 0; border-radius: 0; min-height: 430px; }
+  .form-foot {
+    display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    border-top: 1px solid var(--rule); background: var(--surface);
+  }
+  .form-foot .spacer { flex: 1; }
   .msg { font-family: var(--mono); font-size: 12px; }
   .msg.err { color: var(--stop); } .msg.ok { color: var(--run); }
-
-  @media (max-width: 720px) {
+  @media (max-width: 760px) {
     .storage { grid-template-columns: repeat(2, 1fr); }
     .crawl .row { grid-template-columns: 4px 1fr auto; }
     .counts { display: none; }
+    .form-grid, .inline-fields { grid-template-columns: 1fr; }
+    .editor-head { align-items: flex-start; flex-direction: column; }
+    .mode-note { margin-left: 0; }
+    .form-foot { flex-wrap: wrap; }
   }
   @media (prefers-reduced-motion: reduce) { .b-running::before { animation: none; } }
 </style>
@@ -142,67 +173,398 @@
   <span class="mark">Simple Webcrawl Manager <b>(SWM)</b></span>
   <span class="clock" id="clock"></span>
 </header>
-
 <main>
   <div class="eyebrow">Storage</div>
   <div class="storage" id="storage"></div>
-
   <div class="eyebrow">Crawls</div>
   <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
-
   <div class="eyebrow">New crawl</div>
   <form id="new-form" onsubmit="return false">
-    <div class="form-head">
-      <input class="name-in" type="text" id="crawl-name" placeholder="crawl name (optional — defaults to crawl_name in YAML)">
+    <div class="editor-head">
+      <div class="mode-tabs" role="tablist" aria-label="Configuration editor mode">
+        <button type="button" class="mode-tab active" id="tab-guided" data-mode="guided" role="tab" aria-selected="true">Guided form</button>
+        <button type="button" class="mode-tab" id="tab-raw" data-mode="raw" role="tab" aria-selected="false">Raw YAML</button>
+      </div>
+      <span class="mode-note" id="mode-note">Recommended for most crawls.</span>
     </div>
-    <textarea id="config-yaml" spellcheck="false"></textarea>
+    <section class="editor-panel active" id="guided-panel" role="tabpanel" aria-labelledby="tab-guided">
+      <div class="guided">
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Crawl details</span>
+            <span class="section-hint">Name the job and identify the responsible organisation.</span>
+          </div>
+          <div class="section-body form-grid">
+            <div class="field">
+              <label class="field-label" for="f-crawl-name">Crawl name</label>
+              <input type="text" id="f-crawl-name" value="example-crawl" required>
+              <span class="help">Used as the crawl label in the dashboard.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-operator">Operator</label>
+              <input type="text" id="f-operator" value="Example Library — Digital Collections" required>
+              <span class="help">Institution, team, or person running the crawl.</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Seed URLs</span>
+            <span class="section-hint">The starting pages for the crawl.</span>
+            <button type="button" class="secondary" id="add-seed-btn">Add seed</button>
+          </div>
+          <div class="section-body">
+            <div id="seed-list"></div>
+            <span class="help">All guided-form settings below are applied as shared defaults to every seed.</span>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Browser and scope</span>
+            <span class="section-hint">Control how the site is opened and how far the crawl travels.</span>
+          </div>
+          <div class="section-body form-grid">
+            <div class="field">
+              <label class="field-label" for="f-browser-mode">Browser mode</label>
+              <select id="f-browser-mode">
+                <option value="headless">Headless — run in the background</option>
+                <option value="headed">Headed — show the browser window</option>
+                <option value="native">Native — use installed Chrome via CDP</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-scope-strategy">Scope strategy</label>
+              <select id="f-scope-strategy">
+                <option value="same-host">Same host only</option>
+                <option value="same-domain">Same domain, including subdomains</option>
+                <option value="path-prefix">Stay below the seed path</option>
+                <option value="any">Any linked host</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-max-depth">Maximum link depth</label>
+              <input type="number" id="f-max-depth" min="0" step="1" value="2">
+              <span class="help">0 captures only the seed page; 1 also follows its direct links.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-max-pages">Maximum pages per seed</label>
+              <input type="number" id="f-max-pages" min="1" step="1" value="200">
+            </div>
+            <div class="field wide">
+              <label class="field-label" for="f-exclude">Excluded URL patterns</label>
+              <textarea id="f-exclude" rows="3">\.(zip|exe|dmg|iso)($|\?)
+/logout</textarea>
+              <span class="help">One regular expression per line. Matching URLs will not be crawled.</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Crawl behaviour</span>
+            <span class="section-hint">Set page timing and browser actions.</span>
+          </div>
+          <div class="section-body form-grid">
+            <div class="field">
+              <label class="field-label">Delay between pages (seconds)</label>
+              <div class="inline-fields">
+                <input type="number" id="f-delay-min" min="0" step="0.1" value="1.5" aria-label="Minimum delay">
+                <input type="number" id="f-delay-max" min="0" step="0.1" value="4.0" aria-label="Maximum delay">
+              </div>
+              <span class="help">A random delay is selected between the minimum and maximum.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-page-timeout">Page timeout (seconds)</label>
+              <input type="number" id="f-page-timeout" min="1" step="1" value="45">
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-wait-until">Wait until</label>
+              <select id="f-wait-until">
+                <option value="networkidle">Network is idle</option>
+                <option value="load">Page load event</option>
+                <option value="domcontentloaded">DOM content loaded</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label">Options</label>
+              <label class="check-row">
+                <input type="checkbox" id="f-obey-robots" checked>
+                <span class="check-copy"><strong>Obey robots.txt</strong><span>Respect automated crawler exclusions.</span></span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="f-scroll" checked>
+                <span class="check-copy"><strong>Scroll pages</strong><span>Load lazy content before capture.</span></span>
+              </label>
+              <label class="check-row">
+                <input type="checkbox" id="f-detect-blocks" checked>
+                <span class="check-copy"><strong>Detect blocking pages</strong><span>Back off and stop after repeated WAF blocks.</span></span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">WARC output</span>
+            <span class="section-hint">Control file rotation and duplicate handling.</span>
+          </div>
+          <div class="section-body form-grid">
+            <div class="field">
+              <label class="field-label" for="f-warc-size">Maximum WARC size (MB)</label>
+              <input type="number" id="f-warc-size" min="1" step="1" value="900">
+            </div>
+            <div class="field">
+              <label class="field-label">Options</label>
+              <label class="check-row">
+                <input type="checkbox" id="f-dedup" checked>
+                <span class="check-copy"><strong>Deduplicate payloads</strong><span>Write revisit records for repeated content.</span></span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="editor-panel" id="raw-panel" role="tabpanel" aria-labelledby="tab-raw">
+      <div class="raw-help">Edit the complete YAML directly. Advanced and seed-specific settings are preserved when the YAML is imported back into the guided form.</div>
+      <textarea id="config-yaml" spellcheck="false" aria-label="Raw YAML configuration"></textarea>
+    </section>
     <div class="form-foot">
-      <button class="primary" id="start-btn">Start crawl</button>
+      <button type="button" class="primary" id="start-btn">Start crawl</button>
+      <button type="button" class="secondary" id="reset-btn">Reset example</button>
       <span class="msg" id="form-msg"></span>
+      <span class="spacer"></span>
+      <span class="mode-note" id="sync-note"></span>
     </div>
   </form>
 </main>
-
 <script>
 const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
 const fmtBytes = b => {
   if (!b) return "0 B";
   const u = ["B","KB","MB","GB","TB"]; let i = 0; b = Number(b);
   while (b >= 1024 && i < u.length-1) { b /= 1024; i++; }
   return b.toFixed(i ? 1 : 0) + " " + u[i];
 };
-const openState = new Set();  // remember expanded crawls across refreshes
-
-const SAMPLE = `crawl_name: diwan-gov-qa
-output_dir: ./warcs
-operator: "Example Library — Digital Collections"
-defaults: {}
-seeds:
-  - url: https://example.com/
-    browser:
-      mode: headless
-    scope:
-      strategy: same-host
-      max_depth: 20
-      max_pages: 10000
-      exclude:
-        - "\\\\.(zip|exe|dmg|iso)($|\\\\?)"
-        - "sc_lang=ar"
-    behavior:
-      obey_robots: false
-      delay_range: [2.0, 5.0]
-      wait_until: load
-      scroll: true`;
-$("#config-yaml").value = SAMPLE;
-
+const clone = value => value ? JSON.parse(JSON.stringify(value)) : value;
+const openState = new Set();
+let editorMode = "guided";
+let rawBaseConfig = null;
+const EXAMPLE_CONFIG = {
+  crawl_name: "example-crawl",
+  output_dir: "./warcs",
+  operator: "Example Library — Digital Collections",
+  defaults: {
+    browser: { mode: "headless" },
+    scope: {
+      strategy: "same-host",
+      include: [],
+      exclude: ["\\.(zip|exe|dmg|iso)($|\\?)", "/logout"],
+      max_depth: 2,
+      max_pages: 200
+    },
+    behavior: {
+      obey_robots: true,
+      delay_range: [1.5, 4.0],
+      page_timeout: 45,
+      wait_until: "networkidle",
+      scroll: true,
+      scroll_pause: [0.4, 1.2],
+      mouse_jitter: true,
+      detect_blocks: true,
+      block_backoff_factor: 3.0,
+      block_cooldown: 30,
+      block_max_consecutive: 3
+    },
+    warc: { max_size_mb: 900, dedup: true }
+  },
+  seeds: [{ url: "https://example.com/" }]
+};
 async function api(path, opts) {
   const r = await fetch(path, opts);
-  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
-  return r.status === 204 ? null : r.json();
+  const text = await r.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch (_) { data = text; }
+  }
+  if (!r.ok) {
+    const detail = data && data.detail ? data.detail : (typeof data === "string" ? data : r.statusText);
+    throw new Error(detail || r.statusText);
+  }
+  return data;
 }
-
+function setMessage(text, type="") {
+  const msg = $("#form-msg");
+  msg.textContent = text;
+  msg.className = "msg" + (type ? " " + type : "");
+}
+function addSeed(url="") {
+  const row = document.createElement("div");
+  row.className = "seed-editor-row";
+  row.innerHTML = `
+    <input type="url" class="seed-url" placeholder="https://example.com/" value="${escapeAttr(url)}" required>
+    <button type="button" class="secondary remove-seed">Remove</button>`;
+  row.querySelector(".remove-seed").addEventListener("click", () => {
+    if ($$(".seed-editor-row").length === 1) {
+      row.querySelector(".seed-url").value = "";
+      return;
+    }
+    row.remove();
+  });
+  $("#seed-list").appendChild(row);
+}
+function escapeAttr(value) {
+  return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function numberValue(id, fallback) {
+  const value = Number($(id).value);
+  return Number.isFinite(value) ? value : fallback;
+}
+function lines(id) {
+  return $(id).value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+}
+function validatedSeedUrls() {
+  const urls = $$(".seed-url").map(input => input.value.trim()).filter(Boolean);
+  if (!urls.length) throw new Error("Add at least one seed URL.");
+  for (const value of urls) {
+    let parsed;
+    try { parsed = new URL(value); } catch (_) { throw new Error(`Invalid seed URL: ${value}`); }
+    if (!["http:", "https:"].includes(parsed.protocol)) throw new Error(`Seed URL must use HTTP or HTTPS: ${value}`);
+  }
+  return urls;
+}
+function buildFormConfig() {
+  const urls = validatedSeedUrls();
+  const delayMin = numberValue("#f-delay-min", 1.5);
+  const delayMax = numberValue("#f-delay-max", 4.0);
+  if (delayMin < 0 || delayMax < 0 || delayMin > delayMax) {
+    throw new Error("The minimum delay must not be greater than the maximum delay.");
+  }
+  const config = clone(rawBaseConfig) || {};
+  config.crawl_name = $("#f-crawl-name").value.trim() || "example-crawl";
+  config.output_dir = config.output_dir || "./warcs";
+  config.operator = $("#f-operator").value.trim() || "Example Library — Digital Collections";
+  config.defaults = config.defaults && typeof config.defaults === "object" ? config.defaults : {};
+  const browser = config.defaults.browser && typeof config.defaults.browser === "object" ? config.defaults.browser : {};
+  browser.mode = $("#f-browser-mode").value;
+  config.defaults.browser = browser;
+  const scope = config.defaults.scope && typeof config.defaults.scope === "object" ? config.defaults.scope : {};
+  scope.strategy = $("#f-scope-strategy").value;
+  scope.include = Array.isArray(scope.include) ? scope.include : [];
+  scope.exclude = lines("#f-exclude");
+  scope.max_depth = Math.max(0, Math.trunc(numberValue("#f-max-depth", 2)));
+  scope.max_pages = Math.max(1, Math.trunc(numberValue("#f-max-pages", 200)));
+  config.defaults.scope = scope;
+  const behavior = config.defaults.behavior && typeof config.defaults.behavior === "object" ? config.defaults.behavior : {};
+  behavior.obey_robots = $("#f-obey-robots").checked;
+  behavior.delay_range = [delayMin, delayMax];
+  behavior.page_timeout = Math.max(1, numberValue("#f-page-timeout", 45));
+  behavior.wait_until = $("#f-wait-until").value;
+  behavior.scroll = $("#f-scroll").checked;
+  behavior.scroll_pause = Array.isArray(behavior.scroll_pause) ? behavior.scroll_pause : [0.4, 1.2];
+  behavior.mouse_jitter = behavior.mouse_jitter !== false;
+  behavior.detect_blocks = $("#f-detect-blocks").checked;
+  if (behavior.block_backoff_factor == null) behavior.block_backoff_factor = 3.0;
+  if (behavior.block_cooldown == null) behavior.block_cooldown = 30;
+  if (behavior.block_max_consecutive == null) behavior.block_max_consecutive = 3;
+  config.defaults.behavior = behavior;
+  const warc = config.defaults.warc && typeof config.defaults.warc === "object" ? config.defaults.warc : {};
+  warc.max_size_mb = Math.max(1, Math.trunc(numberValue("#f-warc-size", 900)));
+  warc.dedup = $("#f-dedup").checked;
+  config.defaults.warc = warc;
+  const existingSeeds = Array.isArray(config.seeds) ? config.seeds : [];
+  config.seeds = urls.map(url => {
+    const existing = existingSeeds.find(seed => seed && seed.url === url);
+    return existing ? {...existing, url} : {url};
+  });
+  return config;
+}
+function sectionValue(config, section, key, fallback) {
+  const defaults = config.defaults || {};
+  if (defaults[section] && defaults[section][key] != null) return defaults[section][key];
+  const firstSeed = Array.isArray(config.seeds) && config.seeds.length ? config.seeds[0] : {};
+  if (firstSeed[section] && firstSeed[section][key] != null) return firstSeed[section][key];
+  return fallback;
+}
+function populateForm(config) {
+  rawBaseConfig = clone(config);
+  $("#f-crawl-name").value = config.crawl_name || "example-crawl";
+  $("#f-operator").value = config.operator || "Example Library — Digital Collections";
+  $("#f-browser-mode").value = sectionValue(config, "browser", "mode", "headless");
+  $("#f-scope-strategy").value = sectionValue(config, "scope", "strategy", "same-host");
+  $("#f-max-depth").value = sectionValue(config, "scope", "max_depth", 2);
+  $("#f-max-pages").value = sectionValue(config, "scope", "max_pages", 200);
+  $("#f-exclude").value = (sectionValue(config, "scope", "exclude", []) || []).join("\n");
+  const delay = sectionValue(config, "behavior", "delay_range", [1.5, 4.0]);
+  $("#f-delay-min").value = Array.isArray(delay) ? delay[0] : 1.5;
+  $("#f-delay-max").value = Array.isArray(delay) ? delay[1] : 4.0;
+  $("#f-page-timeout").value = sectionValue(config, "behavior", "page_timeout", 45);
+  $("#f-wait-until").value = sectionValue(config, "behavior", "wait_until", "networkidle");
+  $("#f-obey-robots").checked = Boolean(sectionValue(config, "behavior", "obey_robots", true));
+  $("#f-scroll").checked = Boolean(sectionValue(config, "behavior", "scroll", true));
+  $("#f-detect-blocks").checked = Boolean(sectionValue(config, "behavior", "detect_blocks", true));
+  $("#f-warc-size").value = sectionValue(config, "warc", "max_size_mb", 900);
+  $("#f-dedup").checked = Boolean(sectionValue(config, "warc", "dedup", true));
+  $("#seed-list").innerHTML = "";
+  const seeds = Array.isArray(config.seeds) && config.seeds.length ? config.seeds : [{url:""}];
+  seeds.forEach(seed => addSeed(seed.url || ""));
+  const hasOverrides = seeds.some(seed => ["browser", "scope", "behavior", "warc"].some(key => seed[key]));
+  $("#sync-note").textContent = hasOverrides ? "Seed-specific overrides are preserved in Raw YAML." : "";
+}
+async function renderRawFromForm() {
+  const config = buildFormConfig();
+  const result = await api("/api/config/render", {
+    method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({config})
+  });
+  $("#config-yaml").value = result.config_yaml;
+  rawBaseConfig = clone(config);
+  return config;
+}
+async function importRawIntoForm() {
+  const result = await api("/api/config/parse", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({config_yaml: $("#config-yaml").value})
+  });
+  populateForm(result.config);
+  return result.config;
+}
+async function switchMode(mode) {
+  if (mode === editorMode) return;
+  setMessage("");
+  try {
+    if (mode === "raw") {
+      await renderRawFromForm();
+      $("#mode-note").textContent = "Complete control for advanced settings.";
+    } else {
+      await importRawIntoForm();
+      $("#mode-note").textContent = "Recommended for most crawls.";
+    }
+  } catch (error) {
+    setMessage(error.message, "err");
+    return;
+  }
+  editorMode = mode;
+  $$(".mode-tab").forEach(tab => {
+    const active = tab.dataset.mode === mode;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  $("#guided-panel").classList.toggle("active", mode === "guided");
+  $("#raw-panel").classList.toggle("active", mode === "raw");
+}
+function resetExample() {
+  populateForm(clone(EXAMPLE_CONFIG));
+  editorMode = "guided";
+  $$(".mode-tab").forEach(tab => {
+    const active = tab.dataset.mode === "guided";
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  $("#guided-panel").classList.add("active");
+  $("#raw-panel").classList.remove("active");
+  $("#mode-note").textContent = "Recommended for most crawls.";
+  $("#config-yaml").value = "";
+  setMessage("");
+}
 function statusClass(s) { return s.toLowerCase(); }
-
 function crawlRow(c) {
   const s = c.status;
   const running = s === "running", paused = s === "paused";
@@ -218,7 +580,6 @@ function crawlRow(c) {
       </div>
       <div class="st">${sd.status} · ${sd.visited} pages · ${fmtBytes(sd.bytes)}</div>
     </div>`).join("");
-
   return `
   <div class="crawl ${isOpen ? "open" : ""}" data-id="${c.id}">
     <div class="row" onclick="toggle(${c.id})">
@@ -243,22 +604,17 @@ function crawlRow(c) {
     <div class="seeds">${seedRows}</div>
   </div>`;
 }
-
 function toggle(id) {
   if (openState.has(id)) openState.delete(id); else openState.add(id);
   const el = document.querySelector(`.crawl[data-id="${id}"]`);
   if (el) el.classList.toggle("open");
 }
-
 async function replay(id) {
   try {
     const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
     window.open(r.replay_url, "_blank");
-  } catch (e) {
-    alert("Replay failed: " + e.message);
-  }
+  } catch (e) { alert("Replay failed: " + e.message); }
 }
-
 async function ctl(id, cmd) {
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }
   catch (e) { alert("Action failed: " + e.message); }
@@ -269,35 +625,39 @@ async function del(id) {
   try { await api(`/api/crawls/${id}?purge=${purge}`, {method:"DELETE"}); refresh(); }
   catch (e) { alert("Delete failed: " + e.message); }
 }
-
 async function start() {
-  const msg = $("#form-msg");
-  msg.textContent = "Starting…"; msg.className = "msg";
+  setMessage("Starting…");
+  $("#start-btn").disabled = true;
   try {
-    const body = { config_yaml: $("#config-yaml").value };
-    const name = $("#crawl-name").value.trim();
-    if (name) body.name = name;
-    await api("/api/crawls", {method:"POST",
-      headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
-    msg.textContent = "Crawl started."; msg.className = "msg ok";
+    let body;
+    if (editorMode === "guided") {
+      const config = buildFormConfig();
+      body = {config};
+    } else {
+      body = {config_yaml: $("#config-yaml").value};
+    }
+    await api("/api/crawls", {
+      method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)
+    });
+    setMessage("Crawl started.", "ok");
     refresh();
-  } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
+  } catch (e) {
+    setMessage(e.message, "err");
+  } finally {
+    $("#start-btn").disabled = false;
+  }
 }
-$("#start-btn").addEventListener("click", start);
-
 async function refresh() {
   try {
-    const [crawls, storage] = await Promise.all([
-      api("/api/crawls"), api("/api/storage")]);
-
+    const [crawls, storage] = await Promise.all([api("/api/crawls"), api("/api/storage")]);
     const active = crawls.filter(c => ["running","paused","stopping"].includes(c.status)).length;
+    const diskPercent = storage.disk.total ? storage.disk.used/storage.disk.total*100 : 0;
     $("#storage").innerHTML = `
       <div class="cell"><div class="k">Captured total</div><div class="v">${fmtBytes(storage.total_bytes)}</div></div>
       <div class="cell"><div class="k">Crawls</div><div class="v">${crawls.length}<span style="font-size:13px;color:var(--muted)"> · ${active} active</span></div></div>
       <div class="cell"><div class="k">Disk free</div><div class="v">${fmtBytes(storage.disk.free)}</div></div>
-      <div class="cell"><div class="k">Disk used</div><div class="v">${Math.round(storage.disk.used/storage.disk.total*100)}%</div>
-        <div class="bar"><span style="width:${(storage.disk.used/storage.disk.total*100).toFixed(1)}%"></span></div></div>`;
-
+      <div class="cell"><div class="k">Disk used</div><div class="v">${Math.round(diskPercent)}%</div>
+        <div class="bar"><span style="width:${diskPercent.toFixed(1)}%"></span></div></div>`;
     $("#manifest").innerHTML = crawls.length
       ? crawls.map(crawlRow).join("")
       : `<div class="empty">No crawls yet. Define one below and press <code>Start crawl</code>.</div>`;
@@ -305,7 +665,11 @@ async function refresh() {
     $("#manifest").innerHTML = `<div class="empty">Server unreachable — ${e.message}</div>`;
   }
 }
-
+$("#add-seed-btn").addEventListener("click", () => addSeed(""));
+$("#start-btn").addEventListener("click", start);
+$("#reset-btn").addEventListener("click", resetExample);
+$$(".mode-tab").forEach(tab => tab.addEventListener("click", () => switchMode(tab.dataset.mode)));
+resetExample();
 setInterval(() => $("#clock").textContent = new Date().toISOString().replace("T"," ").slice(0,19)+"Z", 1000);
 refresh();
 setInterval(refresh, 2000);

@@ -1,7 +1,9 @@
-"""FastAPI control server for webarc.
+"""FastAPI control server for Simple Webcrawl Manager (SWM).
 
 Endpoints:
   GET  /                      -> dashboard HTML
+  POST /api/config/parse      -> parse YAML for the guided editor
+  POST /api/config/render     -> render guided-editor JSON as YAML
   GET  /api/crawls            -> list crawls with live progress + storage
   POST /api/crawls            -> create + launch a crawl (YAML or JSON body)
   GET  /api/crawls/{id}       -> single crawl detail
@@ -24,7 +26,6 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from fastapi import Body, FastAPI, HTTPException
@@ -40,13 +41,35 @@ DASHBOARD = BASE / "dashboard.html"
 _STORE: Store | None = None
 _WARC_ROOT: Path = Path("./warcs")
 _SIMULATE = False
-_PYWB = None            # lazily-started PywbServer
+_PYWB = None            # lazily-started ReplayServer
 _REPLAY_ROOT = Path("./replay")
 
 
 def _store() -> Store:
     assert _STORE is not None
     return _STORE
+
+
+def _validate_config(config: object) -> dict:
+    if not isinstance(config, dict):
+        raise HTTPException(400, "config must be a YAML/JSON object")
+    seeds = config.get("seeds")
+    if not isinstance(seeds, list) or not seeds:
+        raise HTTPException(400, "config must define at least one seed")
+    for index, seed in enumerate(seeds, 1):
+        if not isinstance(seed, dict) or not seed.get("url"):
+            raise HTTPException(400, f"seed {index} must define a URL")
+    return config
+
+
+def _parse_yaml(source: object) -> dict:
+    if not isinstance(source, str) or not source.strip():
+        raise HTTPException(400, "config_yaml must contain YAML text")
+    try:
+        config = yaml.safe_load(source)
+    except yaml.YAMLError as exc:
+        raise HTTPException(400, f"invalid YAML: {exc}") from exc
+    return _validate_config(config)
 
 
 def _dir_size(path: Path) -> int:
@@ -151,11 +174,24 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     _SIMULATE = simulate
     _REPLAY_ROOT = Path(replay_root)
 
-    app = FastAPI(title="webarc control server", version="0.2.0")
+    app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
+                  version="0.2.0")
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
         return DASHBOARD.read_text(encoding="utf-8")
+
+    @app.post("/api/config/parse")
+    def parse_config(payload: dict = Body(...)):
+        """Parse raw YAML so the dashboard can populate the guided editor."""
+        return {"config": _parse_yaml(payload.get("config_yaml"))}
+
+    @app.post("/api/config/render")
+    def render_config(payload: dict = Body(...)):
+        """Render guided-editor JSON as readable YAML for the raw editor."""
+        config = _validate_config(payload.get("config"))
+        rendered = yaml.safe_dump(config, sort_keys=False, allow_unicode=True)
+        return {"config_yaml": rendered}
 
     @app.get("/api/crawls")
     def list_crawls():
@@ -172,17 +208,11 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     def create_crawl(payload: dict = Body(...)):
         """Accepts {"config_yaml": "..."} or {"config": {...}} plus optional name."""
         if "config_yaml" in payload:
-            try:
-                config = yaml.safe_load(payload["config_yaml"])
-            except yaml.YAMLError as exc:
-                raise HTTPException(400, f"invalid YAML: {exc}")
+            config = _parse_yaml(payload["config_yaml"])
         elif "config" in payload:
-            config = payload["config"]
+            config = _validate_config(payload["config"])
         else:
             raise HTTPException(400, "provide config_yaml or config")
-
-        if not isinstance(config, dict) or not config.get("seeds"):
-            raise HTTPException(400, "config must define at least one seed")
 
         name = payload.get("name") or config.get("crawl_name", "webarc-crawl")
         # create once to obtain the id, then point the config at its own dir
@@ -219,7 +249,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
     @app.post("/api/crawls/{crawl_id}/stop")
     def stop(crawl_id: int):
-        row = _require(crawl_id)
+        _require(crawl_id)
         _store().set_control(crawl_id, CTRL_STOP)
         _store().set_status(crawl_id, STOPPING)
         return {"ok": True, "control": CTRL_STOP}
@@ -263,7 +293,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 _PYWB = ReplayServer(_REPLAY_ROOT, port=8091)
                 _PYWB.start_background()
         except Exception as exc:
-            raise HTTPException(500, f"replay setup failed: {exc}")
+            raise HTTPException(500, f"replay setup failed: {exc}") from exc
 
         return {"collection": coll, "replay_url": _PYWB.replay_url(coll)}
 
