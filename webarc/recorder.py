@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import deque
+from collections import Counter, deque
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 from .browser import BrowserDriver
 from .capture import WarcSession
@@ -173,6 +174,10 @@ class RecordingSession:
         self._context = None
         self._commands: deque[str] = deque()  # queued by the in-page widget
         self._state_dirty = False         # widgets need a state push
+        # responses whose body was not yet readable at the response event
+        # (common for streaming media); retried at requestfinished
+        self._pending_body: dict = {}
+        self.capture_stats: Counter = Counter()
 
     # -- state transitions -------------------------------------------------
     def apply(self, command: str) -> None:
@@ -257,30 +262,62 @@ class RecordingSession:
         if self.state == RECORDING:
             self._eligible.add(request)
 
-    def _on_request_done(self, request) -> None:
+    def _on_request_finished(self, request) -> None:
+        # streaming/media bodies are often not readable at the response
+        # event but are complete by requestfinished — retry the write here
+        response = self._pending_body.pop(request, None)
+        if response is not None and request in self._eligible:
+            try:
+                body = response.body()
+                self._write_exchange(response, body)
+                self.capture_stats["body-retry-ok"] += 1
+            except Exception as exc:
+                self.capture_stats["body-unavailable"] += 1
+                host = urlsplit(response.url).hostname or "?"
+                self.capture_stats[f"body-unavailable:{host}"] += 1
+                log.warning("Body unavailable for %s (%s) — recorded "
+                            "headers with empty body", response.url, exc)
+                self._write_exchange(response, b"")
+        self._eligible.discard(request)
+
+    def _on_request_failed(self, request) -> None:
+        self._pending_body.pop(request, None)
         self._eligible.discard(request)
 
     def _on_response(self, response) -> None:
         request = response.request
         if request not in self._eligible:
             return
+        # redirects never have a readable body; write them immediately
+        if 300 <= response.status < 400:
+            self._write_exchange(response, b"")
+            return
         try:
-            try:
-                body = response.body()
-            except Exception:
-                body = b""  # redirects / cached / aborted bodies
-            post = request.post_data_buffer or None
+            body = response.body()
+        except Exception:
+            self._pending_body[request] = response
+            self.capture_stats["body-deferred"] += 1
+            return
+        self._write_exchange(response, body)
+
+    def _write_exchange(self, response, body: bytes) -> None:
+        request = response.request
+        try:
             self.warc.write_exchange(
                 url=response.url,
                 method=request.method,
                 req_headers=request.headers,
-                post_data=post,
+                post_data=request.post_data_buffer or None,
                 status=response.status,
                 status_text=response.status_text or "",
                 resp_headers=response.headers,
                 body=body,
             )
+            self.capture_stats["captured"] += 1
+            host = urlsplit(response.url).hostname or "?"
+            self.capture_stats[f"host:{host}"] += 1
         except Exception as exc:
+            self.capture_stats["write-failed"] += 1
             log.debug("Capture skipped for %s: %s", response.url, exc)
 
     # -- page lifecycle -----------------------------------------------------
@@ -325,8 +362,8 @@ class RecordingSession:
         self._context = context
         context.on("request", self._on_request)
         context.on("response", self._on_response)
-        context.on("requestfinished", self._on_request_done)
-        context.on("requestfailed", self._on_request_done)
+        context.on("requestfinished", self._on_request_finished)
+        context.on("requestfailed", self._on_request_failed)
         context.on("page", self._on_page)
         context.on("close", self._mark_closed)
         try:
@@ -379,8 +416,26 @@ class RecordingSession:
 
         self.state = STOPPED
         self._report()
+        self._log_capture_summary()
         return {"visited": self.visited, "bytes": self.warc.total_bytes,
                 "current_url": self.current_url}
+
+    def _log_capture_summary(self) -> None:
+        s = self.capture_stats
+        hosts = sorted(((n, k[5:]) for k, n in s.items()
+                        if k.startswith("host:")), reverse=True)
+        log.info("Capture summary: %d exchange(s) from %d host(s)"
+                 "%s%s",
+                 s.get("captured", 0), len(hosts),
+                 f", {s['body-retry-ok']} recovered on retry"
+                 if s.get("body-retry-ok") else "",
+                 f", {s['body-unavailable']} bodies UNAVAILABLE "
+                 "(recorded empty)" if s.get("body-unavailable") else "")
+        for n, host in hosts[:10]:
+            log.info("  %5d  %s", n, host)
+        for key, n in s.items():
+            if key.startswith("body-unavailable:"):
+                log.warning("  body unavailable x%d from %s", n, key[17:])
 
     def _mark_closed(self, *_args) -> None:
         self._closed = True

@@ -54,6 +54,13 @@ def main(argv: list[str] | None = None) -> int:
                        help="Operator recorded in the WARC metadata")
     p_rec.add_argument("-v", "--verbose", action="store_true")
 
+    p_ins = sub.add_parser(
+        "inspect", help="List response records in captured WARCs")
+    p_ins.add_argument("warc_dir", help="Directory containing .warc.gz files")
+    p_ins.add_argument("--grep", help="Only show URLs containing this text")
+    p_ins.add_argument("--hosts", action="store_true",
+                       help="Summarise capture counts per host instead")
+
     p_rep = sub.add_parser("replay", help="Replay captured WARCs with ReplayWeb.page")
     p_rep.add_argument("warc_dir", help="Directory containing .warc.gz files")
     p_rep.add_argument("--url", help="Seed URL to deep-link (optional)")
@@ -80,6 +87,50 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    if args.command == "inspect":
+        from collections import Counter
+        from pathlib import Path as _P
+        from urllib.parse import urlsplit as _us
+
+        from warcio.archiveiterator import ArchiveIterator
+
+        warc_dir = _P(args.warc_dir)
+        warcs = sorted(warc_dir.glob("*.warc.gz")) + sorted(warc_dir.glob("*.warc"))
+        if not warcs:
+            print(f"No WARC files found in {warc_dir}", file=sys.stderr)
+            return 1
+        hosts: Counter = Counter()
+        empty = 0
+        shown = total = 0
+        for path in warcs:
+            with open(path, "rb") as fh:
+                for record in ArchiveIterator(fh):
+                    if record.rec_type not in ("response", "revisit"):
+                        continue
+                    uri = record.rec_headers.get_header("WARC-Target-URI") or ""
+                    total += 1
+                    hosts[_us(uri).hostname or "?"] += 1
+                    length = record.http_headers.get_header(
+                        "Content-Length") if record.http_headers else None
+                    if length == "0" and record.rec_type == "response":
+                        empty += 1
+                    if not args.hosts:
+                        if args.grep and args.grep.lower() not in uri.lower():
+                            continue
+                        status = (record.http_headers.get_statuscode()
+                                  if record.http_headers else "?")
+                        shown += 1
+                        print(f"{record.rec_type:8} {status:>4} "
+                              f"{length or '?':>10}  {uri}")
+        if args.hosts or not args.grep:
+            print(f"\n{total} captured exchange(s), "
+                  f"{empty} with empty bodies, by host:")
+            for host, n in hosts.most_common(20):
+                print(f"  {n:5d}  {host}")
+        elif args.grep:
+            print(f"\n{shown} of {total} exchange(s) matched {args.grep!r}")
+        return 0
 
     if args.command == "record":
         import re
