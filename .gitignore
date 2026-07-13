@@ -1,0 +1,32 @@
+# webarc runtime output — never commit captures or replay state
+warcs/
+replay/
+webarc-state/
+*.warc
+*.warc.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.venv-*/
+venv/
+env/
+
+# Playwright browser downloads
+.cache/
+ms-playwright/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Chrome profile used by native/headed crawl mode
+chrome-profile*/

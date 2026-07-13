@@ -1,0 +1,208 @@
+# webarc — configurable per-seed browser-based web archiving
+
+A Python crawler that archives websites to standards-compliant **WARC/1.1** files,
+driving a real browser per seed with per-seed configuration:
+
+- **Browser mode per seed**: `headless` (bundled Chromium), `headed` (visible Chrome),
+  or `native` (attach to your system's default Chrome via CDP remote debugging).
+- **Standard crawl semantics**: seeds, scope rules (same-host / same-domain /
+  path-prefix / regex include-exclude), max depth, max pages, robots.txt.
+- **Human-like navigation**: randomised delays, incremental scrolling, mouse jitter,
+  `networkidle` waits — pages render fully (JS, lazy-loaded images) before capture.
+- **WARC output**: `warcinfo`, `request`, `response`, and digest-based `revisit`
+  records written with `warcio`, gzip-compressed, one WARC per seed (rotated by size).
+
+## Architecture
+
+```
+config.yaml ──► crawler.py (per-seed orchestrator)
+                   │
+                   ├── scope.py     URL canonicalisation + scope decisions
+                   ├── frontier.py  BFS queue, dedup, depth tracking
+                   ├── browser.py   Playwright driver (headless/headed/native CDP)
+                   │                 human-like behaviours, link extraction
+                   └── capture.py   Response/request event capture → warcio writer
+                                     (SHA-1 payload digests, revisit dedup)
+```
+
+Capture is done at the browser network layer (Playwright request/response events),
+the same general approach as Browsertrix Crawler: you archive exactly what the
+browser saw, including XHR/fetch traffic, fonts, media, and JS-rendered content.
+
+## Two ways to run — pick either
+
+webarc works entirely from the command line. The dashboard is an **optional**
+layer on top of the same crawl engine; you never need it to run a crawl.
+
+### A. Command line (no dashboard, minimal install)
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt        # core only — no FastAPI/uvicorn
+playwright install chromium            # only for headless mode
+
+python -m webarc.cli crawl config.yaml # run a crawl
+python -m webarc.cli validate config.yaml
+```
+
+This path has no server, no database, no background processes — it just crawls
+each seed in the config and writes WARCs to `output_dir`.
+
+### B. Web dashboard (optional)
+
+Adds add/monitor/pause/resume/stop and storage tracking in a browser. Install
+the extra packages, then start the server:
+
+```bash
+pip install -r requirements.txt -r requirements-dashboard.txt
+python -m webarc.cli serve             # → http://127.0.0.1:8080
+```
+
+Both paths use the identical crawl engine, so scope rules, human-like
+navigation, block detection, and WARC output behave the same either way. Running
+`serve` without the dashboard packages installed prints how to add them rather
+than failing obscurely.
+
+## Run
+
+```bash
+python -m webarc.cli crawl config.yaml
+```
+
+### Native browser mode
+
+For `mode: native`, webarc launches your installed Chrome with
+`--remote-debugging-port` and attaches over CDP, so the crawl runs in a real,
+visible, default-profile-like Chrome window. Close other Chrome instances first
+(or set a dedicated `user_data_dir` in the config, which is the safer default).
+
+## Dashboard (v2)
+
+A web control panel to add crawls, watch live progress, pause/resume/stop, and
+track storage — instead of watching log lines.
+
+```bash
+pip install -r requirements.txt        # now includes fastapi + uvicorn
+python -m webarc.cli serve              # → http://127.0.0.1:8080
+```
+
+Open the URL, paste a crawl config into the **New crawl** box, press **Start
+crawl**. Each crawl launches as an isolated worker subprocess and writes into
+its own folder under `warcs/<crawl_id>/`, so storage accounting is exact.
+
+Controls per crawl:
+- **Pause** — the worker finishes the current page, then blocks. Progress freezes.
+- **Resume** — continues from where it paused (same process, in-memory frontier).
+- **Stop** — finishes the current page, closes the WARC cleanly, exits (graceful).
+- **Delete** — removes the record; optionally purges the WARC files from disk.
+
+The storage strip shows captured bytes, active-crawl count, and disk free/used.
+
+### Try the dashboard without a browser install
+
+```bash
+python -m webarc.cli serve --simulate
+```
+
+`--simulate` runs browserless fake crawls (timed page visits writing tiny WARC
+records) so you can exercise the whole control plane — add, pause, resume, stop,
+storage, delete — before installing Playwright's Chromium. Real crawls use the
+same control plane; only the capture engine differs.
+
+### How control works (architecture)
+
+State lives in SQLite (`webarc-state/webarc.db`, WAL mode) shared between the
+server and workers. The API writes a control command (`pause`/`resume`/`stop`)
+to the crawl row; the worker polls it between pages via a `StoreController` and
+acts on it. This gives clean, race-free pause/stop without threads or signals in
+the hot path. A hard-kill endpoint (`/kill`) is the fallback if a worker wedges;
+it's cross-platform (TerminateProcess on Windows, SIGTERM group on POSIX).
+
+Note: pause keeps the worker process alive and idling — it does not persist the
+frontier to disk, so a server restart ends running crawls. Cross-restart
+resumption would need frontier serialisation (a reasonable v3 item, and the
+place to add crawl scheduling/recurring snapshots).
+
+## Replay / QA
+
+### WAF / bot-block handling
+
+Government and enterprise sites often sit behind a WAF (F5 BIG-IP ASM, Cloudflare,
+Imperva Incapsula, Akamai, PerimeterX). When one decides a request is a bot it
+serves a block/challenge page — F5's is the "The requested URL was rejected …
+Your support ID is: N" page, frequently returned as **HTTP 200**, so status codes
+alone won't catch it.
+
+webarc watches every visited page for these block signatures (content first,
+status codes 403/429/503 as backup). When it sees a block, per seed:
+
+1. **First block → back off.** Slows the crawl (`block_backoff_factor`× the
+   inter-page delay) and cools down (`block_cooldown` seconds) before the next
+   page. Block pages are not harvested for links.
+2. **Block persists → stop the seed.** After `block_max_consecutive` blocks in a
+   row it stops crawling that seed and marks it `blocked`, on the reasoning that
+   the rest of the site is gated the same way — continuing only antagonises the
+   WAF and risks a harder IP ban.
+3. **Block clears → resume normal pace.** A single successful page resets the
+   back-off and the counter.
+
+Tunable per seed under `behavior:`:
+
+```yaml
+    behavior:
+      detect_blocks: true
+      block_backoff_factor: 3.0    # delay multiplier applied on each block
+      block_cooldown: 30           # base cooldown seconds (scales with streak)
+      block_max_consecutive: 3     # stop the seed after this many blocks in a row
+```
+
+This is deliberately a *back off and stop* policy, not an evasion one. The durable
+fix for a persistently blocking government site is to have QNL's crawl IP and an
+honest identifying User-Agent allowlisted by the site's operator — set the UA via
+`browser.user_agent`.
+
+## Replay (ReplayWeb.page)
+
+webarc replays with **Webrecorder ReplayWeb.page** (wabac.js). Replay runs
+entirely in your browser via a service worker — there is **no replay server**,
+so it works on any Python version (3.13 / 3.14 included) with **no pywb and no
+extra dependencies**. Nothing is uploaded anywhere; everything stays on
+`127.0.0.1`.
+
+### From the command line (any WARC folder)
+
+```bash
+python -m webarc.cli replay ./warcs/diwan --url https://www.diwan.gov.qa/?sc_lang=en
+```
+
+webarc combines the folder's WARCs into one archive, writes a small
+ReplayWeb.page site, starts a plain static server, and opens your browser. The
+`--url` seeds which captured page to show first (optional). Ctrl+C stops it.
+
+Runs in the **same environment as the crawler** — no separate Python 3.11/3.12
+venv, because replay no longer uses pywb.
+
+### From the dashboard
+
+Each crawl with captured data has a **Replay** button — it builds that crawl's
+ReplayWeb.page site and opens it in a new tab.
+
+### Offline / air-gapped machines
+
+By default the ReplayWeb.page UI (`ui.js`) and service worker (`sw.js`) load
+from the jsDelivr CDN (pinned version). For a machine with no internet, download
+those two files once from `https://cdn.jsdelivr.net/npm/replaywebpage/` into
+`./replay/vendor/` and pass `--self-host`; webarc will reference the local copies
+instead of the CDN.
+
+## Known limitations (honest notes)
+
+- Request/response records are **reconstructed from browser network events**, not
+  raw TCP capture. Status lines and header ordering are faithful, but this is the
+  same trade-off Browsertrix/ArchiveWeb.page make. If you need proxy-level
+  byte-exact capture, run the browser through `warcprox` instead (the browser
+  driver already accepts a `proxy` option — point it at warcprox and disable
+  the internal writer).
+- Large streaming media (HLS/DASH segments) is captured segment-by-segment as
+  requested by the page; full stream capture needs behaviour scripts.
+- `native` mode attaches to whatever pages Chrome opens; keep the profile clean.

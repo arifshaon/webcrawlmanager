@@ -1,0 +1,6 @@
+# Optional — only needed for the web dashboard:
+#   python -m webarc.cli serve
+# Install alongside the core requirements:
+#   pip install -r requirements.txt -r requirements-dashboard.txt
+fastapi>=0.110
+uvicorn>=0.29

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>webarc · crawl control</title>
+<style>
+  :root {
+    --paper:   #FBFAF7;
+    --surface: #F3F0E9;
+    --ink:     #1B1E23;
+    --muted:   #6B7178;
+    --faint:   #9AA0A6;
+    --rule:    #E4E0D6;
+    --run:     #0F766E;  /* petrol — active */
+    --run-bg:  #E1F0EE;
+    --pause:   #B45309;  /* amber — paused */
+    --pause-bg:#F7ECD9;
+    --stop:    #9F1239;  /* rose — stopped/failed */
+    --stop-bg: #F6E1E7;
+    --block:   #6D28D9;  /* violet — blocked by WAF (external) */
+    --block-bg:#EAE3F8;
+    --done:    #4B5563;  /* slate — completed */
+    --done-bg: #ECEAE3;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+    --ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: var(--ui); font-size: 14px; line-height: 1.5;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px;
+    padding: 20px 28px; border-bottom: 1px solid var(--rule);
+  }
+  header .mark { font-family: var(--mono); font-weight: 600; font-size: 18px; letter-spacing: -.02em; }
+  header .mark b { color: var(--run); }
+  header .sub { color: var(--muted); font-size: 12px; }
+  header .clock { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--faint); }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 28px 64px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--faint); margin: 28px 0 10px;
+  }
+
+  /* storage strip */
+  .storage { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
+    background: var(--rule); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+  .storage .cell { background: var(--paper); padding: 14px 16px; }
+  .storage .k { font-size: 11px; color: var(--muted); font-family: var(--mono);
+    text-transform: uppercase; letter-spacing: .05em; }
+  .storage .v { font-family: var(--mono); font-size: 20px; margin-top: 4px; }
+  .bar { height: 5px; background: var(--surface); border-radius: 3px; margin-top: 10px; overflow: hidden; }
+  .bar span { display: block; height: 100%; background: var(--run); }
+
+  /* crawl manifest */
+  .manifest { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+  .crawl { border-bottom: 1px solid var(--rule); }
+  .crawl:last-child { border-bottom: 0; }
+  .crawl .row {
+    display: grid; grid-template-columns: 4px 1fr auto auto; gap: 14px;
+    align-items: center; padding: 14px 18px 14px 0; cursor: pointer;
+  }
+  .crawl .gutter { width: 4px; height: 100%; min-height: 44px; align-self: stretch; }
+  .g-running { background: var(--run); } .g-paused { background: var(--pause); }
+  .g-stopped, .g-failed { background: var(--stop); }
+  .g-blocked { background: var(--block); }
+  .g-completed { background: var(--done); } .g-pending { background: var(--faint); }
+  .crawl .name { font-weight: 600; }
+  .crawl .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .crawl .meta .id { color: var(--faint); }
+
+  .badge { font-family: var(--mono); font-size: 11px; letter-spacing: .04em;
+    text-transform: uppercase; padding: 3px 9px; border-radius: 100px; white-space: nowrap; }
+  .b-running { color: var(--run); background: var(--run-bg); }
+  .b-paused  { color: var(--pause); background: var(--pause-bg); }
+  .b-stopped, .b-failed, .b-stopping { color: var(--stop); background: var(--stop-bg); }
+  .b-blocked { color: var(--block); background: var(--block-bg); }
+  .b-completed { color: var(--done); background: var(--done-bg); }
+  .b-pending { color: var(--muted); background: var(--surface); }
+  .b-running::before { content: "●"; margin-right: 5px; animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
+
+  .counts { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
+  .counts b { color: var(--ink); font-weight: 600; }
+
+  .actions { display: flex; gap: 6px; padding: 0 18px 14px 18px; }
+  button.act {
+    font-family: var(--ui); font-size: 12px; border: 1px solid var(--rule);
+    background: var(--paper); color: var(--ink); padding: 5px 12px;
+    border-radius: 6px; cursor: pointer;
+  }
+  button.act:hover { background: var(--surface); }
+  button.act:disabled { opacity: .4; cursor: not-allowed; }
+  button.danger:hover { border-color: var(--stop); color: var(--stop); }
+  button.replay:hover { border-color: var(--run); color: var(--run); }
+
+  /* seed detail */
+  .seeds { padding: 0 18px 16px 18px; display: none; }
+  .crawl.open .seeds { display: block; }
+  .seed { display: grid; grid-template-columns: 1fr auto; gap: 12px;
+    padding: 8px 0; border-top: 1px dashed var(--rule); }
+  .seed .url { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+  .seed .cur { color: var(--faint); font-size: 11px; margin-top: 2px; }
+  .seed .st { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
+
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  .empty code { font-family: var(--mono); }
+
+  /* new crawl */
+  form { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+  .form-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+    background: var(--surface); }
+  .form-head .name-in { flex: 1; }
+  input[type=text], textarea {
+    font-family: var(--mono); font-size: 13px; border: 1px solid var(--rule);
+    background: var(--paper); color: var(--ink); border-radius: 6px; padding: 8px 10px; width: 100%;
+  }
+  textarea { border: 0; border-radius: 0; min-height: 260px; resize: vertical;
+    line-height: 1.55; tab-size: 2; }
+  textarea:focus, input:focus { outline: 2px solid var(--run); outline-offset: -1px; }
+  .form-foot { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+    border-top: 1px solid var(--rule); }
+  button.primary { font-family: var(--ui); font-weight: 600; font-size: 13px;
+    background: var(--run); color: #fff; border: 0; padding: 8px 18px; border-radius: 6px; cursor: pointer; }
+  button.primary:hover { background: #0c5f58; }
+  .msg { font-family: var(--mono); font-size: 12px; }
+  .msg.err { color: var(--stop); } .msg.ok { color: var(--run); }
+
+  @media (max-width: 720px) {
+    .storage { grid-template-columns: repeat(2, 1fr); }
+    .crawl .row { grid-template-columns: 4px 1fr auto; }
+    .counts { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .b-running::before { animation: none; } }
+</style>
+</head>
+<body>
+<header>
+  <span class="mark">web<b>arc</b></span>
+  <span class="sub">crawl control · WARC capture</span>
+  <span class="clock" id="clock"></span>
+</header>
+
+<main>
+  <div class="eyebrow">Storage</div>
+  <div class="storage" id="storage"></div>
+
+  <div class="eyebrow">Crawls</div>
+  <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
+
+  <div class="eyebrow">New crawl</div>
+  <form id="new-form" onsubmit="return false">
+    <div class="form-head">
+      <input class="name-in" type="text" id="crawl-name" placeholder="crawl name (optional — defaults to crawl_name in YAML)">
+    </div>
+    <textarea id="config-yaml" spellcheck="false"></textarea>
+    <div class="form-foot">
+      <button class="primary" id="start-btn">Start crawl</button>
+      <span class="msg" id="form-msg"></span>
+    </div>
+  </form>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmtBytes = b => {
+  if (!b) return "0 B";
+  const u = ["B","KB","MB","GB","TB"]; let i = 0; b = Number(b);
+  while (b >= 1024 && i < u.length-1) { b /= 1024; i++; }
+  return b.toFixed(i ? 1 : 0) + " " + u[i];
+};
+const openState = new Set();  // remember expanded crawls across refreshes
+
+const SAMPLE = `crawl_name: diwan-gov-qa
+output_dir: ./warcs
+operator: "Qatar National Library — Digital Curation"
+defaults: {}
+seeds:
+  - url: https://www.diwan.gov.qa/?sc_lang=en
+    browser:
+      mode: headless
+    scope:
+      strategy: same-host
+      max_depth: 20
+      max_pages: 10000
+      exclude:
+        - "\\\\.(zip|exe|dmg|iso)($|\\\\?)"
+        - "sc_lang=ar"
+    behavior:
+      obey_robots: false
+      delay_range: [2.0, 5.0]
+      wait_until: load
+      scroll: true`;
+$("#config-yaml").value = SAMPLE;
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (!r.ok) { const t = await r.text(); throw new Error(t || r.statusText); }
+  return r.status === 204 ? null : r.json();
+}
+
+function statusClass(s) { return s.toLowerCase(); }
+
+function crawlRow(c) {
+  const s = c.status;
+  const running = s === "running", paused = s === "paused";
+  const canPause = running, canResume = paused;
+  const canStop = running || paused || s === "stopping";
+  const isOpen = openState.has(c.id);
+  const t = c.totals;
+  const seedRows = c.seeds.map(sd => `
+    <div class="seed">
+      <div>
+        <div class="url">${sd.seed_url}</div>
+        ${sd.current_url ? `<div class="cur">▸ ${sd.current_url}</div>` : ""}
+      </div>
+      <div class="st">${sd.status} · ${sd.visited} pages · ${fmtBytes(sd.bytes)}</div>
+    </div>`).join("");
+
+  return `
+  <div class="crawl ${isOpen ? "open" : ""}" data-id="${c.id}">
+    <div class="row" onclick="toggle(${c.id})">
+      <div class="gutter g-${statusClass(s)}"></div>
+      <div>
+        <div class="name">${c.name}</div>
+        <div class="meta"><span class="id">#${c.id}</span> · ${c.seeds_total} seed(s) · ${c.created_at}</div>
+      </div>
+      <div class="counts">
+        <b>${t.visited}</b> pages · <b>${t.queued}</b> queued${t.failed ? ` · ${t.failed} failed` : ""}<br>
+        ${fmtBytes(t.bytes)}
+      </div>
+      <span class="badge b-${statusClass(s)}">${s}</span>
+    </div>
+    <div class="actions">
+      <button class="act" onclick="ctl(${c.id},'pause')"  ${canPause?"":"disabled"}>Pause</button>
+      <button class="act" onclick="ctl(${c.id},'resume')" ${canResume?"":"disabled"}>Resume</button>
+      <button class="act danger" onclick="ctl(${c.id},'stop')" ${canStop?"":"disabled"}>Stop</button>
+      <button class="act replay" onclick="replay(${c.id})" ${t.bytes>0?"":"disabled"}>Replay</button>
+      <button class="act danger" onclick="del(${c.id})" ${(running||paused)?"disabled":""}>Delete</button>
+    </div>
+    <div class="seeds">${seedRows}</div>
+  </div>`;
+}
+
+function toggle(id) {
+  if (openState.has(id)) openState.delete(id); else openState.add(id);
+  const el = document.querySelector(`.crawl[data-id="${id}"]`);
+  if (el) el.classList.toggle("open");
+}
+
+async function replay(id) {
+  try {
+    const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
+    window.open(r.replay_url, "_blank");
+  } catch (e) {
+    alert("Replay failed: " + e.message);
+  }
+}
+
+async function ctl(id, cmd) {
+  try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }
+  catch (e) { alert("Action failed: " + e.message); }
+}
+async function del(id) {
+  if (!confirm("Delete crawl #"+id+"? WARC files are kept unless you purge.")) return;
+  const purge = confirm("Also delete captured WARC files from disk? OK = delete files, Cancel = keep files.");
+  try { await api(`/api/crawls/${id}?purge=${purge}`, {method:"DELETE"}); refresh(); }
+  catch (e) { alert("Delete failed: " + e.message); }
+}
+
+async function start() {
+  const msg = $("#form-msg");
+  msg.textContent = "Starting…"; msg.className = "msg";
+  try {
+    const body = { config_yaml: $("#config-yaml").value };
+    const name = $("#crawl-name").value.trim();
+    if (name) body.name = name;
+    await api("/api/crawls", {method:"POST",
+      headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+    msg.textContent = "Crawl started."; msg.className = "msg ok";
+    refresh();
+  } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
+}
+$("#start-btn").addEventListener("click", start);
+
+async function refresh() {
+  try {
+    const [crawls, storage] = await Promise.all([
+      api("/api/crawls"), api("/api/storage")]);
+
+    const active = crawls.filter(c => ["running","paused","stopping"].includes(c.status)).length;
+    $("#storage").innerHTML = `
+      <div class="cell"><div class="k">Captured total</div><div class="v">${fmtBytes(storage.total_bytes)}</div></div>
+      <div class="cell"><div class="k">Crawls</div><div class="v">${crawls.length}<span style="font-size:13px;color:var(--muted)"> · ${active} active</span></div></div>
+      <div class="cell"><div class="k">Disk free</div><div class="v">${fmtBytes(storage.disk.free)}</div></div>
+      <div class="cell"><div class="k">Disk used</div><div class="v">${Math.round(storage.disk.used/storage.disk.total*100)}%</div>
+        <div class="bar"><span style="width:${(storage.disk.used/storage.disk.total*100).toFixed(1)}%"></span></div></div>`;
+
+    $("#manifest").innerHTML = crawls.length
+      ? crawls.map(crawlRow).join("")
+      : `<div class="empty">No crawls yet. Define one below and press <code>Start crawl</code>.</div>`;
+  } catch (e) {
+    $("#manifest").innerHTML = `<div class="empty">Server unreachable — ${e.message}</div>`;
+  }
+}
+
+setInterval(() => $("#clock").textContent = new Date().toISOString().replace("T"," ").slice(0,19)+"Z", 1000);
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

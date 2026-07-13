@@ -1,0 +1,6 @@
+# Core — crawling AND replay, all from the command line, any Python 3.10+ (incl. 3.13/3.14):
+#   python -m webarc.cli crawl config.yaml
+#   python -m webarc.cli replay ./warcs
+playwright>=1.44
+warcio>=1.7.4
+PyYAML>=6.0

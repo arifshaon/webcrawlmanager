@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webarc"
+version = "0.2.0"
+description = "Per-seed configurable browser-based web archiving to WARC, with a dashboard and in-browser replay"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Arif Shaon" }]
+keywords = ["web-archiving", "warc", "digital-preservation", "crawler", "replay"]
+dependencies = [
+    "playwright>=1.44",
+    "warcio>=1.7.4",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dashboard = ["fastapi>=0.110", "uvicorn>=0.29"]
+
+[project.scripts]
+webarc = "webarc.cli:main"
+
+[tool.setuptools]
+packages = ["webarc"]
+
+[tool.setuptools.package-data]
+webarc = ["dashboard.html"]

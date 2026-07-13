@@ -1,0 +1,57 @@
+# webarc crawl configuration
+crawl_name: qnl-webarchive-test
+output_dir: ./warcs
+operator: "Qatar National Library — Digital Curation"
+
+# Global defaults; every key can be overridden per seed.
+defaults:
+  browser:
+    mode: headless          # headless | headed | native
+    chrome_path: null       # autodetect if null (native/headed modes)
+    cdp_port: 9222          # native mode: remote debugging port
+    user_data_dir: null     # native mode: dedicated profile dir (recommended)
+    proxy: null             # e.g. http://localhost:8000 to route via warcprox
+    viewport: [1366, 900]
+    user_agent: null        # null = browser default (+ archive notice appended)
+  scope:
+    strategy: same-host     # same-host | same-domain | path-prefix | any
+    include: []             # regex allow-list (applied after strategy)
+    exclude:                # regex deny-list
+      - "\\.(zip|exe|dmg|iso)($|\\?)"
+      - "/logout"
+    max_depth: 2
+    max_pages: 200
+  behavior:
+    obey_robots: true
+    delay_range: [1.5, 4.0] # seconds between pages, uniform random
+    page_timeout: 45        # seconds
+    wait_until: networkidle # load | domcontentloaded | networkidle
+    scroll: true            # incremental human-like scrolling
+    scroll_pause: [0.4, 1.2]
+    mouse_jitter: true
+  warc:
+    max_size_mb: 900        # rotate WARC when exceeded
+    dedup: true             # digest-based revisit records within the crawl
+
+seeds:
+  - url: https://example.org/
+    # inherits all defaults
+
+  - url: https://www.qnl.qa/en
+    browser:
+      mode: headed          # watch it navigate in a visible Chrome window
+    scope:
+      strategy: path-prefix # stay under /en
+      max_depth: 3
+      max_pages: 500
+    behavior:
+      delay_range: [2.0, 5.0]
+
+  - url: https://blogs.example.net/research/
+    browser:
+      mode: native          # attach to system default Chrome over CDP
+      cdp_port: 9333
+      user_data_dir: ./chrome-profile-webarc
+    scope:
+      strategy: same-domain # includes subdomains of example.net
+      exclude: ["\\?replytocom="]
