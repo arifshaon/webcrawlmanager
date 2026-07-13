@@ -63,6 +63,101 @@ navigation, block detection, and WARC output behave the same either way. Running
 `serve` without the dashboard packages installed prints how to add them rather
 than failing obscurely.
 
+## Install and run on Windows
+
+webarc runs natively on Windows — no WSL required. The control plane is
+cross-platform by design (process kill uses `TerminateProcess`, Chrome
+autodetection knows the standard `C:\Program Files` install paths).
+
+### 1. Prerequisites
+
+- **Python 3.11 or newer** from [python.org](https://www.python.org/downloads/windows/)
+  or the Microsoft Store. During the python.org install, tick
+  **"Add python.exe to PATH"**.
+- **Google Chrome** — only needed for `headed` or `native` browser modes;
+  `headless` mode uses Playwright's bundled Chromium instead.
+
+Verify in a terminal (PowerShell or Command Prompt):
+
+```powershell
+python --version
+```
+
+### 2. Create a virtual environment and install
+
+From the project folder:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1          # PowerShell
+# .venv\Scripts\activate.bat        # Command Prompt alternative
+
+pip install -r requirements.txt     # core crawler
+playwright install chromium         # bundled browser for headless mode
+```
+
+If PowerShell refuses to run `Activate.ps1` with an error about execution
+policies, allow local scripts for your user once:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+then re-run `.venv\Scripts\Activate.ps1`.
+
+### 3. Run a crawl
+
+```powershell
+python -m webarc.cli validate config.yaml   # check the config parses
+python -m webarc.cli crawl config.yaml      # run it
+```
+
+WARCs are written to the `output_dir` from the config (default `.\warcs`).
+
+### 4. Optional: the web dashboard
+
+```powershell
+pip install -r requirements-dashboard.txt
+python -m webarc.cli serve                  # → http://127.0.0.1:8080
+```
+
+Or try it without any browser install first:
+
+```powershell
+python -m webarc.cli serve --simulate
+```
+
+### 5. Optional: replay captured WARCs
+
+```powershell
+python -m webarc.cli replay .\warcs --url https://example.org/
+```
+
+This opens ReplayWeb.page in your default browser; press Ctrl+C in the
+terminal to stop the replay server.
+
+### Windows notes
+
+- **Browser modes**: `headless` needs only `playwright install chromium`.
+  `headed` and `native` use your installed Chrome — webarc looks in
+  `C:\Program Files\Google\Chrome` and `C:\Program Files (x86)\Google\Chrome`
+  automatically; set `browser.chrome_path` in the config if Chrome lives
+  elsewhere.
+- **Native mode**: close other Chrome windows first, or set a dedicated
+  `user_data_dir` in the config (e.g. `.\chrome-profile-webarc`) so the
+  CDP-debugging instance doesn't clash with your everyday browser session.
+- **Paths in configs**: forward slashes work fine in YAML on Windows
+  (`output_dir: ./warcs`); if you use backslashes, quote the value.
+- **Firewall prompt**: the first `serve` or `replay` run may trigger a
+  Windows Defender Firewall prompt — both servers bind to `127.0.0.1` only,
+  so allowing (or even cancelling) the prompt doesn't expose anything to the
+  network.
+- **Stopping crawls from the dashboard**: Stop is graceful (finishes the
+  current page, closes the WARC); the Kill fallback uses `TerminateProcess`
+  on Windows, which ends the worker immediately — the current WARC may be
+  left without its final records, though records already flushed remain
+  readable.
+
 ## Run
 
 ```bash
