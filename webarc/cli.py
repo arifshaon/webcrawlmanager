@@ -193,7 +193,8 @@ def main(argv: list[str] | None = None) -> int:
         import webbrowser
         from pathlib import Path as _P
 
-        from .replay import ReplayServer, build_replay_site, collection_name
+        from .replay import (ReplayServer, build_replay_site, collection_name,
+                             detect_start_url)
 
         warc_dir = _P(args.warc_dir)
         warcs = sorted(warc_dir.glob("*.warc.gz")) + sorted(warc_dir.glob("*.warc"))
@@ -202,10 +203,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         coll = args.collection or collection_name(warc_dir.resolve().name)
         replay_root = _P(args.replay_root)
+        seed = args.url or detect_start_url(warcs)
+        if seed and not args.url:
+            print(f"Start page (auto-detected, override with --url): {seed}")
         build_replay_site(
             warcs,
             replay_root / coll,
-            seed_url=args.url,
+            seed_url=seed,
             self_host=args.self_host,
         )
         server = ReplayServer(replay_root, port=args.port, host=args.host)

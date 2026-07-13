@@ -55,6 +55,31 @@ def collection_name(crawl_id: int | str) -> str:
     return f"crawl-{crawl_id}"
 
 
+def detect_start_url(warc_paths: list[Path]) -> str | None:
+    """Pick a sensible replay entry page: the first successful, non-empty
+    HTML response in the archive. Without a start URL, ReplayWeb.page shows
+    the raw resource list instead of opening a page."""
+    from warcio.archiveiterator import ArchiveIterator
+    for path in warc_paths:
+        try:
+            with open(path, "rb") as fh:
+                for record in ArchiveIterator(fh):
+                    if record.rec_type != "response":
+                        continue
+                    http = record.http_headers
+                    if http is None or http.get_statuscode() != "200":
+                        continue
+                    ctype = (http.get_header("Content-Type") or "").lower()
+                    if not ctype.startswith("text/html"):
+                        continue
+                    if (http.get_header("Content-Length") or "0") == "0":
+                        continue
+                    return record.rec_headers.get_header("WARC-Target-URI")
+        except Exception as exc:
+            log.debug("Start-URL scan failed for %s: %s", path, exc)
+    return None
+
+
 def build_replay_site(warc_paths: list[Path], site_dir: Path,
                       seed_url: str | None = None,
                       self_host: bool = False) -> Path:
