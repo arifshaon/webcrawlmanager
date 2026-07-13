@@ -58,6 +58,13 @@ pip install -r requirements.txt -r requirements-dashboard.txt
 python -m webarc.cli serve             # → http://127.0.0.1:8080
 ```
 
+The dashboard uses port **8080** by default. To use a different port, pass the
+`--port` option, for example:
+
+```bash
+python -m webarc.cli serve --port 8085 # → http://127.0.0.1:8085
+```
+
 Both paths use the identical crawl engine, so scope rules, human-like
 navigation, block detection, and WARC output behave the same either way. Running
 `serve` without the dashboard packages installed prints how to add them rather
@@ -119,6 +126,12 @@ WARCs are written to the `output_dir` from the config (default `.\warcs`).
 ```powershell
 pip install -r requirements-dashboard.txt
 python -m webarc.cli serve                  # → http://127.0.0.1:8080
+```
+
+To run the dashboard on another port:
+
+```powershell
+python -m webarc.cli serve --port 8085      # → http://127.0.0.1:8085
 ```
 
 Or try it without any browser install first:
