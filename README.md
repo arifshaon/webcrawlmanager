@@ -301,3 +301,13 @@ instead of the CDN.
 - Large streaming media (HLS/DASH segments) is captured segment-by-segment as
   requested by the page; full stream capture needs behaviour scripts.
 - `native` mode attaches to whatever pages Chrome opens; keep the profile clean.
+
+## Licence and citation
+
+This project is available under the [MIT License](LICENSE). You may use, modify,
+and redistribute the software provided that the copyright and licence notice are
+retained.
+
+If you use **webarc** in research, institutional work, another software project,
+or published documentation, please acknowledge **Arif Shaon** and cite this
+repository using the metadata in [`CITATION.cff`](CITATION.cff).
