@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it using the metadata below and acknowledge Arif Shaon's contribution."
-title: "webarc: Configurable per-seed browser-based web archiving"
+title: "Simple Webcrawl Manager (SWM): Configurable per-seed browser-based web archiving"
 type: software
 authors:
   - family-names: "Shaon"
