@@ -31,13 +31,17 @@ class WarcSession:
     """One (rotating) WARC output per seed."""
 
     def __init__(self, out_dir: Path, crawl_name: str, seed_url: str,
-                 seed_idx: int, operator: str, cfg: WarcConfig):
+                 seed_idx: int, operator: str, cfg: WarcConfig,
+                 info_extra: dict | None = None):
         self.out_dir = out_dir
         self.crawl_name = crawl_name
         self.seed_url = seed_url
         self.seed_idx = seed_idx
         self.operator = operator
         self.cfg = cfg
+        # overrides/additions to the warcinfo record, e.g. a recording
+        # session sets robots: none since a human drives the navigation
+        self.info_extra = info_extra or {}
         self.serial = 0
         self.bytes_written = 0
         self._fh = None
@@ -70,6 +74,7 @@ class WarcSession:
                 "isPartOf": self.crawl_name,
                 "description": f"Browser-based capture of seed {self.seed_url}",
                 "robots": "obey",
+                **self.info_extra,
             },
         )
         self._writer.write_record(info)

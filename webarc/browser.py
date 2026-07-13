@@ -54,9 +54,25 @@ class BrowserDriver:
         self._native_proc: subprocess.Popen | None = None
         self.delay_multiplier = 1.0
 
+    @property
+    def context(self) -> BrowserContext:
+        assert self._context is not None, "driver not started (use as context manager)"
+        return self._context
+
     # -- lifecycle -------------------------------------------------------
     def __enter__(self) -> "BrowserDriver":
         self._pw = sync_playwright().start()
+        try:
+            self._start()
+        except Exception:
+            # a failed start would otherwise orphan the spawned Chrome and
+            # the Playwright driver (the with-statement never enters, so
+            # __exit__ would never run)
+            self.__exit__()
+            raise
+        return self
+
+    def _start(self) -> None:
         mode = self.cfg.mode
 
         if mode == "native":
@@ -81,10 +97,17 @@ class BrowserDriver:
             if self.cfg.user_agent:
                 ctx_kwargs["user_agent"] = self.cfg.user_agent
             self._context = self._browser.new_context(**ctx_kwargs)
-        return self
 
     def _launch_native_chrome(self) -> None:
         chrome = _find_chrome(self.cfg.chrome_path)
+        # refuse to attach to a browser we didn't launch: if the port already
+        # answers, it belongs to an unrelated Chrome/DevTools session
+        if self._cdp_answers(timeout=0.5):
+            raise RuntimeError(
+                f"Port {self.cfg.cdp_port} already serves a DevTools endpoint "
+                "— another Chrome owns it. Close it or set a different "
+                "browser.cdp_port so webarc does not attach to an unrelated "
+                "browser session.")
         # Chrome 111+ silently ignores --remote-debugging-port on the default
         # profile: without a dedicated --user-data-dir the debug endpoint never
         # opens and the window just sits at about:blank. Always use one.
@@ -109,9 +132,16 @@ class BrowserDriver:
             args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self._wait_for_cdp(timeout=20.0)
 
+    def _cdp_answers(self, timeout: float = 1.0) -> bool:
+        url = f"http://127.0.0.1:{self.cfg.cdp_port}/json/version"
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as resp:
+                return resp.status == 200
+        except OSError:
+            return False
+
     def _wait_for_cdp(self, timeout: float) -> None:
         """Poll the DevTools endpoint until it answers (or fail with a clear error)."""
-        url = f"http://127.0.0.1:{self.cfg.cdp_port}/json/version"
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._native_proc and self._native_proc.poll() is not None:
@@ -120,12 +150,8 @@ class BrowserDriver:
                     "This usually means another Chrome instance is already running "
                     "on the same profile — close it, or set a different "
                     "browser.user_data_dir / cdp_port.")
-            try:
-                with urllib.request.urlopen(url, timeout=1) as resp:
-                    if resp.status == 200:
-                        return
-            except OSError:
-                pass
+            if self._cdp_answers(timeout=1.0):
+                return
             time.sleep(0.25)
         raise RuntimeError(
             f"Chrome's CDP endpoint did not come up on port {self.cfg.cdp_port} "
