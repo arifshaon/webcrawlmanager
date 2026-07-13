@@ -25,6 +25,14 @@ from .config import BehaviorConfig, BrowserConfig
 
 log = logging.getLogger(__name__)
 
+# Pages served from the back/forward cache or a prerender never touch the
+# network, so nothing reaches the capture layer and the page is silently
+# missing from the archive. Disable both for capture browsers.
+_CAPTURE_ARGS = [
+    "--disable-features=BackForwardCache,Prerender2,"
+    "SpeculationRulesPrerendering",
+]
+
 _CHROME_CANDIDATES = [
     "google-chrome", "google-chrome-stable", "chromium-browser", "chromium",
     "/usr/bin/google-chrome",
@@ -83,7 +91,8 @@ class BrowserDriver:
                              if self._browser.contexts
                              else self._browser.new_context())
         else:
-            launch_kwargs: dict = {"headless": mode == "headless"}
+            launch_kwargs: dict = {"headless": mode == "headless",
+                                   "args": list(_CAPTURE_ARGS)}
             if mode == "headed":
                 launch_kwargs["channel"] = "chrome"
             if self.cfg.proxy:
@@ -128,6 +137,7 @@ class BrowserDriver:
             f"--remote-debugging-port={self.cfg.cdp_port}",
             f"--user-data-dir={user_data_dir}",
             "--no-first-run", "--no-default-browser-check",
+            *_CAPTURE_ARGS,
         ]
         if self.cfg.proxy:
             args.append(f"--proxy-server={self.cfg.proxy}")

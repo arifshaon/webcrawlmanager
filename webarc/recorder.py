@@ -178,6 +178,12 @@ class RecordingSession:
         # (common for streaming media); retried at requestfinished
         self._pending_body: dict = {}
         self.capture_stats: Counter = Counter()
+        # gap detection: main-frame URLs the user saw vs document exchanges
+        # actually captured — a page can render with no network fetch at all
+        # (back/forward cache, prerender), and would then be missing on replay
+        self._captured_docs: set[str] = set()
+        self._nav_watch: deque = deque()  # (url, deadline)
+        self.doc_grace = 10.0             # seconds to wait for the document
 
     # -- state transitions -------------------------------------------------
     def apply(self, command: str) -> None:
@@ -316,6 +322,11 @@ class RecordingSession:
             self.capture_stats["captured"] += 1
             host = urlsplit(response.url).hostname or "?"
             self.capture_stats[f"host:{host}"] += 1
+            try:
+                if request.resource_type == "document":
+                    self._captured_docs.add(response.url.split("#")[0])
+            except Exception:
+                pass
         except Exception as exc:
             self.capture_stats["write-failed"] += 1
             log.debug("Capture skipped for %s: %s", response.url, exc)
@@ -334,6 +345,21 @@ class RecordingSession:
         self.current_url = url  # updates while paused too, by design
         if self.state == RECORDING:
             self.visited += 1
+            self._nav_watch.append(
+                (url.split("#")[0], time.monotonic() + self.doc_grace))
+
+    def _check_nav_watch(self) -> None:
+        now = time.monotonic()
+        while self._nav_watch and self._nav_watch[0][1] <= now:
+            url, _ = self._nav_watch.popleft()
+            if url not in self._captured_docs:
+                self.capture_stats["page-doc-missing"] += 1
+                log.warning(
+                    "Page %s was displayed but its document was never "
+                    "captured — likely served from the browser's back/"
+                    "forward cache or a prerender, with no network fetch. "
+                    "It will be MISSING on replay. To record it: pause, "
+                    "then use 'Capture this page' while viewing it.", url)
 
     # -- main loop -----------------------------------------------------------
     def run(self) -> dict:
@@ -400,6 +426,7 @@ class RecordingSession:
                     self.apply(self._commands.popleft())
                 if self._state_dirty:
                     self._sync_widgets()
+                self._check_nav_watch()
                 now = time.monotonic()
                 if now - last_report >= 1.0:
                     self._report()
@@ -431,6 +458,10 @@ class RecordingSession:
                  if s.get("body-retry-ok") else "",
                  f", {s['body-unavailable']} bodies UNAVAILABLE "
                  "(recorded empty)" if s.get("body-unavailable") else "")
+        if s.get("page-doc-missing"):
+            log.warning("  %d page(s) displayed without a captured document "
+                        "(cache/prerender) — they will be missing on replay",
+                        s["page-doc-missing"])
         for n, host in hosts[:10]:
             log.info("  %5d  %s", n, host)
         for key, n in s.items():
