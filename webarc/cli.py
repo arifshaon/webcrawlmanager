@@ -96,6 +96,130 @@ def _resolve_cli_replay_url(warc_paths, preferred_url: str | None):
     return preferred_url, "unverified"
 
 
+def _build_cli_www_alias_warc(warc_paths):
+    """Create a temporary replay-only WARC containing conservative host aliases.
+
+    ReplayWeb.page's address box performs its own archive lookup, so resolving
+    only the CLI's initial ``--url`` is not enough. When both ``example.org`` and
+    ``www.example.org`` already occur in the capture, add a synthetic 302 for
+    each missing HTML-page counterpart. The original WARCs are never modified.
+
+    Returns ``(path, count)``. ``path`` is ``None`` when no aliases are needed.
+    """
+    import tempfile
+    from io import BytesIO
+    from pathlib import Path
+    from urllib.parse import urlsplit, urlunsplit
+
+    from warcio.archiveiterator import ArchiveIterator
+    from warcio.statusandheaders import StatusAndHeaders
+    from warcio.warcwriter import WARCWriter
+
+    def key(value: str):
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower()
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        if port and not ((parts.scheme.lower() == "http" and port == 80)
+                         or (parts.scheme.lower() == "https" and port == 443)):
+            host = f"{host}:{port}"
+        return (parts.scheme.lower(), host, parts.path or "/", parts.query)
+
+    captured: set[tuple] = set()
+    hosts: set[str] = set()
+    html_urls: dict[tuple, str] = {}
+
+    for path in warc_paths:
+        try:
+            with open(path, "rb") as fh:
+                for record in ArchiveIterator(fh):
+                    if record.rec_type not in ("response", "revisit"):
+                        continue
+                    uri = record.rec_headers.get_header("WARC-Target-URI")
+                    if not uri:
+                        continue
+                    parts = urlsplit(uri)
+                    host = (parts.hostname or "").lower()
+                    if parts.scheme.lower() not in ("http", "https") or not host:
+                        continue
+                    captured.add(key(uri))
+                    hosts.add(host)
+
+                    http = record.http_headers
+                    if http is None or http.get_statuscode() != "200":
+                        continue
+                    ctype = (http.get_header("Content-Type") or "").lower()
+                    if not ctype.startswith("text/html"):
+                        continue
+                    if (record.rec_type == "response"
+                            and http.get_header("Content-Length") == "0"):
+                        continue
+                    html_urls.setdefault(key(uri), uri)
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Replay alias scan failed for %s: %s", path, exc)
+
+    # Do not assume that www and the bare hostname are equivalent merely from
+    # their spelling. Require evidence that both hosts occur in this archive.
+    paired_bases: set[str] = set()
+    for host in hosts:
+        bare = host[4:] if host.startswith("www.") else host
+        if bare in hosts and f"www.{bare}" in hosts:
+            paired_bases.add(bare)
+
+    aliases: dict[str, str] = {}
+    for target in html_urls.values():
+        parts = urlsplit(target)
+        host = (parts.hostname or "").lower()
+        bare = host[4:] if host.startswith("www.") else host
+        if bare not in paired_bases:
+            continue
+        alternate_host = bare if host.startswith("www.") else f"www.{bare}"
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        alternate_netloc = alternate_host + (f":{port}" if port else "")
+        alias = urlunsplit(
+            (parts.scheme, alternate_netloc, parts.path, parts.query, ""))
+        if key(alias) not in captured:
+            aliases.setdefault(alias, target)
+
+    if not aliases:
+        return None, 0
+
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="swm-replay-alias-", suffix=".warc.gz", delete=False)
+    try:
+        with tmp:
+            writer = WARCWriter(tmp, gzip=True)
+            for alias, target in sorted(aliases.items()):
+                headers = StatusAndHeaders(
+                    "302 Found",
+                    [
+                        ("Location", target),
+                        ("Content-Length", "0"),
+                        ("X-SWM-Replay-Alias", "www/non-www"),
+                    ],
+                    protocol="HTTP/1.1",
+                )
+                record = writer.create_warc_record(
+                    alias,
+                    "response",
+                    payload=BytesIO(b""),
+                    http_headers=headers,
+                    warc_content_type="application/http; msgtype=response",
+                )
+                writer.write_record(record)
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+
+    return Path(tmp.name), len(aliases)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="swm",
@@ -341,12 +465,22 @@ def main(argv: list[str] | None = None) -> int:
             print("Warning: requested replay URL was not found while scanning "
                   "the archive; ReplayWeb.page may report it as unavailable.",
                   file=sys.stderr)
-        build_replay_site(
-            warcs,
-            replay_root / coll,
-            seed_url=seed,
-            self_host=args.self_host,
-        )
+
+        alias_warc, alias_count = _build_cli_www_alias_warc(warcs)
+        replay_warcs = warcs + ([alias_warc] if alias_warc else [])
+        if alias_count:
+            print(f"Added {alias_count} replay-only www/non-www URL alias(es).")
+        try:
+            build_replay_site(
+                replay_warcs,
+                replay_root / coll,
+                seed_url=seed,
+                self_host=args.self_host,
+            )
+        finally:
+            if alias_warc:
+                alias_warc.unlink(missing_ok=True)
+
         server = ReplayServer(replay_root, port=args.port, host=args.host)
         url = server.replay_url(coll)
         print(f"\nReplaying {len(warcs)} WARC(s) as '{coll}' (ReplayWeb.page)")
