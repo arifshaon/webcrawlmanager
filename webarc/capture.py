@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from io import BytesIO
@@ -22,6 +23,11 @@ log = logging.getLogger(__name__)
 # hop-by-hop / synthetic headers that must not be replayed into WARC records
 _STRIP_REQ = {"host", "content-length"}
 _STRIP_RESP = {"content-encoding", "transfer-encoding", "content-length"}
+
+# RFC field-name is a token. A name containing spaces, semicolons or quotes is
+# not a real HTTP field name; Chromium can produce one when a repeated header
+# value containing a newline has already been flattened into a dictionary.
+_FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
 
 def _utcnow() -> str:
@@ -46,9 +52,11 @@ def _clean_header_value(value: object) -> str:
 def _header_pairs(headers: object) -> list[tuple[str, str]]:
     """Normalise dictionary, tuple-list, or Playwright header-array input.
 
-    Supporting ordered pairs now lets callers move to ``headers_array()``
-    without another capture-layer change. Invalid names and HTTP/2 pseudo
-    headers are discarded; repeated valid names remain separate entries.
+    Repeated valid names remain separate entries. If Playwright has already
+    flattened a repeated header badly, the continuation can appear as an
+    impossible HTTP field name, for example part of a CSP policy containing
+    spaces and semicolons. Fold such an entry back into the preceding value
+    rather than serialising a malformed HTTP header block.
     """
     if headers is None:
         return []
@@ -76,7 +84,19 @@ def _header_pairs(headers: object) -> list[tuple[str, str]]:
         if (not name or name.startswith(":")
                 or "\r" in name or "\n" in name):
             continue
-        result.append((name, _clean_header_value(value)))
+
+        clean_value = _clean_header_value(value)
+        if not _FIELD_NAME_RE.fullmatch(name):
+            if result:
+                previous_name, previous_value = result[-1]
+                continuation = f"{name}: {clean_value}"
+                result[-1] = (
+                    previous_name,
+                    f"{previous_value}, {continuation}",
+                )
+            continue
+
+        result.append((name, clean_value))
 
     return result
 
