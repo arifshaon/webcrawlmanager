@@ -61,6 +61,14 @@ def main(argv: list[str] | None = None) -> int:
     p_ins.add_argument("--hosts", action="store_true",
                        help="Summarise capture counts per host instead")
 
+    p_ext = sub.add_parser(
+        "extract", help="Copy WARCs into one file, dropping large bodies "
+        "(for sharing/diagnosis)")
+    p_ext.add_argument("warc_dir", help="Directory containing .warc.gz files")
+    p_ext.add_argument("output", help="Output .warc.gz path")
+    p_ext.add_argument("--max-mb", type=float, default=1.0,
+                       help="Drop records with bodies larger than this (MB)")
+
     p_rep = sub.add_parser("replay", help="Replay captured WARCs with ReplayWeb.page")
     p_rep.add_argument("warc_dir", help="Directory containing .warc.gz files")
     p_rep.add_argument("--url", help="Seed URL to deep-link (optional)")
@@ -87,6 +95,37 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    if args.command == "extract":
+        from pathlib import Path as _P
+
+        from warcio.archiveiterator import ArchiveIterator
+        from warcio.warcwriter import WARCWriter
+
+        warc_dir = _P(args.warc_dir)
+        warcs = sorted(warc_dir.glob("*.warc.gz")) + sorted(warc_dir.glob("*.warc"))
+        if not warcs:
+            print(f"No WARC files found in {warc_dir}", file=sys.stderr)
+            return 1
+        limit = int(args.max_mb * 1024 * 1024)
+        kept = dropped = 0
+        with open(args.output, "wb") as out:
+            writer = WARCWriter(out, gzip=True)
+            for path in warcs:
+                with open(path, "rb") as fh:
+                    for record in ArchiveIterator(fh):
+                        size = int(record.rec_headers.get_header(
+                            "Content-Length") or 0)
+                        if size > limit:
+                            dropped += 1
+                            continue
+                        writer.write_record(record)
+                        kept += 1
+        out_size = _P(args.output).stat().st_size
+        print(f"Wrote {args.output}: {kept} record(s) kept, "
+              f"{dropped} large record(s) dropped, "
+              f"{out_size / 1024 / 1024:.1f} MB")
+        return 0
 
     if args.command == "inspect":
         from collections import Counter
