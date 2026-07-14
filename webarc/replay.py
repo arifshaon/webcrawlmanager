@@ -159,7 +159,14 @@ session are captured.</p>
 <p>Common causes: this link or player was not opened while recording;
 or the page generates its URLs dynamically (timestamps, tokens, signed
 video URLs), so the URL requested now differs from the one captured.</p>
+<p><b>Requested:</b> <code>%(explain)s</code></p>
 </body></html>"""
+
+    def send_error(self, code, message=None, explain=None):
+        if code == 404:
+            from urllib.parse import unquote
+            explain = unquote(self.path)
+        super().send_error(code, message, explain)
 
     def log_message(self, *args):  # keep the console quiet
         pass
