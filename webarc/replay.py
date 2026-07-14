@@ -89,6 +89,23 @@ _REPLAY_COMPAT_JS = r"""
           return original.call(this, name, force);
         });
 
+      // Setting the IDL property (iframe.credentialless = true) reflects to
+      // the attribute without going through setAttribute — override the
+      // property setter as well.
+      try {
+        const desc = Object.getOwnPropertyDescriptor(
+          IFrame.prototype, "credentialless");
+        if (!desc || !desc.set || !desc.set[PATCH_FLAG]) {
+          const setter = function(_value) { /* suppressed during replay */ };
+          Object.defineProperty(setter, PATCH_FLAG, { value: true });
+          Object.defineProperty(IFrame.prototype, "credentialless", {
+            configurable: true,
+            get: (desc && desc.get) ? desc.get : function() { return false; },
+            set: setter,
+          });
+        }
+      } catch (_) {}
+
       for (const iframe of win.document.querySelectorAll("iframe[credentialless]")) {
         iframe.removeAttribute("credentialless");
       }
