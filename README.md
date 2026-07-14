@@ -48,6 +48,73 @@ python -m webarc.cli validate config.yaml
 This path has no server, no database, no background processes — it just crawls
 each seed in the config and writes WARCs to `output_dir`.
 
+### Interactive recording (command line only for now)
+
+The interactive recording workflow is currently available from the **command
+line only**; it is not yet exposed through the SWM dashboard. Use it when a
+website requires a person to navigate menus, open modals, play media, log in, or
+perform other interactions that an automated crawl may not reproduce reliably.
+
+Start a recording session with a visible browser:
+
+```powershell
+python -m webarc.cli record `
+  https://example.org/ `
+  --name example-session
+```
+
+By default, the WARC files are written to `warcs/<name>/`. Use `--output` to
+choose another WARC root:
+
+```powershell
+python -m webarc.cli record `
+  https://example.org/ `
+  --name example-session `
+  --output D:\web-archives
+```
+
+During the session:
+
+1. Browse normally in the opened browser window.
+2. Open the pages, menus, pop-ups, embedded viewers and media that need to be
+   preserved.
+3. Use the **SWM Recording** control at the bottom-right of the page to pause,
+   resume, or capture the current page.
+4. Close the browser window, or press `Ctrl+C` in the terminal, to finish and
+   finalise the WARC.
+
+Everything loaded by the browser while recording may be written to the WARC,
+including cookies, authenticated pages, form submissions and private content.
+Treat the resulting files according to the sensitivity of the recorded session.
+
+For embedded or streaming video, open the player, allow it to load, and play or
+seek through the portions that need to be preserved. Streaming media is captured
+as the browser requests it, so unplayed segments may not be present.
+
+Inspect the completed recording:
+
+```powershell
+python -m webarc.cli inspect warcs/example-session
+python -m webarc.cli inspect warcs/example-session --hosts
+python -m webarc.cli inspect warcs/example-session --grep youtube
+```
+
+Replay it locally:
+
+```powershell
+python -m webarc.cli replay warcs/example-session
+```
+
+The `headed` browser mode is recommended and is the default. The advanced
+`native` mode can attach to system Chrome through CDP:
+
+```powershell
+python -m webarc.cli record `
+  https://example.org/ `
+  --name example-native-session `
+  --browser native
+```
+
 ### B. Web dashboard (optional)
 
 Adds add/monitor/pause/resume/stop and storage tracking in a browser. Install
