@@ -13,6 +13,89 @@ from .crawler import run_crawl
 APP_NAME = "Simple Webcrawl Manager (SWM)"
 
 
+def _resolve_cli_replay_url(warc_paths, preferred_url: str | None):
+    """Resolve a CLI replay URL against targets that actually exist in WARC.
+
+    ReplayWeb.page looks up archived targets by URL. If the requested URL is
+    absent, try only the conservative www/non-www equivalent before falling
+    back to the first captured HTML page. Returns ``(url, reason)`` where reason
+    is one of exact, host-alias, auto, fallback, or unverified.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    from warcio.archiveiterator import ArchiveIterator
+
+    def key(value: str):
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower()
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        if port and not ((parts.scheme.lower() == "http" and port == 80)
+                         or (parts.scheme.lower() == "https" and port == 443)):
+            host = f"{host}:{port}"
+        return (parts.scheme.lower(), host, parts.path or "/", parts.query)
+
+    captured: dict[tuple, str] = {}
+    first_html = None
+    for path in warc_paths:
+        try:
+            with open(path, "rb") as fh:
+                for record in ArchiveIterator(fh):
+                    if record.rec_type not in ("response", "revisit"):
+                        continue
+                    uri = record.rec_headers.get_header("WARC-Target-URI")
+                    if not uri:
+                        continue
+                    captured.setdefault(key(uri), uri)
+                    if first_html is not None:
+                        continue
+                    http = record.http_headers
+                    if http is None or http.get_statuscode() != "200":
+                        continue
+                    ctype = (http.get_header("Content-Type") or "").lower()
+                    if not ctype.startswith("text/html"):
+                        continue
+                    if (record.rec_type == "response"
+                            and http.get_header("Content-Length") == "0"):
+                        continue
+                    first_html = uri
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Replay URL scan failed for %s: %s", path, exc)
+
+    if not preferred_url:
+        return first_html, "auto" if first_html else "unverified"
+
+    parts = urlsplit(preferred_url)
+    fragment = parts.fragment
+    preferred_base = urlunsplit(
+        (parts.scheme, parts.netloc, parts.path, parts.query, ""))
+    exact = captured.get(key(preferred_base))
+    if exact:
+        return exact + (f"#{fragment}" if fragment else ""), "exact"
+
+    host = parts.hostname or ""
+    if host:
+        alternate_host = (host[4:] if host.lower().startswith("www.")
+                          else f"www.{host}")
+        try:
+            port = parts.port
+        except ValueError:
+            port = None
+        alternate_netloc = alternate_host + (f":{port}" if port else "")
+        alternate = urlunsplit(
+            (parts.scheme, alternate_netloc, parts.path, parts.query, ""))
+        matched = captured.get(key(alternate))
+        if matched:
+            return matched + (f"#{fragment}" if fragment else ""), "host-alias"
+
+    if first_html:
+        return first_html, "fallback"
+    return preferred_url, "unverified"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="swm",
@@ -232,8 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         import webbrowser
         from pathlib import Path as _P
 
-        from .replay import (ReplayServer, build_replay_site, collection_name,
-                             detect_start_url)
+        from .replay import ReplayServer, build_replay_site, collection_name
 
         warc_dir = _P(args.warc_dir)
         warcs = sorted(warc_dir.glob("*.warc.gz")) + sorted(warc_dir.glob("*.warc"))
@@ -242,9 +324,23 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         coll = args.collection or collection_name(warc_dir.resolve().name)
         replay_root = _P(args.replay_root)
-        seed = args.url or detect_start_url(warcs)
-        if seed and not args.url:
+        seed, reason = _resolve_cli_replay_url(warcs, args.url)
+        if reason == "host-alias":
+            print("Requested replay URL was not captured exactly:")
+            print(f"  {args.url}")
+            print("Using the captured www/non-www equivalent:")
+            print(f"  {seed}")
+        elif reason == "fallback":
+            print("Requested replay URL was not found in the archive:")
+            print(f"  {args.url}")
+            print("Using the first captured HTML page instead:")
+            print(f"  {seed}")
+        elif seed and reason == "auto":
             print(f"Start page (auto-detected, override with --url): {seed}")
+        elif reason == "unverified" and args.url:
+            print("Warning: requested replay URL was not found while scanning "
+                  "the archive; ReplayWeb.page may report it as unavailable.",
+                  file=sys.stderr)
         build_replay_site(
             warcs,
             replay_root / coll,
