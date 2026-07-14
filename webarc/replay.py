@@ -45,7 +45,7 @@ _INDEX_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <replay-web-page source="archive.warc.gz"{url_attr}
-    embed="default" replayBase="./replay/"></replay-web-page>
+    embed="default" replayBase="./replay/" noCache></replay-web-page>
 </body>
 </html>
 """
