@@ -42,13 +42,13 @@ _INDEX_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>webarc replay \u2014 {coll}</title>
+  <title>webarc replay — {coll}</title>
   <style>html, body {{ width: 100%; height: 100%; margin: 0; }}</style>
   <script src="{ui_src}"></script>
 </head>
 <body>
   <replay-web-page source="{archive}"{url_attr}
-    embed="default" replayBase="./replay/" noCache></replay-web-page>
+    embed="default" replayBase="./replay/" loading="eager"></replay-web-page>
 </body>
 </html>
 """
