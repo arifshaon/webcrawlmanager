@@ -37,6 +37,98 @@ log = logging.getLogger(__name__)
 RWP_VERSION = "2.4.6"
 CDN = f"https://cdn.jsdelivr.net/npm/replaywebpage@{RWP_VERSION}"
 
+_REPLAY_COMPAT_JS = r"""
+(() => {
+  // Some media viewers (including Fancybox 6) add the experimental
+  // `credentialless` attribute to dynamically created video iframes. Chromium
+  // loads those frames in a separate ephemeral network context, outside the
+  // ReplayWeb.page service worker that serves archived responses. Suppress the
+  // attribute only inside this local replay site so the archived iframe remains
+  // under replay control.
+  const PATCH_FLAG = "__swmNoCredentialless";
+
+  function wrapMethod(proto, name, wrapperFactory) {
+    if (!proto || typeof proto[name] !== "function") return;
+    const current = proto[name];
+    if (current && current[PATCH_FLAG]) return;
+    const wrapped = wrapperFactory(current);
+    Object.defineProperty(wrapped, PATCH_FLAG, { value: true });
+    proto[name] = wrapped;
+  }
+
+  function patchRealm(win) {
+    try {
+      const ElementProto = win.Element && win.Element.prototype;
+      const IFrame = win.HTMLIFrameElement;
+      if (!ElementProto || !IFrame) return;
+
+      wrapMethod(ElementProto, "setAttribute", (original) => function(name, value) {
+        if (this instanceof IFrame &&
+            String(name).toLowerCase() === "credentialless") {
+          return;
+        }
+        return original.call(this, name, value);
+      });
+
+      wrapMethod(ElementProto, "setAttributeNS", (original) =>
+        function(namespace, name, value) {
+          if (this instanceof IFrame &&
+              String(name).toLowerCase() === "credentialless") {
+            return;
+          }
+          return original.call(this, namespace, name, value);
+        });
+
+      wrapMethod(ElementProto, "toggleAttribute", (original) =>
+        function(name, force) {
+          if (this instanceof IFrame &&
+              String(name).toLowerCase() === "credentialless") {
+            try { this.removeAttribute("credentialless"); } catch (_) {}
+            return false;
+          }
+          return original.call(this, name, force);
+        });
+
+      for (const iframe of win.document.querySelectorAll("iframe[credentialless]")) {
+        iframe.removeAttribute("credentialless");
+      }
+    } catch (_) {
+      // A frame may be between documents while ReplayWeb.page is navigating it.
+    }
+  }
+
+  function collectFrames(root, frames) {
+    try {
+      for (const iframe of root.querySelectorAll("iframe")) frames.push(iframe);
+      for (const element of root.querySelectorAll("*")) {
+        if (element.shadowRoot) collectFrames(element.shadowRoot, frames);
+      }
+    } catch (_) {}
+  }
+
+  function scanWindow(win, seen) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    patchRealm(win);
+
+    let frames = [];
+    try { collectFrames(win.document, frames); } catch (_) { return; }
+    for (const frame of frames) {
+      try {
+        frame.removeAttribute("credentialless");
+        scanWindow(frame.contentWindow, seen);
+      } catch (_) {}
+    }
+  }
+
+  const scan = () => scanWindow(window, new WeakSet());
+  scan();
+  window.addEventListener("load", scan);
+  document.addEventListener("readystatechange", scan);
+  setInterval(scan, 250);
+})();
+"""
+
 _INDEX_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -45,6 +137,7 @@ _INDEX_HTML = """<!DOCTYPE html>
   <title>webarc replay — {coll}</title>
   <style>html, body {{ width: 100%; height: 100%; margin: 0; }}</style>
   <script src="{ui_src}"></script>
+  <script>{compat_js}</script>
 </head>
 <body>
   <replay-web-page source="{archive}"{url_attr}
@@ -128,7 +221,8 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
     url_attr = f'\n    url="{seed_url}"' if seed_url else ""
     (site_dir / "index.html").write_text(
         _INDEX_HTML.format(coll=site_dir.name, ui_src=ui_src,
-                           url_attr=url_attr, archive=archive_name),
+                           url_attr=url_attr, archive=archive_name,
+                           compat_js=_REPLAY_COMPAT_JS),
         encoding="utf-8")
     log.info("Built replay site for %d WARC(s) at %s",
              len(warc_paths), site_dir)
