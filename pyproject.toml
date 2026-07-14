@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Simple Webcrawl Manager (SWM): browser-based web archiving to WARC with dashboard control and in-browser replay"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "PolyForm Noncommercial License 1.0.0" }
 authors = [{ name = "Arif Shaon" }]
 keywords = ["web-archiving", "warc", "digital-preservation", "crawler", "replay"]
 dependencies = [
