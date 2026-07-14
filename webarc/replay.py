@@ -22,7 +22,10 @@ from __future__ import annotations
 
 import functools
 import http.server
+import io
 import logging
+import os
+import re
 import shutil
 import socketserver
 import threading
@@ -44,7 +47,7 @@ _INDEX_HTML = """<!DOCTYPE html>
   <script src="{ui_src}"></script>
 </head>
 <body>
-  <replay-web-page source="archive.warc.gz"{url_attr}
+  <replay-web-page source="{archive}"{url_attr}
     embed="default" replayBase="./replay/" noCache></replay-web-page>
 </body>
 </html>
@@ -92,12 +95,25 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
     (site_dir / "replay").mkdir(parents=True, exist_ok=True)
 
     # Concatenate WARCs into one archive (gzip members concatenate into a single
-    # valid WARC that wabac.js indexes in-browser).
-    archive = site_dir / "archive.warc.gz"
-    with open(archive, "wb") as out:
+    # valid WARC that wabac.js indexes in-browser). The filename carries a
+    # content digest: ReplayWeb.page caches loaded archives by source URL, so
+    # a stable name could serve a stale index after new captures are added —
+    # a changed archive must get a changed URL.
+    import hashlib
+    digest = hashlib.sha1()
+    tmp = site_dir / "archive.tmp"
+    with open(tmp, "wb") as out:
         for p in warc_paths:
             with open(Path(p).resolve(), "rb") as f:
-                shutil.copyfileobj(f, out)
+                while chunk := f.read(1024 * 1024):
+                    digest.update(chunk)
+                    out.write(chunk)
+    archive_name = f"archive-{digest.hexdigest()[:12]}.warc.gz"
+    archive = site_dir / archive_name
+    for old in site_dir.glob("archive-*.warc.gz"):
+        if old.name != archive_name:
+            old.unlink()
+    tmp.replace(archive)
 
     if self_host:
         ui_src = "../vendor/ui.js"
@@ -111,7 +127,8 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
 
     url_attr = f'\n    url="{seed_url}"' if seed_url else ""
     (site_dir / "index.html").write_text(
-        _INDEX_HTML.format(coll=site_dir.name, ui_src=ui_src, url_attr=url_attr),
+        _INDEX_HTML.format(coll=site_dir.name, ui_src=ui_src,
+                           url_attr=url_attr, archive=archive_name),
         encoding="utf-8")
     log.info("Built replay site for %d WARC(s) at %s",
              len(warc_paths), site_dir)
@@ -151,7 +168,45 @@ video URLs), so the URL requested now differs from the one captured.</p>
         # Service Worker allowed scope + no-cache so rebuilt archives are seen
         self.send_header("Service-Worker-Allowed", "/")
         self.send_header("Cache-Control", "no-cache")
+        self.send_header("Accept-Ranges", "bytes")
         super().end_headers()
+
+    # HTTP Range support. wabac.js indexes the archive by streaming it, then
+    # loads individual records on demand with Range requests; a server that
+    # ignores Range (like the stdlib default) makes every record load fail
+    # and each page replays as "Archived Page Not Found".
+    _RANGE_RE = re.compile(r"bytes=(\d*)-(\d*)$")
+
+    def send_head(self):
+        rng = self.headers.get("Range")
+        path = self.translate_path(self.path)
+        if not rng or not os.path.isfile(path):
+            return super().send_head()
+        m = self._RANGE_RE.match(rng.strip())
+        if not m or (not m.group(1) and not m.group(2)):
+            return super().send_head()  # malformed/multi-range: serve full
+        size = os.path.getsize(path)
+        if m.group(1):
+            start = int(m.group(1))
+            end = int(m.group(2)) if m.group(2) else size - 1
+        else:                            # suffix form: bytes=-N
+            start = max(0, size - int(m.group(2)))
+            end = size - 1
+        end = min(end, size - 1)
+        if start >= size or start > end:
+            self.send_response(416)
+            self.send_header("Content-Range", f"bytes */{size}")
+            self.end_headers()
+            return None
+        with open(path, "rb") as fh:
+            fh.seek(start)
+            data = fh.read(end - start + 1)
+        self.send_response(206)
+        self.send_header("Content-Type", self.guess_type(path))
+        self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        return io.BytesIO(data)
 
 
 class ReplayServer:
