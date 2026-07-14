@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -25,6 +26,59 @@ _STRIP_RESP = {"content-encoding", "transfer-encoding", "content-length"}
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _clean_header_value(value: object) -> str:
+    """Return a header value that cannot create a second HTTP header line.
+
+    Chromium/Playwright may represent repeated response headers as one value
+    separated by embedded newlines. Passing that value directly to warcio
+    creates a malformed HTTP header block. Browsertrix and ArchiveWeb.page use
+    the same practical approach: collapse line breaks into a comma-separated
+    value before serialisation.
+    """
+    return (str(value)
+            .replace("\r\n", "\n")
+            .replace("\r", "\n")
+            .replace("\n", ", "))
+
+
+def _header_pairs(headers: object) -> list[tuple[str, str]]:
+    """Normalise dictionary, tuple-list, or Playwright header-array input.
+
+    Supporting ordered pairs now lets callers move to ``headers_array()``
+    without another capture-layer change. Invalid names and HTTP/2 pseudo
+    headers are discarded; repeated valid names remain separate entries.
+    """
+    if headers is None:
+        return []
+
+    if isinstance(headers, Mapping):
+        source = headers.items()
+    else:
+        try:
+            source = iter(headers)  # type: ignore[arg-type]
+        except TypeError:
+            return []
+
+    result: list[tuple[str, str]] = []
+    for item in source:
+        if isinstance(item, Mapping):
+            name = item.get("name")
+            value = item.get("value", "")
+        else:
+            try:
+                name, value = item
+            except (TypeError, ValueError):
+                continue
+
+        name = str(name or "").strip()
+        if (not name or name.startswith(":")
+                or "\r" in name or "\n" in name):
+            continue
+        result.append((name, _clean_header_value(value)))
+
+    return result
 
 
 class WarcSession:
@@ -94,15 +148,15 @@ class WarcSession:
         return getattr(self, "_closed_bytes", 0) + active
 
     # -- record writing ------------------------------------------------------
-    def write_exchange(self, *, url: str, method: str, req_headers: dict,
+    def write_exchange(self, *, url: str, method: str, req_headers: object,
                        post_data: bytes | None, status: int, status_text: str,
-                       resp_headers: dict, body: bytes,
+                       resp_headers: object, body: bytes,
                        http_version: str = "HTTP/1.1") -> None:
         assert self._writer is not None
         date = _utcnow()
 
         # ---- request record
-        req_hlist = [(k, v) for k, v in req_headers.items()
+        req_hlist = [(k, v) for k, v in _header_pairs(req_headers)
                      if k.lower() not in _STRIP_REQ]
         from urllib.parse import urlsplit
         p = urlsplit(url)
@@ -124,7 +178,7 @@ class WarcSession:
 
         # ---- response or revisit record
         digest = "sha1:" + hashlib.sha1(body).hexdigest()
-        resp_hlist = [(k, v) for k, v in resp_headers.items()
+        resp_hlist = [(k, v) for k, v in _header_pairs(resp_headers)
                       if k.lower() not in _STRIP_RESP]
         resp_hlist.append(("Content-Length", str(len(body))))
         resp_status = StatusAndHeaders(f"{status} {status_text}".strip(),
