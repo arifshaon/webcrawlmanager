@@ -405,6 +405,9 @@ class RecordingSession:
                 "service workers cannot be blocked there — sites that route "
                 "media through a service worker may not capture fully. "
                 "Use 'headed' mode for maximum capture fidelity.")
+        # recordings must never emulate a viewport: the page has to track the
+        # real window so the widget (fixed, bottom-right) is always on screen
+        self.browser_cfg.viewport = None
         try:
             with BrowserDriver(self.browser_cfg, BehaviorConfig()) as driver:
                 return self.run_with_context(driver.context)

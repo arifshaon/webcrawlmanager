@@ -99,8 +99,6 @@ class BrowserDriver:
                 launch_kwargs["proxy"] = {"server": self.cfg.proxy}
             self._browser = self._pw.chromium.launch(**launch_kwargs)
             ctx_kwargs: dict = {
-                "viewport": {"width": self.cfg.viewport[0],
-                             "height": self.cfg.viewport[1]},
                 "ignore_https_errors": bool(self.cfg.proxy),
                 # service-worker-mediated fetches (common for video/media
                 # players) bypass Playwright's network events entirely;
@@ -108,6 +106,15 @@ class BrowserDriver:
                 # the capture layer can see it
                 "service_workers": "block",
             }
+            if self.cfg.viewport is None:
+                # disable viewport emulation: the page tracks the real window
+                # size (recordings use this — a fixed emulated viewport larger
+                # than the window pushes bottom-anchored UI like the recording
+                # widget outside the visible area)
+                ctx_kwargs["no_viewport"] = True
+            else:
+                ctx_kwargs["viewport"] = {"width": self.cfg.viewport[0],
+                                          "height": self.cfg.viewport[1]}
             if self.cfg.user_agent:
                 ctx_kwargs["user_agent"] = self.cfg.user_agent
             self._context = self._browser.new_context(**ctx_kwargs)
