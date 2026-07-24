@@ -20,7 +20,8 @@ from pathlib import Path
 from .config import CrawlConfig, SeedConfig, _build_section
 from .config import (BehaviorConfig, BrowserConfig, ScopeConfig, WarcConfig)
 from .control import StoreController
-from .store import (COMPLETED, FAILED, RUNNING, STOPPED, Store)
+from .store import (COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, FAILED,
+                    KIND_RECORDING, PAUSED, RUNNING, STOPPED, Store)
 
 log = logging.getLogger("webarc.worker")
 
@@ -94,6 +95,66 @@ def _simulate(crawl: CrawlConfig, controller: StoreController) -> None:
             return
 
 
+def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
+    """Run an interactive recording session under dashboard control.
+
+    Unlike crawls, pause must NOT block the worker: the browser stays usable
+    while capture is paused, so the store's control column is polled
+    non-blockingly and mapped onto the recorder's state machine. Widget and
+    dashboard commands both land in the same RecordingSession.apply()."""
+    import json
+
+    from .capture import WarcSession
+    from .recorder import (CMD_PAUSE, CMD_RESUME, CMD_STOP, PAUSED as R_PAUSED,
+                           RECORDING as R_RECORDING, RecordingSession)
+
+    raw = json.loads(row["config_json"])
+    rec = raw.get("recording", {})
+    start_url = rec.get("start_url") or raw["seeds"][0]["url"]
+    browser = _build_section(BrowserConfig, rec.get("browser", {}))
+    if browser.mode not in ("headed", "native"):
+        browser.mode = "headed"
+
+    warc = WarcSession(
+        Path(row["output_dir"]), row["name"], start_url, 1,
+        rec.get("operator", "webarc"), WarcConfig(),
+        info_extra={
+            "robots": "none",
+            "description": f"Interactive session recording starting "
+                           f"at {start_url}",
+        })
+
+    def control_poll():
+        command = store.get_control(crawl_id)
+        if command == CTRL_STOP:
+            return CMD_STOP          # left set; main() reads it for final status
+        if command == CTRL_PAUSE:
+            store.clear_control(crawl_id)
+            return CMD_PAUSE
+        if command == CTRL_RESUME:
+            store.clear_control(crawl_id)
+            return CMD_RESUME
+        return None
+
+    last_state = {"state": None}
+
+    def on_progress(state, visited, bytes_written, current_url):
+        store.update_progress(crawl_id, 1, status=state, visited=visited,
+                              bytes_written=bytes_written,
+                              current_url=current_url)
+        if state != last_state["state"]:
+            last_state["state"] = state
+            if state == R_PAUSED:
+                store.set_status(crawl_id, PAUSED)
+            elif state == R_RECORDING:
+                store.set_status(crawl_id, RUNNING)
+
+    session = RecordingSession(start_url, browser, warc,
+                               control_poll=control_poll,
+                               on_progress=on_progress)
+    session.run()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="webarc.worker")
     parser.add_argument("crawl_id", type=int)
@@ -117,13 +178,18 @@ def main(argv: list[str] | None = None) -> int:
     store.set_status(args.crawl_id, RUNNING)
     store.clear_control(args.crawl_id)
 
+    kind = row.get("kind", "crawl")
     try:
-        crawl = _config_from_row(row)
         if args.simulate:
-            _simulate(crawl, controller)
+            # recordings simulate fine too: config_json carries a one-seed
+            # seeds list, so the browserless fake crawl exercises the same
+            # control plane and storage accounting
+            _simulate(_config_from_row(row), controller)
+        elif kind == KIND_RECORDING:
+            _run_recording(store, args.crawl_id, row)
         else:
             from .crawler import run_crawl
-            run_crawl(crawl, controller)
+            run_crawl(_config_from_row(row), controller)
     except Exception as exc:
         log.exception("Crawl %d failed", args.crawl_id)
         store.set_status(args.crawl_id, FAILED, error=str(exc))

@@ -113,6 +113,15 @@
   }
   .mode-tab:last-child { border-right: 0; }
   .mode-tab.active { background: var(--ink); color: #fff; }
+  .mode-tab.disabled { opacity: .4; cursor: not-allowed; }
+  .hidden { display: none !important; }
+  .job-tabs { margin-bottom: 10px; }
+  .rec-chip { font-family: var(--mono); font-size: 10px; letter-spacing: .05em;
+    color: var(--stop); background: var(--stop-bg); border-radius: 4px;
+    padding: 2px 6px; margin-right: 7px; vertical-align: 1px; }
+  .rec-warning { border: 1px solid var(--rule); border-left: 3px solid var(--pause);
+    background: var(--pause-bg); border-radius: 6px; padding: 10px 12px;
+    font-size: 12px; color: var(--ink); margin-top: 4px; }
   .mode-note { color: var(--muted); font-size: 12px; margin-left: auto; }
   .editor-panel { display: none; }
   .editor-panel.active { display: block; }
@@ -178,7 +187,13 @@
   <div class="storage" id="storage"></div>
   <div class="eyebrow">Crawls</div>
   <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
-  <div class="eyebrow">New crawl</div>
+  <div class="eyebrow">New job</div>
+  <div class="mode-tabs job-tabs" role="tablist" aria-label="Job type">
+    <button type="button" class="mode-tab active" id="job-tab-crawl"
+      data-job="crawl" role="tab" aria-selected="true">Automated crawl</button>
+    <button type="button" class="mode-tab" id="job-tab-record"
+      data-job="record" role="tab" aria-selected="false">Record session</button>
+  </div>
   <form id="new-form" onsubmit="return false">
     <div class="editor-head">
       <div class="mode-tabs" role="tablist" aria-label="Configuration editor mode">
@@ -334,6 +349,54 @@
       <span class="mode-note" id="sync-note"></span>
     </div>
   </form>
+  <div id="record-form" class="hidden" style="border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:var(--paper)">
+    <div class="guided">
+      <div class="form-section">
+        <div class="section-head">
+          <span class="section-title">Record a browsing session</span>
+          <span class="section-hint">A visible browser opens on this machine; you browse, SWM archives what loads.</span>
+        </div>
+        <div class="section-body form-grid">
+          <div class="field wide">
+            <label class="field-label" for="r-url">Starting URL</label>
+            <input type="url" id="r-url" placeholder="https://example.org/" required>
+            <span class="help">The browser opens here; everything you then visit is captured.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="r-name">Session name</label>
+            <input type="text" id="r-name" placeholder="derived from the host if empty">
+          </div>
+          <div class="field">
+            <label class="field-label" for="r-operator">Operator</label>
+            <input type="text" id="r-operator" placeholder="webarc">
+            <span class="help">Stored in the WARC metadata.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="r-browser">Browser</label>
+            <select id="r-browser">
+              <option value="headed">Headed — managed Chrome (recommended)</option>
+              <option value="native">Native — system Chrome via CDP (advanced)</option>
+            </select>
+          </div>
+          <div class="field wide">
+            <div class="rec-warning">
+              Everything loaded during the session is written to the archive —
+              including cookies, sign-ins, form submissions and private content.
+              Record only what you are authorised to preserve. Use the
+              <b>SWM&nbsp;Recording</b> widget (bottom-right of every page) to pause,
+              resume, or capture the current page; close the browser to finish.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form-foot">
+      <button type="button" class="primary" id="record-start-btn">Start recording</button>
+      <span class="msg" id="record-msg"></span>
+      <span class="spacer"></span>
+      <span class="mode-note" id="record-cap-note"></span>
+    </div>
+  </div>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -564,9 +627,62 @@ function resetExample() {
   $("#config-yaml").value = "";
   setMessage("");
 }
+let recordingCapability = null;
+async function loadCapabilities() {
+  try {
+    const caps = await api("/api/capabilities");
+    recordingCapability = caps.recording;
+  } catch (_) {
+    recordingCapability = {available: false, reason: "capability check failed"};
+  }
+  const tab = $("#job-tab-record");
+  if (recordingCapability && !recordingCapability.available) {
+    tab.classList.add("disabled");
+    tab.title = recordingCapability.reason || "unavailable";
+  }
+}
+function switchJob(job) {
+  if (job === "record" && recordingCapability && !recordingCapability.available) {
+    $("#record-cap-note").textContent = recordingCapability.reason || "";
+    return;
+  }
+  $$(".job-tabs .mode-tab").forEach(tab => {
+    const active = tab.dataset.job === job;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  $("#new-form").classList.toggle("hidden", job !== "crawl");
+  $("#record-form").classList.toggle("hidden", job !== "record");
+}
+async function startRecording() {
+  const msg = $("#record-msg");
+  const setRecMessage = (text, cls="") => {
+    msg.textContent = text; msg.className = "msg" + (cls ? " " + cls : "");
+  };
+  const url = $("#r-url").value.trim();
+  if (!url) { setRecMessage("Enter a starting URL.", "err"); return; }
+  setRecMessage("Starting…");
+  $("#record-start-btn").disabled = true;
+  try {
+    const body = {url, browser: $("#r-browser").value};
+    if ($("#r-name").value.trim()) body.name = $("#r-name").value.trim();
+    if ($("#r-operator").value.trim()) body.operator = $("#r-operator").value.trim();
+    await api("/api/recordings", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    setRecMessage("Recording started — a browser window is opening.", "ok");
+    refresh();
+  } catch (e) {
+    setRecMessage(e.message, "err");
+  } finally {
+    $("#record-start-btn").disabled = false;
+  }
+}
 function statusClass(s) { return s.toLowerCase(); }
 function crawlRow(c) {
   const s = c.status;
+  const isRec = c.kind === "recording";
   const running = s === "running", paused = s === "paused";
   const canPause = running, canResume = paused;
   const canStop = running || paused || s === "stopping";
@@ -585,12 +701,13 @@ function crawlRow(c) {
     <div class="row" onclick="toggle(${c.id})">
       <div class="gutter g-${statusClass(s)}"></div>
       <div>
-        <div class="name">${c.name}</div>
-        <div class="meta"><span class="id">#${c.id}</span> · ${c.seeds_total} seed(s) · ${c.created_at}</div>
+        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : ""}${c.name}</div>
+        <div class="meta"><span class="id">#${c.id}</span> · ${isRec ? "recording session" : `${c.seeds_total} seed(s)`} · ${c.created_at}</div>
       </div>
       <div class="counts">
-        <b>${t.visited}</b> pages · <b>${t.queued}</b> queued${t.failed ? ` · ${t.failed} failed` : ""}<br>
-        ${fmtBytes(t.bytes)}
+        ${isRec
+          ? `<b>${t.visited}</b> pages<br>${fmtBytes(t.bytes)}`
+          : `<b>${t.visited}</b> pages · <b>${t.queued}</b> queued${t.failed ? ` · ${t.failed} failed` : ""}<br>${fmtBytes(t.bytes)}`}
       </div>
       <span class="badge b-${statusClass(s)}">${s}</span>
     </div>
@@ -668,7 +785,10 @@ async function refresh() {
 $("#add-seed-btn").addEventListener("click", () => addSeed(""));
 $("#start-btn").addEventListener("click", start);
 $("#reset-btn").addEventListener("click", resetExample);
-$$(".mode-tab").forEach(tab => tab.addEventListener("click", () => switchMode(tab.dataset.mode)));
+$$("#new-form .mode-tab").forEach(tab => tab.addEventListener("click", () => switchMode(tab.dataset.mode)));
+$$(".job-tabs .mode-tab").forEach(tab => tab.addEventListener("click", () => switchJob(tab.dataset.job)));
+$("#record-start-btn").addEventListener("click", startRecording);
+loadCapabilities();
 resetExample();
 setInterval(() => $("#clock").textContent = new Date().toISOString().replace("T"," ").slice(0,19)+"Z", 1000);
 refresh();

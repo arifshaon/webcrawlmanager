@@ -2,8 +2,10 @@
 
 Endpoints:
   GET  /                      -> dashboard HTML
+  GET  /api/capabilities      -> feature availability (interactive recording)
   POST /api/config/parse      -> parse YAML for the guided editor
   POST /api/config/render     -> render guided-editor JSON as YAML
+  POST /api/recordings        -> create + launch an interactive recording
   GET  /api/crawls            -> list crawls with live progress + storage
   POST /api/crawls            -> create + launch a crawl (YAML or JSON body)
   GET  /api/crawls/{id}       -> single crawl detail
@@ -31,8 +33,8 @@ import yaml
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .store import (CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, PENDING, RUNNING,
-                    STOPPED, STOPPING, Store)
+from .store import (CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_RECORDING,
+                    PENDING, RUNNING, STOPPED, STOPPING, Store)
 
 BASE = Path(__file__).resolve().parent
 DASHBOARD = BASE / "dashboard.html"
@@ -43,6 +45,34 @@ _WARC_ROOT: Path = Path("./warcs")
 _SIMULATE = False
 _PYWB = None            # lazily-started ReplayServer
 _REPLAY_ROOT = Path("./replay")
+_BIND_HOST = "127.0.0.1"
+_ALLOW_REMOTE_RECORDING = False
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _recording_capability() -> dict:
+    """Whether interactive recording can work here.
+
+    A recording opens a visible browser ON THE SERVER'S DESKTOP. That is the
+    normal case for a loopback-bound dashboard, but must not silently launch
+    Chrome on a remote server, and cannot work without a graphical session.
+    Simulate mode is always available (no browser is opened)."""
+    if _SIMULATE:
+        return {"available": True, "reason": None}
+    if _BIND_HOST not in _LOOPBACK_HOSTS and not _ALLOW_REMOTE_RECORDING:
+        return {"available": False,
+                "reason": "Interactive recording is unavailable because the "
+                          "dashboard is not bound to this machine's loopback "
+                          "interface. The browser would open on the server, "
+                          "not in front of you. Start the server with "
+                          "--allow-remote-recording to override."}
+    if sys.platform.startswith("linux") and not (
+            os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return {"available": False,
+                "reason": "Interactive recording is unavailable because SWM "
+                          "is running without a graphical desktop."}
+    return {"available": True, "reason": None}
 
 
 def _store() -> Store:
@@ -151,6 +181,7 @@ def _crawl_view(row: dict) -> dict:
         status = row["status"]  # leave as-is; worker updates final state itself
     return {
         "id": row["id"],
+        "kind": row.get("kind", "crawl"),
         "name": row["name"],
         "status": status,
         "control": row["control"],
@@ -166,13 +197,17 @@ def _crawl_view(row: dict) -> dict:
 
 
 def create_app(db_path: str, warc_root: str, simulate: bool = False,
-               replay_root: str = "./replay") -> FastAPI:
-    global _STORE, _WARC_ROOT, _SIMULATE, _REPLAY_ROOT
+               replay_root: str = "./replay", bind_host: str = "127.0.0.1",
+               allow_remote_recording: bool = False) -> FastAPI:
+    global _STORE, _WARC_ROOT, _SIMULATE, _REPLAY_ROOT, _BIND_HOST, \
+        _ALLOW_REMOTE_RECORDING
     _STORE = Store(db_path)
     _WARC_ROOT = Path(warc_root)
     _WARC_ROOT.mkdir(parents=True, exist_ok=True)
     _SIMULATE = simulate
     _REPLAY_ROOT = Path(replay_root)
+    _BIND_HOST = bind_host
+    _ALLOW_REMOTE_RECORDING = allow_remote_recording
 
     app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
                   version="0.2.0")
@@ -180,6 +215,51 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
         return DASHBOARD.read_text(encoding="utf-8")
+
+    @app.get("/api/capabilities")
+    def capabilities():
+        return {"recording": _recording_capability(), "simulate": _SIMULATE}
+
+    @app.post("/api/recordings")
+    def create_recording(payload: dict = Body(...)):
+        """Create + launch an interactive recording session.
+
+        Accepts {"url": ..., "name"?, "browser"? (headed|native),
+        "operator"?}. The worker opens a visible browser on this machine."""
+        from urllib.parse import urlsplit
+
+        cap = _recording_capability()
+        if not cap["available"]:
+            raise HTTPException(409, cap["reason"])
+
+        url = str(payload.get("url") or "").strip()
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise HTTPException(400, "url must be an http(s) URL")
+        browser_mode = payload.get("browser") or "headed"
+        if browser_mode not in ("headed", "native"):
+            raise HTTPException(400, "browser must be 'headed' or 'native'")
+
+        name = str(payload.get("name") or f"rec-{parts.hostname}").strip()
+        config = {
+            "recording": {
+                "start_url": url,
+                "operator": str(payload.get("operator") or "webarc"),
+                "browser": {"mode": browser_mode},
+            },
+            "seeds": [{"url": url}],
+        }
+        crawl_id = _store().create_crawl(
+            name=name, config=config, output_dir="", seeds_total=1,
+            kind=KIND_RECORDING)
+        crawl_dir = _WARC_ROOT / str(crawl_id)
+        config["output_dir"] = str(crawl_dir)
+        _store().finalize_config(crawl_id, config, str(crawl_dir))
+
+        pid = _launch_worker(crawl_id)
+        _store().set_pid(crawl_id, pid)
+        return JSONResponse(status_code=201,
+                            content=_crawl_view(_store().get_crawl(crawl_id)))
 
     @app.post("/api/config/parse")
     def parse_config(payload: dict = Body(...)):

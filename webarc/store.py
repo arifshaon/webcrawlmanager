@@ -16,6 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+# job kinds
+KIND_CRAWL = "crawl"
+KIND_RECORDING = "recording"
+
 # crawl lifecycle states
 PENDING = "pending"
 RUNNING = "running"
@@ -35,6 +39,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS crawls (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,
+    kind         TEXT NOT NULL DEFAULT 'crawl',
     config_json  TEXT NOT NULL,
     output_dir   TEXT NOT NULL,
     status       TEXT NOT NULL DEFAULT 'pending',
@@ -73,6 +78,12 @@ class Store:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as c:
             c.executescript(_SCHEMA)
+            # migrate databases created before the kind column existed;
+            # CREATE TABLE IF NOT EXISTS does not update existing tables
+            cols = {r["name"] for r in c.execute("PRAGMA table_info(crawls)")}
+            if "kind" not in cols:
+                c.execute("ALTER TABLE crawls ADD COLUMN kind TEXT NOT NULL "
+                          "DEFAULT 'crawl'")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -88,15 +99,15 @@ class Store:
 
     # -- crawl lifecycle -----------------------------------------------------
     def create_crawl(self, name: str, config: dict, output_dir: str,
-                     seeds_total: int) -> int:
+                     seeds_total: int, kind: str = KIND_CRAWL) -> int:
         ts = _now()
         with self._conn() as c:
             cur = c.execute(
-                "INSERT INTO crawls (name, config_json, output_dir, status, "
-                "control, seeds_total, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (name, json.dumps(config), output_dir, PENDING, CTRL_NONE,
-                 seeds_total, ts, ts),
+                "INSERT INTO crawls (name, kind, config_json, output_dir, "
+                "status, control, seeds_total, created_at, updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (name, kind, json.dumps(config), output_dir, PENDING,
+                 CTRL_NONE, seeds_total, ts, ts),
             )
             crawl_id = cur.lastrowid
             for idx, seed in enumerate(config.get("seeds", []), start=1):

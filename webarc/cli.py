@@ -244,6 +244,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="run browserless fake crawls (demo/test the UI)",
     )
+    p_srv.add_argument(
+        "--allow-remote-recording",
+        action="store_true",
+        help="permit interactive recording even when the dashboard is not "
+        "bound to loopback (the browser opens on the SERVER's desktop)",
+    )
 
     p_rec = sub.add_parser(
         "record",
@@ -512,7 +518,9 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
-        app = create_app(args.db, args.warc_root, simulate=args.simulate)
+        app = create_app(args.db, args.warc_root, simulate=args.simulate,
+                         bind_host=args.host,
+                         allow_remote_recording=args.allow_remote_recording)
         mode = "SIMULATE (no browser)" if args.simulate else "live"
         print(f"{APP_NAME} dashboard → http://{args.host}:{args.port} [{mode}]")
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
