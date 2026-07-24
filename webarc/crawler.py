@@ -19,12 +19,27 @@ from .store import COMPLETED, RUNNING, STOPPED
 log = logging.getLogger(__name__)
 
 
-def _make_response_handler(warc: WarcSession):
+def _make_response_handler(warc: WarcSession, driver: "BrowserDriver"):
     """Playwright 'response' event -> WARC request+response records."""
 
     def on_response(response):
         try:
             request = response.request
+            # PDF documents are taken over by Chromium's viewer and body()
+            # returns the viewer shell, not the PDF; refetch them directly
+            ctype = (response.headers.get("content-type") or "").lower()
+            if (ctype.startswith("application/pdf")
+                    and request.resource_type == "document"):
+                direct = driver.fetch_direct(response.url)
+                if direct is not None and direct.ok:
+                    warc.write_exchange(
+                        url=response.url, method="GET",
+                        req_headers=request.headers, post_data=None,
+                        status=direct.status,
+                        status_text=direct.status_text or "",
+                        resp_headers=direct.headers, body=direct.body())
+                    return
+
             try:
                 body = response.body()
             except Exception:
@@ -68,7 +83,7 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
 
     try:
         with BrowserDriver(seed.browser, seed.behavior) as driver:
-            page = driver.new_page(_make_response_handler(warc))
+            page = driver.new_page(_make_response_handler(warc, driver))
 
             while (item := frontier.next()) is not None:
                 # honour pause (blocks) and stop (breaks) between pages
@@ -92,6 +107,24 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
                 resp = driver.visit(page, url)
                 frontier.mark_done()
                 if resp is None:
+                    # navigations to PDFs/attachments become downloads and
+                    # "fail"; capture such resources with a direct request
+                    # through the same browser context instead
+                    direct = driver.fetch_direct(url)
+                    if direct is not None and direct.ok:
+                        warc.write_exchange(
+                            url=url, method="GET", req_headers={},
+                            post_data=None, status=direct.status,
+                            status_text=direct.status_text or "",
+                            resp_headers=direct.headers, body=direct.body())
+                        stats["visited"] += 1
+                        log.info("Captured %s via direct fetch (download/"
+                                 "non-renderable resource)", url)
+                        controller.report(seed_idx, visited=stats["visited"],
+                                          queued=len(frontier),
+                                          bytes_written=warc.total_bytes)
+                        driver.inter_page_delay()
+                        continue
                     stats["failed"] += 1
                     controller.report(seed_idx, failed=stats["failed"])
                     continue

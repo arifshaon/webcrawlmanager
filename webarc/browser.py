@@ -282,6 +282,16 @@ class BrowserDriver:
         except Exception:
             return []
 
+    def fetch_direct(self, url: str, timeout: float = 45.0):
+        """GET a URL through the browser context (same cookies/session),
+        bypassing page navigation. Used for resources the page cannot
+        render — PDFs and other downloads. Returns an APIResponse or None."""
+        try:
+            return self._context.request.get(url, timeout=int(timeout * 1000))
+        except Exception as exc:
+            log.debug("Direct fetch failed for %s: %s", url, exc)
+            return None
+
     def inter_page_delay(self) -> None:
         lo, hi = self.behavior.delay_range
         mult = getattr(self, "delay_multiplier", 1.0)
