@@ -94,7 +94,7 @@ _WIDGET_JS = """
     st.textContent = LABELS[state] || state;
     st.className = "swm-state " + state;
     const bar = root.querySelector(".swm-buttons");
-    bar.innerHTML = "";
+    while (bar.firstChild) bar.removeChild(bar.firstChild);
     for (const [cmd, label] of buttons()) {
       const b = document.createElement("button");
       b.textContent = label;
@@ -105,41 +105,55 @@ _WIDGET_JS = """
       bar.appendChild(b);
     }
   }
-  window.__swmSetState = (s) => { state = s; render(); };
+  window.__swmSetState = (s) => { state = s; if (!root) install(); render(); };
   function install() {
     if (!document.documentElement || root) return;
-    const host = document.createElement("div");
-    const shadow = host.attachShadow({ mode: "open" });
-    shadow.innerHTML = `
-      <style>
-        .swm-box { position: fixed; right: 16px; bottom: 16px;
-          z-index: 2147483647; font: 12px/1.4 system-ui, sans-serif;
-          background: #1b1e23; color: #fff; border-radius: 8px;
-          padding: 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.35);
-          min-width: 180px; }
-        .swm-title { font-weight: 600; opacity: .7; font-size: 10px;
-          text-transform: uppercase; letter-spacing: .08em;
-          margin-bottom: 4px; }
-        .swm-state { margin-bottom: 8px; }
-        .swm-state.recording { color: #ff5f56; }
-        .swm-state.paused { color: #ffbd2e; }
-        .swm-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
-        button { font: 11px system-ui, sans-serif;
-          border: 1px solid rgba(255,255,255,.25);
-          background: rgba(255,255,255,.08); color: #fff;
-          border-radius: 5px; padding: 4px 8px; cursor: pointer; }
-        button:hover { background: rgba(255,255,255,.18); }
-      </style>
-      <div class="swm-box">
-        <div class="swm-title">SWM Recording</div>
-        <div class="swm-state"></div>
-        <div class="swm-buttons"></div>
-      </div>`;
-    root = shadow;
-    document.documentElement.appendChild(host);
-    render();
-    if (window.swmControl)
-      window.swmControl("state").then(s => { state = s; render(); });
+    try {
+      const host = document.createElement("div");
+      const shadow = host.attachShadow({ mode: "open" });
+      // Built with createElement/textContent, never innerHTML: sites that
+      // enforce Trusted Types (require-trusted-types-for 'script') make
+      // innerHTML assignments throw, which silently killed the widget.
+      const style = document.createElement("style");
+      style.textContent = [
+        ".swm-box { position: fixed; right: 16px; bottom: 16px;",
+        "  z-index: 2147483647; font: 12px/1.4 system-ui, sans-serif;",
+        "  background: #1b1e23; color: #fff; border-radius: 8px;",
+        "  padding: 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.35);",
+        "  min-width: 180px; }",
+        ".swm-title { font-weight: 600; opacity: .7; font-size: 10px;",
+        "  text-transform: uppercase; letter-spacing: .08em;",
+        "  margin-bottom: 4px; }",
+        ".swm-state { margin-bottom: 8px; }",
+        ".swm-state.recording { color: #ff5f56; }",
+        ".swm-state.paused { color: #ffbd2e; }",
+        ".swm-buttons { display: flex; gap: 6px; flex-wrap: wrap; }",
+        "button { font: 11px system-ui, sans-serif;",
+        "  border: 1px solid rgba(255,255,255,.25);",
+        "  background: rgba(255,255,255,.08); color: #fff;",
+        "  border-radius: 5px; padding: 4px 8px; cursor: pointer; }",
+        "button:hover { background: rgba(255,255,255,.18); }",
+      ].join(" ");
+      const box = document.createElement("div");
+      box.className = "swm-box";
+      const title = document.createElement("div");
+      title.className = "swm-title";
+      title.textContent = "SWM Recording";
+      const stateEl = document.createElement("div");
+      stateEl.className = "swm-state";
+      const buttons = document.createElement("div");
+      buttons.className = "swm-buttons";
+      box.appendChild(title); box.appendChild(stateEl);
+      box.appendChild(buttons);
+      shadow.appendChild(style); shadow.appendChild(box);
+      root = shadow;
+      document.documentElement.appendChild(host);
+      render();
+      if (window.swmControl)
+        window.swmControl("state").then(s => { state = s; render(); });
+    } catch (_) {
+      root = null;  // leave installable for a later attempt
+    }
   }
   if (document.readyState === "loading")
     document.addEventListener("DOMContentLoaded", install, { once: true });
@@ -215,6 +229,21 @@ class RecordingSession:
         if command in (CMD_PAUSE, CMD_RESUME, CMD_CAPTURE_PAGE, CMD_STOP):
             self._commands.append(command)
         return self.state
+
+    def _ensure_widgets(self) -> None:
+        """Re-inject the widget into pages where the init script did not run
+        or its install failed (e.g. attached contexts, strict-CSP sites).
+        Idempotent: the script bails out if already wired."""
+        if not self._context:
+            return
+        for page in list(self._context.pages):
+            try:
+                page.evaluate(_WIDGET_JS)
+                page.evaluate(
+                    "s => window.__swmSetState && window.__swmSetState(s)",
+                    self.state)
+            except Exception:
+                pass
 
     def _sync_widgets(self) -> None:
         """Push the authoritative state to every open page's widget."""
@@ -430,6 +459,7 @@ class RecordingSession:
                 now = time.monotonic()
                 if now - last_report >= 1.0:
                     self._report()
+                    self._ensure_widgets()
                     last_report = now
                 if not context.pages:
                     log.info("All browser tabs closed — ending recording")
