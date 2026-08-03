@@ -38,6 +38,7 @@ from .store import (CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_RECORDING,
 
 BASE = Path(__file__).resolve().parent
 DASHBOARD = BASE / "dashboard.html"
+DASHBOARD_HARDENING = BASE / "dashboard_hardening.js"
 
 # resolved at startup by create_app
 _STORE: Store | None = None
@@ -214,7 +215,10 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
-        return DASHBOARD.read_text(encoding="utf-8")
+        html = DASHBOARD.read_text(encoding="utf-8")
+        hardening = DASHBOARD_HARDENING.read_text(encoding="utf-8")
+        injected = f"<script>\n{hardening}\n</script>\n</body>"
+        return html.replace("</body>", injected, 1)
 
     @app.get("/api/capabilities")
     def capabilities():
@@ -241,10 +245,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             raise HTTPException(400, "browser must be 'headed' or 'native'")
 
         name = str(payload.get("name") or f"rec-{parts.hostname}").strip()
+        if not name:
+            name = f"rec-{parts.hostname}"
+        if len(name) > 200:
+            raise HTTPException(400, "recording name must be 200 characters or fewer")
+        operator = str(payload.get("operator") or "webarc").strip() or "webarc"
+        if len(operator) > 200:
+            raise HTTPException(400, "operator must be 200 characters or fewer")
+
         config = {
             "recording": {
                 "start_url": url,
-                "operator": str(payload.get("operator") or "webarc"),
+                "operator": operator,
                 "browser": {"mode": browser_mode},
             },
             "seeds": [{"url": url}],
