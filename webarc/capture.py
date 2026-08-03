@@ -29,9 +29,39 @@ _STRIP_RESP = {"content-encoding", "transfer-encoding", "content-length"}
 # value containing a newline has already been flattened into a dictionary.
 _FIELD_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
+# Windows device names remain special even with an extension. Avoid generating
+# them because archives may be moved between operating systems.
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def safe_filename_component(value: object, fallback: str = "capture",
+                            max_length: int = 120) -> str:
+    """Return one portable filename component, never a path.
+
+    Display names and WARC metadata keep their original text; only the physical
+    filename is normalised. Centralising this in the writer protects every
+    caller, including dashboard-created jobs, from path separators, traversal
+    fragments, control characters, and Windows device names.
+    """
+    text = str(value or "").strip()
+    text = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", text)
+    text = re.sub(r"\s+", "-", text)
+    text = re.sub(r"-{2,}", "-", text)
+    text = text.strip(" .-_")
+    if not text:
+        text = fallback
+    if text.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+        text = f"_{text}"
+    text = text[:max_length].rstrip(" .")
+    return text or fallback
 
 
 def _clean_header_value(value: object) -> str:
@@ -109,6 +139,7 @@ class WarcSession:
                  info_extra: dict | None = None):
         self.out_dir = out_dir
         self.crawl_name = crawl_name
+        self.file_stem = safe_filename_component(crawl_name, "capture")
         self.seed_url = seed_url
         self.seed_idx = seed_idx
         self.operator = operator
@@ -129,7 +160,7 @@ class WarcSession:
     def path(self) -> Path:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         return self.out_dir / (
-            f"{self.crawl_name}-seed{self.seed_idx:03d}-{ts}-{self.serial:05d}.warc.gz"
+            f"{self.file_stem}-seed{self.seed_idx:03d}-{ts}-{self.serial:05d}.warc.gz"
         )
 
     def _rotate(self) -> None:
@@ -180,7 +211,8 @@ class WarcSession:
                      if k.lower() not in _STRIP_REQ]
         from urllib.parse import urlsplit
         p = urlsplit(url)
-        req_hlist.insert(0, ("Host", p.netloc))
+        if p.netloc:
+            req_hlist.insert(0, ("Host", p.netloc))
         if post_data:
             req_hlist.append(("Content-Length", str(len(post_data))))
         path = p.path or "/"
