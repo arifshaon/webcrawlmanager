@@ -28,4 +28,4 @@ webarc = "webarc.cli:main"
 packages = ["webarc"]
 
 [tool.setuptools.package-data]
-webarc = ["dashboard.html"]
+webarc = ["dashboard.html", "dashboard_hardening.js"]
