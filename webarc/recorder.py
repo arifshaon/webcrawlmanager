@@ -26,8 +26,8 @@ Resume semantics are explicit, never implicit:
   resume        — capture future traffic only; the page the user is looking
                   at may be incomplete in the WARC (its resources loaded
                   while paused and cannot be recovered retrospectively)
-  capture_page  — resume AND reload the current page so its complete
-                  network traffic is recorded
+  capture_page  — resume AND reload the page that issued the command so its
+                  complete network traffic is recorded
 
 The engine is deliberately unaware of SQLite, FastAPI, or argparse: callers
 supply `control_poll` (returns a pending command or None) and `on_progress`
@@ -38,6 +38,7 @@ and tests are all thin shells around this class.
 from __future__ import annotations
 
 import logging
+import mimetypes
 import time
 from collections import Counter, deque
 from typing import Callable, Optional
@@ -61,6 +62,10 @@ CMD_CAPTURE_PAGE = "capture_page"
 CMD_STOP = "stop"
 
 _SKIP_URLS = ("about:blank", "about:srcdoc", "")
+_REFETCH_STRIP = {
+    "host", "content-length", "connection", "transfer-encoding",
+    "accept-encoding",
+}
 
 # In-page control widget. Injected as a context init script so it reappears
 # on every navigation and in every new tab. Rendered inside a Shadow DOM so
@@ -162,6 +167,23 @@ _WIDGET_JS = """
 """
 
 
+def _refetch_headers(headers: object) -> dict[str, str]:
+    if not isinstance(headers, dict):
+        return {}
+    return {
+        str(name): str(value)
+        for name, value in headers.items()
+        if str(name).lower() not in _REFETCH_STRIP
+    }
+
+
+def _dispose_response(response) -> None:
+    try:
+        response.dispose()
+    except Exception:
+        pass
+
+
 class RecordingSession:
     """One interactive recording session: visible browser, context-wide
     capture, pause/resume with a precise request-eligibility boundary."""
@@ -186,7 +208,8 @@ class RecordingSession:
         self._eligible: set = set()       # requests that began while recording
         self._closed = False              # browser/context gone
         self._context = None
-        self._commands: deque[str] = deque()  # queued by the in-page widget
+        # Commands from the widget carry the exact page that issued them.
+        self._commands: deque[tuple[str, object | None]] = deque()
         self._state_dirty = False         # widgets need a state push
         # responses whose body was not yet readable at the response event
         # (common for streaming media); retried at requestfinished
@@ -200,7 +223,7 @@ class RecordingSession:
         self.doc_grace = 10.0             # seconds to wait for the document
 
     # -- state transitions -------------------------------------------------
-    def apply(self, command: str) -> None:
+    def apply(self, command: str, page=None) -> None:
         """Single state-transition authority. Unknown or invalid-for-state
         commands are ignored (callers may deliver duplicates)."""
         if command == CMD_PAUSE and self.state == RECORDING:
@@ -214,20 +237,23 @@ class RecordingSession:
         elif command == CMD_CAPTURE_PAGE and self.state == PAUSED:
             self.state = RECORDING
             self._state_dirty = True
-            log.info("Capture resumed — reloading current page to record it")
-            self._reload_current_page()
+            log.info("Capture resumed — reloading selected page to record it")
+            self._reload_current_page(page)
         elif command == CMD_STOP and self.state != STOPPED:
             self.state = STOPPED
             self._state_dirty = True
             log.info("Stopping recording")
 
-    def _on_widget_command(self, _source, command: str = "state") -> str:
-        """Playwright binding target. Never touches Playwright objects —
-        binding handlers run re-entrantly, so commands are queued and the
-        main loop applies them. Returns the current state so the widget
-        can render optimistically."""
+    def _on_widget_command(self, source, command: str = "state") -> str:
+        """Playwright binding target.
+
+        Binding handlers run re-entrantly, so they only queue work. The source
+        identifies the page that issued the command; carrying it through avoids
+        reloading the wrong tab when several tabs are open.
+        """
         if command in (CMD_PAUSE, CMD_RESUME, CMD_CAPTURE_PAGE, CMD_STOP):
-            self._commands.append(command)
+            page = source.get("page") if isinstance(source, dict) else None
+            self._commands.append((command, page))
         return self.state
 
     def _ensure_widgets(self) -> None:
@@ -258,16 +284,18 @@ class RecordingSession:
                 pass  # page mid-navigation or closed; init script will ask
         self._state_dirty = False
 
-    def _reload_current_page(self) -> None:
+    def _reload_current_page(self, preferred_page=None) -> None:
         if not self._context:
             return
-        page = None
-        for p in self._context.pages:
-            if p.url == self.current_url:
-                page = p
-                break
-        if page is None and self._context.pages:
-            page = self._context.pages[-1]
+        pages = list(self._context.pages)
+        page = preferred_page if preferred_page in pages else None
+        if page is None:
+            for candidate in pages:
+                if candidate.url == self.current_url:
+                    page = candidate
+                    break
+        if page is None and pages:
+            page = pages[-1]
         if page is None:
             return
         # bypass the browser cache for this reload: a cached revalidation
@@ -306,43 +334,76 @@ class RecordingSession:
                 body = response.body()
                 self._write_exchange(response, body)
                 self.capture_stats["body-retry-ok"] += 1
-            except Exception:
-                self._refetch_and_write(response)
+            except Exception as exc:
+                # A broad GET refetch can change Range, authentication or signed
+                # URL semantics. Unknown unreadable bodies are recorded empty;
+                # PDFs and downloads have dedicated, integrity-aware paths.
+                self._write_unavailable(response, exc)
         self._eligible.discard(request)
 
-    def _refetch_and_write(self, response) -> None:
-        """Last resort for bodies the network events cannot surface (PDFs
-        rendered by the viewer plugin, plugin/stream-handled documents):
-        re-request the URL through the browser context — same cookies and
-        session — and archive that exchange."""
+    def _capture_pdf_response(self, response) -> None:
+        """Capture a PDF document without accepting Chromium viewer HTML."""
         request = response.request
         url = response.url
-        if request.method == "GET" and self._context is not None:
-            try:
-                direct = self._context.request.get(url, timeout=45_000)
-                if direct.ok:
-                    self.warc.write_exchange(
-                        url=url, method="GET",
-                        req_headers=request.headers, post_data=None,
-                        status=direct.status,
-                        status_text=direct.status_text or "",
-                        resp_headers=direct.headers, body=direct.body())
-                    self.capture_stats["captured"] += 1
-                    self.capture_stats["body-refetched"] += 1
-                    host = urlsplit(url).hostname or "?"
-                    self.capture_stats[f"host:{host}"] += 1
-                    self._captured_docs.add(url.split("#")[0])
-                    log.info("Captured %s via direct refetch "
-                             "(body not exposed by the browser)", url)
-                    return
-            except Exception as exc:
-                log.debug("Direct refetch failed for %s: %s", url, exc)
+        headers = _refetch_headers(request.headers)
+        direct = None
+        try:
+            direct = self._context.request.get(
+                url, headers=headers, timeout=45_000)
+            if not direct.ok:
+                raise RuntimeError(f"HTTP {direct.status}")
+            body = direct.body()
+            self.warc.write_exchange(
+                url=url,
+                method="GET",
+                req_headers=headers,
+                post_data=None,
+                status=direct.status,
+                status_text=direct.status_text or "",
+                resp_headers=direct.headers,
+                body=body,
+            )
+            self.capture_stats["captured"] += 1
+            self.capture_stats["body-refetched"] += 1
+            host = urlsplit(url).hostname or "?"
+            self.capture_stats[f"host:{host}"] += 1
+            self._captured_docs.add(url.split("#")[0])
+            log.info("Captured PDF %s via browser-context refetch", url)
+            return
+        except Exception as exc:
+            log.warning("PDF refetch failed for %s: %s; recording an empty "
+                        "response instead of Chromium viewer HTML", url, exc)
+            self._write_unavailable(response, exc)
+        finally:
+            if direct is not None:
+                _dispose_response(direct)
+
+    def _write_unavailable(self, response, exc: Exception | None = None) -> None:
+        """Write headers with an empty body without pretending a refetch matched."""
+        request = response.request
+        url = response.url
         self.capture_stats["body-unavailable"] += 1
         host = urlsplit(url).hostname or "?"
         self.capture_stats[f"body-unavailable:{host}"] += 1
-        log.warning("Body unavailable for %s — recorded headers with "
-                    "empty body", url)
-        self._write_exchange(response, b"")
+        detail = f" ({exc})" if exc else ""
+        log.warning("Body unavailable for %s%s — recorded headers with empty "
+                    "body", url, detail)
+        try:
+            self.warc.write_exchange(
+                url=url,
+                method=request.method,
+                req_headers=request.headers,
+                post_data=request.post_data_buffer or None,
+                status=response.status,
+                status_text=response.status_text or "",
+                resp_headers=response.headers,
+                body=b"",
+            )
+            self.capture_stats["captured"] += 1
+            self.capture_stats[f"host:{host}"] += 1
+        except Exception as write_exc:
+            self.capture_stats["write-failed"] += 1
+            log.debug("Empty-body capture skipped for %s: %s", url, write_exc)
 
     def _on_request_failed(self, request) -> None:
         self._pending_body.pop(request, None)
@@ -356,9 +417,9 @@ class RecordingSession:
         if 300 <= response.status < 400:
             self._write_exchange(response, b"")
             return
-        # PDF navigations are taken over by Chromium's viewer: body() then
-        # returns the viewer's HTML shell, not the PDF — a silently corrupt
-        # record. Always capture PDF documents via direct refetch.
+        # PDF navigations are taken over by Chromium's viewer: body() may expose
+        # the viewer shell rather than PDF bytes, so the browser body is never
+        # accepted once the response is identified as a PDF document.
         ctype = ""
         try:
             ctype = (response.headers.get("content-type") or "").lower()
@@ -366,7 +427,7 @@ class RecordingSession:
             pass
         if (ctype.startswith("application/pdf")
                 and request.resource_type == "document"):
-            self._refetch_and_write(response)
+            self._capture_pdf_response(response)
             return
         try:
             body = response.body()
@@ -393,7 +454,7 @@ class RecordingSession:
             host = urlsplit(response.url).hostname or "?"
             self.capture_stats[f"host:{host}"] += 1
             try:
-                if request.resource_type == "document":
+                if request.resource_type == "document" and body:
                     self._captured_docs.add(response.url.split("#")[0])
             except Exception:
                 pass
@@ -407,35 +468,104 @@ class RecordingSession:
         page.on("framenavigated", self._on_frame_navigated)
         page.on("download", self._on_download)
 
-    def _on_download(self, download) -> None:
-        """A navigation that became a download (PDF in headless, attachment
-        Content-Disposition, file links) never yields readable network
-        events — capture it by re-requesting through the context."""
-        url = download.url
-        try:
-            download.cancel()  # we archive it; no need to also save a copy
-        except Exception:
-            pass
-        if self.state != RECORDING or self._context is None:
-            return
+    @staticmethod
+    def _download_headers(filename: str) -> dict[str, str]:
+        safe_name = filename.replace("\r", "_").replace("\n", "_")
+        safe_name = safe_name.replace('"', "'")
+        content_type = mimetypes.guess_type(filename)[0]
+        return {
+            "content-type": content_type or "application/octet-stream",
+            "content-disposition": f'attachment; filename="{safe_name}"',
+        }
+
+    def _write_download_bytes(self, url: str, filename: str,
+                              body: bytes) -> None:
+        self.warc.write_exchange(
+            url=url,
+            method="GET",
+            req_headers={},
+            post_data=None,
+            status=200,
+            status_text="OK",
+            resp_headers=self._download_headers(filename),
+            body=body,
+        )
+        self.capture_stats["captured"] += 1
+        self.capture_stats["downloads-captured"] += 1
+        host = urlsplit(url).hostname or "?"
+        self.capture_stats[f"host:{host}"] += 1
+        log.info("Captured actual download bytes for %s (%s)", url, filename)
+
+    def _refetch_download_fallback(self, url: str, filename: str) -> bool:
+        """Fallback only when Playwright cannot expose the completed file.
+
+        This is unsuitable for blob/data URLs and may not reproduce POST or
+        one-use downloads, so every use is logged as a fallback rather than as
+        the primary capture path.
+        """
+        if self._context is None or urlsplit(url).scheme not in ("http", "https"):
+            return False
+        direct = None
         try:
             direct = self._context.request.get(url, timeout=60_000)
             if not direct.ok:
                 raise RuntimeError(f"HTTP {direct.status}")
+            body = direct.body()
             self.warc.write_exchange(
-                url=url, method="GET", req_headers={}, post_data=None,
-                status=direct.status, status_text=direct.status_text or "",
-                resp_headers=direct.headers, body=direct.body())
+                url=url,
+                method="GET",
+                req_headers={},
+                post_data=None,
+                status=direct.status,
+                status_text=direct.status_text or "",
+                resp_headers=direct.headers,
+                body=body,
+            )
             self.capture_stats["captured"] += 1
-            self.capture_stats["downloads-captured"] += 1
+            self.capture_stats["downloads-refetched"] += 1
             host = urlsplit(url).hostname or "?"
             self.capture_stats[f"host:{host}"] += 1
-            self._captured_docs.add(url.split("#")[0])
-            log.info("Captured download %s (%s)", url,
-                     download.suggested_filename)
+            log.warning("Captured download %s by fallback GET because the "
+                        "browser file was unavailable", url)
+            return True
         except Exception as exc:
+            log.debug("Download fallback GET failed for %s: %s", url, exc)
+            return False
+        finally:
+            if direct is not None:
+                _dispose_response(direct)
+
+    def _on_download(self, download) -> None:
+        """Archive the bytes Chromium actually downloaded.
+
+        The previous implementation cancelled the download and issued a second
+        GET, which could change POST-generated, signed, Range, blob, or one-use
+        content. Waiting for download.path() preserves the browser's real bytes;
+        a direct GET remains a clearly marked last-resort fallback.
+        """
+        if self.state != RECORDING:
+            return
+        url = download.url
+        filename = download.suggested_filename or "download.bin"
+        captured = False
+        try:
+            path = download.path()
+            if path is None:
+                raise RuntimeError("browser did not expose a download path")
+            body = path.read_bytes()
+            self._write_download_bytes(url, filename, body)
+            captured = True
+        except Exception as exc:
+            log.warning("Could not read actual download bytes for %s: %s", url, exc)
+            captured = self._refetch_download_fallback(url, filename)
+        finally:
+            try:
+                download.delete()
+            except Exception:
+                pass
+        if not captured:
             self.capture_stats["downloads-failed"] += 1
-            log.warning("Could not capture download %s: %s", url, exc)
+            log.warning("Could not capture download %s (%s)", url, filename)
 
     def _on_frame_navigated(self, frame) -> None:
         if frame.parent_frame is not None:
@@ -527,7 +657,8 @@ class RecordingSession:
                 if command:
                     self.apply(command)
                 while self._commands:          # widget-queued commands
-                    self.apply(self._commands.popleft())
+                    widget_command, source_page = self._commands.popleft()
+                    self.apply(widget_command, source_page)
                 if self._state_dirty:
                     self._sync_widgets()
                 self._check_nav_watch()
@@ -557,12 +688,17 @@ class RecordingSession:
         hosts = sorted(((n, k[5:]) for k, n in s.items()
                         if k.startswith("host:")), reverse=True)
         log.info("Capture summary: %d exchange(s) from %d host(s)"
-                 "%s%s",
+                 "%s%s%s",
                  s.get("captured", 0), len(hosts),
                  f", {s['body-retry-ok']} recovered on retry"
                  if s.get("body-retry-ok") else "",
+                 f", {s['downloads-captured']} actual download(s) captured"
+                 if s.get("downloads-captured") else "",
                  f", {s['body-unavailable']} bodies UNAVAILABLE "
                  "(recorded empty)" if s.get("body-unavailable") else "")
+        if s.get("downloads-refetched"):
+            log.warning("  %d download(s) required fallback GET",
+                        s["downloads-refetched"])
         if s.get("page-doc-missing"):
             log.warning("  %d page(s) displayed without a captured document "
                         "(cache/prerender) — they will be missing on replay",
