@@ -87,6 +87,17 @@ class FakeRequestContext:
         return self.response
 
 
+class FakeRequest:
+    """Identity-hashable stand-in for Playwright's Request object."""
+
+    def __init__(self, *, method="GET", headers=None, post_data_buffer=None,
+                 resource_type="document"):
+        self.method = method
+        self.headers = headers or {}
+        self.post_data_buffer = post_data_buffer
+        self.resource_type = resource_type
+
+
 class RecordingRegressionTests(unittest.TestCase):
     def make_session(self, warc=None):
         return RecordingSession(
@@ -166,12 +177,7 @@ class RecordingRegressionTests(unittest.TestCase):
         session._context = FakeContext(
             request=FakeRequestContext(error=RuntimeError("network failure"))
         )
-        request = SimpleNamespace(
-            method="GET",
-            headers={"accept": "application/pdf"},
-            post_data_buffer=None,
-            resource_type="document",
-        )
+        request = FakeRequest(headers={"accept": "application/pdf"})
         response = SimpleNamespace(
             request=request,
             url="https://example.org/report.pdf",
@@ -194,16 +200,13 @@ class RecordingRegressionTests(unittest.TestCase):
         request_context = FakeRequestContext(response=direct)
         session = self.make_session(warc)
         session._context = FakeContext(request=request_context)
-        request = SimpleNamespace(
-            method="GET",
+        request = FakeRequest(
             headers={
                 "host": "example.org",
                 "content-length": "0",
                 "range": "bytes=0-1023",
                 "referer": "https://example.org/index.html",
-            },
-            post_data_buffer=None,
-            resource_type="document",
+            }
         )
         response = SimpleNamespace(
             request=request,
