@@ -12,33 +12,104 @@ from .capture import WarcSession
 from .config import CrawlConfig, SeedConfig
 from .control import Controller, NullController
 from .detect import BlockController, detect_block
-from .frontier import Frontier, RobotsCache
+from .frontier import Frontier
+from .frontier import RobotsCache
 from .scope import ScopeMatcher, canonicalize
 from .store import COMPLETED, RUNNING, STOPPED
 
 log = logging.getLogger(__name__)
 
+_REFETCH_STRIP = {
+    "host", "content-length", "connection", "transfer-encoding",
+    "accept-encoding",
+}
 
-def _make_response_handler(warc: WarcSession, driver: "BrowserDriver"):
+
+def _refetch_headers(headers: object) -> dict[str, str]:
+    """Keep meaningful browser-request headers for a browser-context refetch.
+
+    The request context shares the browser's cookies. Transport-specific headers
+    are recalculated, while Range, Referer, Origin, Accept, Authorization and
+    similar representation-affecting fields are preserved.
+    """
+    if not isinstance(headers, dict):
+        return {}
+    return {
+        str(name): str(value)
+        for name, value in headers.items()
+        if str(name).lower() not in _REFETCH_STRIP
+    }
+
+
+def _dispose_response(response) -> None:
+    try:
+        response.dispose()
+    except Exception:
+        pass
+
+
+def _write_pdf_response(warc: WarcSession, driver: BrowserDriver,
+                        response) -> None:
+    """Capture a PDF document through the browser request context.
+
+    Chromium's PDF viewer can expose its HTML shell through response.body(). Once
+    a response is identified as a PDF document, that browser body is never used.
+    A failed refetch is represented as an empty response and logged clearly rather
+    than silently storing viewer HTML under the PDF URL.
+    """
+    request = response.request
+    headers = _refetch_headers(request.headers)
+    direct = None
+    try:
+        direct = driver.context.request.get(
+            response.url, headers=headers, timeout=45_000)
+        if direct.ok:
+            body = direct.body()
+            warc.write_exchange(
+                url=response.url,
+                method="GET",
+                req_headers=headers,
+                post_data=None,
+                status=direct.status,
+                status_text=direct.status_text or "",
+                resp_headers=direct.headers,
+                body=body,
+            )
+            log.info("Captured PDF %s via browser-context refetch", response.url)
+            return
+        log.warning("PDF refetch returned HTTP %s for %s; recording an empty "
+                    "response instead of Chromium viewer HTML",
+                    direct.status, response.url)
+    except Exception as exc:
+        log.warning("PDF refetch failed for %s: %s; recording an empty response "
+                    "instead of Chromium viewer HTML", response.url, exc)
+    finally:
+        if direct is not None:
+            _dispose_response(direct)
+
+    warc.write_exchange(
+        url=response.url,
+        method=request.method,
+        req_headers=request.headers,
+        post_data=request.post_data_buffer or None,
+        status=response.status,
+        status_text=response.status_text or "",
+        resp_headers=response.headers,
+        body=b"",
+    )
+
+
+def _make_response_handler(warc: WarcSession, driver: BrowserDriver):
     """Playwright 'response' event -> WARC request+response records."""
 
     def on_response(response):
         try:
             request = response.request
-            # PDF documents are taken over by Chromium's viewer and body()
-            # returns the viewer shell, not the PDF; refetch them directly
             ctype = (response.headers.get("content-type") or "").lower()
             if (ctype.startswith("application/pdf")
                     and request.resource_type == "document"):
-                direct = driver.fetch_direct(response.url)
-                if direct is not None and direct.ok:
-                    warc.write_exchange(
-                        url=response.url, method="GET",
-                        req_headers=request.headers, post_data=None,
-                        status=direct.status,
-                        status_text=direct.status_text or "",
-                        resp_headers=direct.headers, body=direct.body())
-                    return
+                _write_pdf_response(warc, driver, response)
+                return
 
             try:
                 body = response.body()
@@ -60,6 +131,44 @@ def _make_response_handler(warc: WarcSession, driver: "BrowserDriver"):
             log.debug("Capture skipped for %s: %s", response.url, exc)
 
     return on_response
+
+
+def _capture_nonrenderable_url(warc: WarcSession, driver: BrowserDriver,
+                               url: str) -> bool:
+    """Try a failed navigation as a PDF or attachment download.
+
+    Do not convert every navigation error into a successful direct GET: timeouts,
+    TLS failures and ordinary HTML failures must remain failures. Only responses
+    explicitly identified as PDF or attachment content are accepted here.
+    """
+    direct = driver.fetch_direct(url)
+    if direct is None:
+        return False
+    try:
+        ctype = (direct.headers.get("content-type") or "").lower()
+        disposition = (direct.headers.get("content-disposition") or "").lower()
+        if not (ctype.startswith("application/pdf")
+                or "attachment" in disposition):
+            return False
+        if not direct.ok:
+            log.warning("Direct download fetch returned HTTP %s for %s",
+                        direct.status, url)
+            return False
+        body = direct.body()
+        warc.write_exchange(
+            url=url,
+            method="GET",
+            req_headers={},
+            post_data=None,
+            status=direct.status,
+            status_text=direct.status_text or "",
+            resp_headers=direct.headers,
+            body=body,
+        )
+        log.info("Captured %s via direct fetch (PDF/attachment)", url)
+        return True
+    finally:
+        _dispose_response(direct)
 
 
 def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
@@ -107,19 +216,8 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
                 resp = driver.visit(page, url)
                 frontier.mark_done()
                 if resp is None:
-                    # navigations to PDFs/attachments become downloads and
-                    # "fail"; capture such resources with a direct request
-                    # through the same browser context instead
-                    direct = driver.fetch_direct(url)
-                    if direct is not None and direct.ok:
-                        warc.write_exchange(
-                            url=url, method="GET", req_headers={},
-                            post_data=None, status=direct.status,
-                            status_text=direct.status_text or "",
-                            resp_headers=direct.headers, body=direct.body())
+                    if _capture_nonrenderable_url(warc, driver, url):
                         stats["visited"] += 1
-                        log.info("Captured %s via direct fetch (download/"
-                                 "non-renderable resource)", url)
                         controller.report(seed_idx, visited=stats["visited"],
                                           queued=len(frontier),
                                           bytes_written=warc.total_bytes)
