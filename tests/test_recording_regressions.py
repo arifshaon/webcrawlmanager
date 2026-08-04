@@ -11,9 +11,10 @@ from webarc.recorder import (CMD_CAPTURE_PAGE, PAUSED, RecordingSession)
 
 
 class DummyWarc:
-    def __init__(self):
+    def __init__(self, out_dir: Path | None = None):
         self.writes: list[dict] = []
         self.total_bytes = 0
+        self.out_dir = out_dir or Path("./warcs-test")
 
     def write_exchange(self, **kwargs):
         self.writes.append(kwargs)
@@ -49,7 +50,13 @@ class FakeDownload:
         self._path = path
         self.url = url
         self.suggested_filename = filename
+        self.saved_to: Path | None = None
         self.deleted = False
+
+    def save_as(self, target: str):
+        target_path = Path(target)
+        target_path.write_bytes(self._path.read_bytes())
+        self.saved_to = target_path
 
     def path(self):
         return self._path
@@ -146,30 +153,65 @@ class RecordingRegressionTests(unittest.TestCase):
         self.assertEqual(first.reloads, 0)
         self.assertEqual(second.reloads, 1)
 
-    def test_download_archives_actual_browser_file_bytes(self):
-        warc = DummyWarc()
-        session = self.make_session(warc)
+    def test_download_is_deferred_retained_and_archived(self):
         payload = b"%PDF-1.7\nactual browser download\n"
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "report.pdf"
-            path.write_bytes(payload)
+            out = Path(tmp) / "session"
+            source = Path(tmp) / "browser-temp.pdf"
+            source.write_bytes(payload)
+            warc = DummyWarc(out)
+            session = self.make_session(warc)
             download = FakeDownload(
-                path,
+                source,
                 "blob:https://example.org/1234",
                 "report.pdf",
             )
 
             session._on_download(download)
+            self.assertEqual(len(warc.writes), 0)
+            session._process_queued_capture()
 
-        self.assertTrue(download.deleted)
-        self.assertEqual(len(warc.writes), 1)
-        self.assertEqual(warc.writes[0]["body"], payload)
-        self.assertEqual(
-            warc.writes[0]["resp_headers"]["content-type"],
-            "application/pdf",
+            retained = out / "downloads" / "report.pdf"
+            self.assertTrue(retained.exists())
+            self.assertEqual(retained.read_bytes(), payload)
+            self.assertFalse(download.deleted)
+            self.assertEqual(download.saved_to, retained)
+            self.assertEqual(len(warc.writes), 1)
+            self.assertEqual(warc.writes[0]["body"], payload)
+            self.assertEqual(
+                warc.writes[0]["resp_headers"]["content-type"],
+                "application/pdf",
+            )
+            self.assertEqual(session.capture_stats["downloads-captured"], 1)
+            self.assertEqual(session.capture_stats["downloads-retained"], 1)
+            self.assertEqual(session.capture_stats["downloads-refetched"], 0)
+
+    def test_pdf_processing_is_deferred_outside_response_callback(self):
+        warc = DummyWarc()
+        direct = FakeDirectResponse(b"%PDF-1.7\nrefetched\n")
+        request_context = FakeRequestContext(response=direct)
+        session = self.make_session(warc)
+        session._context = FakeContext(request=request_context)
+        request = FakeRequest(headers={"accept": "application/pdf"})
+        response = SimpleNamespace(
+            request=request,
+            url="https://example.org/report.pdf",
+            status=200,
+            status_text="OK",
+            headers={"content-type": "application/pdf"},
+            body=lambda: b"<html>Chromium PDF viewer shell</html>",
         )
-        self.assertEqual(session.capture_stats["downloads-captured"], 1)
-        self.assertEqual(session.capture_stats["downloads-refetched"], 0)
+        session._eligible.add(request)
+
+        session._on_response(response)
+        self.assertEqual(len(warc.writes), 0)
+        session._on_request_finished(request)
+        self.assertEqual(len(warc.writes), 0)
+        session._process_queued_capture()
+
+        self.assertEqual(len(warc.writes), 1)
+        self.assertEqual(warc.writes[0]["body"], b"%PDF-1.7\nrefetched\n")
+        self.assertTrue(direct.disposed)
 
     def test_failed_pdf_refetch_never_archives_viewer_html(self):
         warc = DummyWarc()
@@ -189,10 +231,32 @@ class RecordingRegressionTests(unittest.TestCase):
         session._eligible.add(request)
 
         session._on_response(response)
+        session._on_request_finished(request)
+        session._process_queued_capture()
 
         self.assertEqual(len(warc.writes), 1)
         self.assertEqual(warc.writes[0]["body"], b"")
         self.assertEqual(session.capture_stats["body-unavailable"], 1)
+
+    def test_original_pdf_bytes_do_not_trigger_refetch(self):
+        warc = DummyWarc()
+        session = self.make_session(warc)
+        request = FakeRequest(headers={"accept": "application/pdf"})
+        response = SimpleNamespace(
+            request=request,
+            url="https://example.org/report.pdf",
+            status=200,
+            status_text="OK",
+            headers={"content-type": "application/pdf"},
+            body=lambda: b"%PDF-1.7\noriginal\n",
+        )
+        session._eligible.add(request)
+
+        session._on_response(response)
+        session._on_request_finished(request)
+
+        self.assertEqual(warc.writes[0]["body"], b"%PDF-1.7\noriginal\n")
+        self.assertEqual(len(session._pdf_refetch_queue), 0)
 
     def test_pdf_refetch_preserves_range_and_disposes_response(self):
         warc = DummyWarc()
@@ -236,6 +300,17 @@ class RecordingRegressionTests(unittest.TestCase):
         self.assertIn("escapeHtml", script)
         self.assertIn('$$("#new-form .mode-tab")', script)
         self.assertIn('"dashboard_hardening.js"', package)
+
+    def test_recording_runtime_is_installed(self):
+        root = Path(__file__).resolve().parents[1]
+        init_py = (root / "webarc" / "__init__.py").read_text(encoding="utf-8")
+        runtime = (root / "webarc" / "recording_runtime.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("_install_recording_runtime", init_py)
+        self.assertIn("_process_queued_capture", runtime)
+        self.assertIn("download.save_as", runtime)
+        self.assertNotIn("download.delete", runtime)
 
 
 if __name__ == "__main__":
