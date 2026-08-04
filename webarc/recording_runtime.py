@@ -10,6 +10,10 @@ Downloads are copied to <session-output>/downloads/ and left there for the
 operator. The same bytes are also written to WARC. No second GET is used as the
 primary download path, so POST-generated, signed, blob, and one-use downloads are
 not silently replaced with a different response.
+
+Managed interactive recording also allows service workers. Blocking them can
+break document viewers and other web applications. Automated crawling keeps its
+existing service-worker-blocking policy for capture visibility.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from collections import deque
 from pathlib import Path
 
 from .capture import safe_filename_component
+from . import browser as _browser
 from . import recorder as _recorder
 
 log = logging.getLogger(__name__)
@@ -28,6 +33,49 @@ log = logging.getLogger(__name__)
 def _looks_like_pdf(body: bytes) -> bool:
     """Accept leading whitespace/BOM but reject Chromium viewer HTML."""
     return body.lstrip(b"\xef\xbb\xbf\x00\t\r\n ").startswith(b"%PDF-")
+
+
+class RecordingBrowserDriver(_browser.BrowserDriver):
+    """Browser driver tuned for functional operator-led recording."""
+
+    def _start(self) -> None:
+        mode = self.cfg.mode
+        if mode == "native":
+            # A CDP-attached native context is created by Chrome itself and
+            # already allows service workers.
+            super()._start()
+            return
+
+        launch_kwargs: dict = {
+            "headless": mode == "headless",
+            "args": list(_browser._CAPTURE_ARGS),
+        }
+        if mode == "headed":
+            launch_kwargs["channel"] = "chrome"
+        if self.cfg.proxy:
+            launch_kwargs["proxy"] = {"server": self.cfg.proxy}
+        self._browser = self._pw.chromium.launch(**launch_kwargs)
+
+        ctx_kwargs: dict = {
+            "ignore_https_errors": bool(self.cfg.proxy),
+            # Interactive recording must not disable site functionality. Some
+            # embedded PDF/file viewers are service-worker applications.
+            "service_workers": "allow",
+        }
+        if self.cfg.viewport is None:
+            ctx_kwargs["no_viewport"] = True
+        else:
+            ctx_kwargs["viewport"] = {
+                "width": self.cfg.viewport[0],
+                "height": self.cfg.viewport[1],
+            }
+        if self.cfg.user_agent:
+            ctx_kwargs["user_agent"] = self.cfg.user_agent
+        self._context = self._browser.new_context(**ctx_kwargs)
+        log.info(
+            "Interactive recording allows service workers so embedded viewers "
+            "and application downloads remain functional"
+        )
 
 
 class RecordingSession(_recorder.RecordingSession):
@@ -175,5 +223,6 @@ class RecordingSession(_recorder.RecordingSession):
 
 
 def install() -> None:
-    """Expose the hardened class through webarc.recorder for all callers."""
+    """Expose hardened recording classes through webarc.recorder."""
+    _recorder.BrowserDriver = RecordingBrowserDriver
     _recorder.RecordingSession = RecordingSession
