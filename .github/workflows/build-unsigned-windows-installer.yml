@@ -61,8 +61,14 @@ jobs:
 
           $privatePython = & (Join-Path $testDir '.venv\Scripts\python.exe') -c "import sys; print(sys.version.split()[0])"
           Write-Host "Private Python: $privatePython"
-          & (Join-Path $testDir '.venv\Scripts\swm.exe') --help | Select-Object -First 8
-          if ($LASTEXITCODE -ne 0) { throw 'Installed SWM CLI smoke test failed.' }
+
+          # Capture all help output before truncating it for the log. Piping the
+          # native executable directly into Select-Object -First can close its
+          # stdout early and make Python exit with a broken-pipe status.
+          $helpOutput = & (Join-Path $testDir '.venv\Scripts\swm.exe') --help
+          $helpExitCode = $LASTEXITCODE
+          $helpOutput | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
+          if ($helpExitCode -ne 0) { throw 'Installed SWM CLI smoke test failed.' }
 
       - name: Install Inno Setup 6
         shell: powershell
