@@ -10,7 +10,29 @@ The final distributable is:
 install/dist/SWM-Setup-<version>.exe
 ```
 
-The EXE embeds `install-windows.ps1`. During installation it downloads or updates SWM from the configured GitHub branch, checks Python 3.10+, asks before installing Python when needed, installs SWM and its dashboard dependencies into an isolated `.venv`, installs Playwright Chromium, checks Google Chrome, verifies the CLI, and checks the dashboard/replay ports.
+The installer shows a normal **Select Destination Location** page. For a standard-user installation the default resolves to the current user's Programs area; an administrator/all-users installation can use Program Files. The user can browse to another writable location.
+
+The EXE embeds `install-windows.ps1`. During installation it:
+
+- downloads or updates SWM from the configured GitHub branch;
+- does **not** install Python system-wide;
+- downloads a pinned portable `uv` binary and verifies its published SHA-256;
+- uses `uv` to install a private CPython 3.13 runtime under `<install>/.runtime/python` with no Windows Python-registry registration and no PATH changes;
+- creates `<install>/.venv` from that private runtime;
+- installs SWM and its dashboard dependencies;
+- installs Playwright Chromium under `<install>/.runtime/ms-playwright`;
+- checks whether Google Chrome is present for the interactive headed/native recorder, but does not attempt an administrator-level Chrome installation;
+- verifies the SWM CLI;
+- checks the dashboard and replay ports, selecting the next free local port when a preferred port is occupied;
+- creates `Start SWM Server.cmd`, which can be double-clicked to start the dashboard and open the default browser.
+
+The Inno installer also creates a Start Menu shortcut and, by default, a desktop shortcut pointing to `Start SWM Server.cmd`. The Finish page offers to start SWM immediately.
+
+### Why the private Python runtime
+
+The application must be installable on managed Windows desktops where the user cannot install Python machine-wide. SWM therefore treats Python as an application runtime, not as a system prerequisite. The managed Python files remain inside the selected SWM directory and can be removed with the application files.
+
+The portable bootstrapper is pinned to `uv 0.11.29` for reproducibility. Its Windows x64 archive SHA-256 is checked before extraction. `uv` then downloads its managed CPython distribution from Astral's `python-build-standalone` source.
 
 ## Proper Windows signature
 
