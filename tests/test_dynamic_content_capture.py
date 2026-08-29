@@ -347,6 +347,15 @@ class ReplaySiteFilterTests(unittest.TestCase):
         warc.close()
         return sorted(out_dir.glob("*.warc.gz"))
 
+    @staticmethod
+    def _seed_vendor(root: Path) -> None:
+        from webarc.replay import _SW_PATCH_OLD
+        vendor = root / "vendor"
+        vendor.mkdir(parents=True, exist_ok=True)
+        (vendor / "ui.js").write_text("// ui stub", encoding="utf-8")
+        (vendor / "sw.js").write_text(
+            "// sw stub " + _SW_PATCH_OLD, encoding="utf-8")
+
     def test_challenge_records_are_excluded_from_replay_copy(self):
         import tempfile
 
@@ -357,7 +366,8 @@ class ReplaySiteFilterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             warcs = self._write_source_warc(tmp / "warcs")
-            site = build_replay_site(warcs, tmp / "site")
+            self._seed_vendor(tmp)
+            site = build_replay_site(warcs, tmp / "site", self_host=True)
 
             kept = []
             archive = next(site.glob("archive-*.warc.gz"))
@@ -387,6 +397,67 @@ class ReplaySiteFilterTests(unittest.TestCase):
                     1 for r in ArchiveIterator(fh)
                     if r.rec_type == "response")
             self.assertEqual(originals, 4)
+
+
+class SwPatchTests(unittest.TestCase):
+    """The vendored ReplayWeb.page worker must be patched for the wabac.js
+    POST-lookup bug: JSON POST bodies containing newlines (all GraphQL
+    queries) otherwise index under keys that never match at replay, and
+    Figshare-style portals show 'we could not load the content' over data
+    that is in the archive."""
+
+    def test_patch_applies_and_is_idempotent(self):
+        import tempfile
+
+        from webarc.replay import (_SW_PATCH_NEW, _SW_PATCH_OLD, _patch_sw_js)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sw = Path(tmp) / "sw.js"
+            sw.write_text(f"head {_SW_PATCH_OLD} tail {_SW_PATCH_OLD} end",
+                          encoding="utf-8")
+            _patch_sw_js(sw)
+            text = sw.read_text(encoding="utf-8")
+            self.assertNotIn(_SW_PATCH_OLD, text.replace(_SW_PATCH_NEW, ""))
+            self.assertEqual(text.count(_SW_PATCH_NEW), 2)
+
+            _patch_sw_js(sw)  # second run must not double-patch
+            self.assertEqual(sw.read_text(encoding="utf-8"), text)
+
+    def test_unknown_sw_content_is_left_alone(self):
+        import tempfile
+
+        from webarc.replay import _patch_sw_js
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sw = Path(tmp) / "sw.js"
+            sw.write_text("completely different code", encoding="utf-8")
+            _patch_sw_js(sw)
+            self.assertEqual(sw.read_text(encoding="utf-8"),
+                             "completely different code")
+
+    def test_vendor_assets_from_preplaced_files(self):
+        import tempfile
+
+        from webarc.replay import (_SW_PATCH_NEW, _SW_PATCH_OLD,
+                                   _ensure_vendor_assets)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            vendor = Path(tmp) / "vendor"
+            vendor.mkdir()
+            (vendor / "ui.js").write_text("// ui", encoding="utf-8")
+            (vendor / "sw.js").write_text(_SW_PATCH_OLD, encoding="utf-8")
+            self.assertTrue(_ensure_vendor_assets(vendor, download=False))
+            self.assertIn(_SW_PATCH_NEW,
+                          (vendor / "sw.js").read_text(encoding="utf-8"))
+
+    def test_missing_vendor_without_download_reports_unusable(self):
+        import tempfile
+
+        from webarc.replay import _ensure_vendor_assets
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(_ensure_vendor_assets(Path(tmp) / "vendor",
+                                                   download=False))
 
 
 class ConfigDefaultsTests(unittest.TestCase):

@@ -8,10 +8,13 @@ with no pywb and no extra dependencies. webarc only serves static files:
   <replay-root>/<coll>/archive.warc.gz     the crawl's WARC(s), concatenated
   <replay-root>/<coll>/replay/sw.js         service-worker shim
 
-The ReplayWeb.page UI (ui.js) and backend (sw.js) load from the jsDelivr CDN by
-default (pinned version). For offline/air-gapped machines, drop ui.js and sw.js
-into <replay-root>/vendor/ and pass self_host=True (or --self-host) to reference
-those instead of the CDN.
+The ReplayWeb.page UI (ui.js) and backend (sw.js) are vendored into
+<replay-root>/vendor/ (downloaded once from the jsDelivr CDN, pinned version)
+and sw.js is patched for a wabac.js POST-lookup bug — see _SW_PATCH_OLD below.
+Air-gapped machines can pre-place ui.js and sw.js in <replay-root>/vendor/
+(self_host=True / --self-host makes their absence an error instead of a
+CDN fallback). If vendoring is impossible the site falls back to referencing
+the CDN directly, with degraded replay for sites that load content via POST.
 
 Serving index.html, the WARC, and sw.js all from the same local origin means no
 CORS configuration is needed, and 127.0.0.1 counts as a secure context so the
@@ -34,8 +37,70 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 # Pinned ReplayWeb.page release (see https://replayweb.page/docs/embedding/).
-RWP_VERSION = "2.4.6"
+RWP_VERSION = "2.5.0"
 CDN = f"https://cdn.jsdelivr.net/npm/replaywebpage@{RWP_VERSION}"
+
+# wabac.js (through at least 2.5.0) converts a POST body into URL query params
+# to build the lookup key for archived POST responses, then decodeURI()s the
+# result. A JSON value containing a newline or tab — every GraphQL query body,
+# so all Figshare-style portals — embeds raw control characters in the index
+# key; they do not survive URL normalisation on the lookup side, so every such
+# POST replays as 404 and the site shows "we could not load the content" over
+# data that IS in the archive. Patching the vendored worker to strip control
+# characters after decoding keeps both sides of the lookup symmetric.
+_SW_PATCH_OLD = 'try{a=decodeURI(a)}catch{a=""}'
+_SW_PATCH_NEW = 'try{a=decodeURI(a).replace(/[\\r\\n\\t]/g,"")}catch{a=""}'
+
+
+def _patch_sw_js(sw_path: Path) -> None:
+    """Apply the POST-lookup fix to a vendored sw.js in place (idempotent)."""
+    try:
+        text = sw_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        log.warning("Could not read %s to patch it: %s", sw_path, exc)
+        return
+    if _SW_PATCH_NEW in text:
+        return  # already patched
+    if _SW_PATCH_OLD not in text:
+        log.warning("sw.js does not contain the expected POST-decode code — "
+                    "a new ReplayWeb.page version may have changed it. "
+                    "POST-heavy sites (GraphQL APIs) may replay as "
+                    "'content not found' if the upstream bug is still there.")
+        return
+    sw_path.write_text(text.replace(_SW_PATCH_OLD, _SW_PATCH_NEW),
+                       encoding="utf-8")
+    log.info("Patched vendored sw.js for the wabac.js POST-body lookup bug "
+             "(newlines in JSON POST bodies)")
+
+
+def _ensure_vendor_assets(vendor_dir: Path, *, download: bool = True) -> bool:
+    """Make <replay-root>/vendor/{ui.js,sw.js} available and patch sw.js.
+
+    Returns True when the vendored assets are usable. Downloads the pinned
+    release on first use; an air-gapped machine can pre-place the two files.
+    """
+    import urllib.request
+
+    vendor_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("ui.js", "sw.js"):
+        target = vendor_dir / name
+        if target.exists() and target.stat().st_size > 0:
+            continue
+        if not download:
+            return False
+        url = f"{CDN}/{name}"
+        try:
+            log.info("Downloading %s -> %s", url, target)
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                data = resp.read()
+            tmp = target.with_suffix(".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(target)
+        except Exception as exc:
+            log.warning("Could not download %s: %s", url, exc)
+            return False
+    _patch_sw_js(vendor_dir / "sw.js")
+    return True
 
 _REPLAY_COMPAT_JS = r"""
 (() => {
@@ -310,7 +375,26 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
             old.unlink()
     tmp.replace(archive)
 
+    # Prefer vendored (and patched) assets; see _SW_PATCH_OLD above. With
+    # self_host the files must already be in <replay-root>/vendor (offline);
+    # otherwise they are downloaded once. Only if neither works does the site
+    # reference the CDN directly, which leaves the upstream POST-lookup bug
+    # in place.
+    vendor_dir = site_dir.parent / "vendor"
     if self_host:
+        if not _ensure_vendor_assets(vendor_dir, download=False):
+            raise FileNotFoundError(
+                f"self_host requires ui.js and sw.js in {vendor_dir}")
+        vendored = True
+    else:
+        vendored = _ensure_vendor_assets(vendor_dir, download=True)
+        if not vendored:
+            log.warning(
+                "Falling back to the ReplayWeb.page CDN: sites that load "
+                "their content via POST requests (GraphQL APIs) may replay "
+                "as 'content not found' until the vendored, patched worker "
+                "can be downloaded (see webarc.replay._SW_PATCH_OLD)")
+    if vendored:
         ui_src = "../vendor/ui.js"
         sw_import = "../../vendor/sw.js"   # relative to <coll>/replay/sw.js
     else:
