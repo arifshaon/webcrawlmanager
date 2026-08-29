@@ -95,10 +95,22 @@ function Invoke-External {
         [Parameter(Mandatory=$true)][string[]]$ArgumentList,
         [Parameter(Mandatory=$true)][string]$Description
     )
+
     Write-Info $Description
-    & $Exe @ArgumentList
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Description failed with exit code $LASTEXITCODE."
+
+    # Capture native stdout/stderr locally, then print it with Write-Host. This
+    # is important because callers such as Install-PrivatePythonEnvironment
+    # return a path. Letting native command output escape into PowerShell's
+    # success pipeline would turn that return value into an array containing
+    # download/progress text as well as the path.
+    $commandOutput = & $Exe @ArgumentList 2>&1
+    $exitCode = $LASTEXITCODE
+    foreach ($line in @($commandOutput)) {
+        Write-Host $line
+    }
+
+    if ($exitCode -ne 0) {
+        throw "$Description failed with exit code $exitCode."
     }
 }
 
