@@ -89,11 +89,11 @@ function Test-IsAdmin {
 function Invoke-External {
     param(
         [Parameter(Mandatory=$true)][string]$Exe,
-        [Parameter(Mandatory=$true)][string[]]$Args,
+        [Parameter(Mandatory=$true)][string[]]$ArgumentList,
         [Parameter(Mandatory=$true)][string]$Description
     )
     Write-Info $Description
-    & $Exe @Args
+    & $Exe @ArgumentList
     if ($LASTEXITCODE -ne 0) {
         throw "$Description failed with exit code $LASTEXITCODE."
     }
@@ -149,13 +149,13 @@ function Get-PythonInfo {
         $seen[$key] = $true
 
         try {
-            $args = @($candidate.Prefix) + @(
+            $pythonArgs = @($candidate.Prefix) + @(
                 "-c",
                 "import sys; print('%d.%d.%d' % sys.version_info[:3])"
             )
-            $raw = (& $candidate.Exe @args 2>$null | Select-Object -First 1)
+            $raw = (& $candidate.Exe @pythonArgs 2>$null | Select-Object -First 1)
             if ($LASTEXITCODE -ne 0 -or -not $raw) { continue }
-            $version = [Version]$raw.Trim()
+            $version = [Version]($raw.Trim())
             $info = [pscustomobject]@{
                 Exe=$candidate.Exe
                 Prefix=@($candidate.Prefix)
@@ -180,11 +180,11 @@ function Get-PythonInfo {
 function Invoke-Python {
     param(
         [Parameter(Mandatory=$true)]$Python,
-        [Parameter(Mandatory=$true)][string[]]$Args,
+        [Parameter(Mandatory=$true)][string[]]$ArgumentList,
         [Parameter(Mandatory=$true)][string]$Description
     )
-    $allArgs = @($Python.Prefix) + $Args
-    Invoke-External -Exe $Python.Exe -Args $allArgs -Description $Description
+    $allArguments = @($Python.Prefix) + $ArgumentList
+    Invoke-External -Exe $Python.Exe -ArgumentList $allArguments -Description $Description
 }
 
 function Install-Python([bool]$IsAdmin) {
@@ -205,7 +205,7 @@ function Install-Python([bool]$IsAdmin) {
         Write-Info "Standard-user session detected: Python will be installed for this user only."
     }
 
-    Invoke-External -Exe $winget.Source -Args @(
+    Invoke-External -Exe $winget.Source -ArgumentList @(
         "install", "--id", $PythonWingetId, "-e",
         "--scope", $scope,
         "--accept-package-agreements", "--accept-source-agreements"
@@ -261,11 +261,11 @@ function Sync-Source([string]$TargetDir, [string]$BranchName) {
         if ($dirty) {
             throw "Tracked files in $TargetDir have local changes. Commit or stash them before updating."
         }
-        Invoke-External -Exe $git.Source -Args @("-C", $TargetDir, "fetch", "origin", $BranchName) `
+        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "fetch", "origin", $BranchName) `
             -Description "Fetching $BranchName from GitHub"
-        Invoke-External -Exe $git.Source -Args @("-C", $TargetDir, "checkout", $BranchName) `
+        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "checkout", $BranchName) `
             -Description "Checking out $BranchName"
-        Invoke-External -Exe $git.Source -Args @("-C", $TargetDir, "pull", "--ff-only", "origin", $BranchName) `
+        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "pull", "--ff-only", "origin", $BranchName) `
             -Description "Updating SWM from GitHub"
         return
     }
@@ -273,7 +273,7 @@ function Sync-Source([string]$TargetDir, [string]$BranchName) {
     if ($git -and (Test-DirectoryEmpty $TargetDir)) {
         $parent = Split-Path -Parent $TargetDir
         if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-        Invoke-External -Exe $git.Source -Args @(
+        Invoke-External -Exe $git.Source -ArgumentList @(
             "clone", "--branch", $BranchName, "--single-branch", $RepoUrl, $TargetDir
         ) -Description "Cloning SWM $BranchName from GitHub"
         return
@@ -310,7 +310,7 @@ function Install-Chrome {
         return
     }
     try {
-        Invoke-External -Exe $winget.Source -Args @(
+        Invoke-External -Exe $winget.Source -ArgumentList @(
             "install", "--id", $ChromeWingetId, "-e",
             "--accept-package-agreements", "--accept-source-agreements"
         ) -Description "Installing Google Chrome"
@@ -420,7 +420,7 @@ try {
         try {
             $raw = (& $venvPython -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null |
                 Select-Object -First 1)
-            $venvVersion = [Version]$raw.Trim()
+            $venvVersion = [Version]($raw.Trim())
             if ($venvVersion -lt $MinimumPython) {
                 Write-Warning "Existing .venv uses Python $venvVersion; recreating it."
                 Remove-Item -LiteralPath $venvDir -Recurse -Force
@@ -434,21 +434,21 @@ try {
     }
 
     if (-not (Test-Path -LiteralPath $venvPython)) {
-        Invoke-Python -Python $python -Args @("-m", "venv", $venvDir) `
+        Invoke-Python -Python $python -ArgumentList @("-m", "venv", $venvDir) `
             -Description "Creating isolated SWM virtual environment"
     }
 
-    Invoke-External -Exe $venvPython -Args @(
+    Invoke-External -Exe $venvPython -ArgumentList @(
         "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"
     ) -Description "Updating pip/setuptools/wheel"
 
     # Installs core dependencies plus FastAPI/Uvicorn dashboard support from
     # pyproject.toml. Editable mode keeps the CLI tied to the checked-out code.
-    Invoke-External -Exe $venvPython -Args @(
+    Invoke-External -Exe $venvPython -ArgumentList @(
         "-m", "pip", "install", "-e", "$InstallDir[dashboard]"
     ) -Description "Installing SWM and dashboard dependencies"
 
-    Invoke-External -Exe $venvPython -Args @(
+    Invoke-External -Exe $venvPython -ArgumentList @(
         "-m", "playwright", "install", "chromium"
     ) -Description "Installing Playwright Chromium"
     Write-Ok "SWM Python dependencies are installed."
