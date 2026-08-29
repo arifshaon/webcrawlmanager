@@ -1,6 +1,6 @@
 ; Simple Webcrawl Manager (SWM) Windows bootstrap installer
-; Built with Inno Setup 6. The resulting EXE must be Authenticode-signed by
-; install/build-windows-installer.ps1 before it is distributed.
+; Built with Inno Setup 6. The resulting EXE should be Authenticode-signed
+; before release distribution. Unsigned builds are supported for testing.
 
 #ifndef AppVersion
   #define AppVersion "0.2.0"
@@ -84,7 +84,8 @@ begin
     RaiseException('Windows could not start the SWM installation bootstrap.');
 
   if BootstrapExitCode <> 0 then
-    RaiseException(Format(
-      'SWM installation failed (bootstrap exit code %d). Review the PowerShell output and setup log.',
-      [BootstrapExitCode]));
+    RaiseException(
+      'SWM installation failed (bootstrap exit code ' +
+      IntToStr(BootstrapExitCode) +
+      '). Review the PowerShell output and setup log.');
 end;
