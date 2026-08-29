@@ -1,29 +1,22 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-    Windows installer/bootstrapper for Simple Webcrawl Manager (SWM).
+    Windows bootstrap installer for Simple Webcrawl Manager (SWM).
 
 .DESCRIPTION
-    Installs the current feature/record-session version of SWM into a per-user
-    application directory by default. The installer:
+    Installs the feature/record-session build of SWM. It downloads or updates
+    the source from GitHub, checks for Python 3.10+, offers to install Python
+    3.13 with the user's permission, installs SWM into an isolated virtual
+    environment, installs Playwright Chromium, checks Google Chrome for
+    interactive recording, verifies the CLI, and checks the dashboard/replay
+    ports before finishing.
 
-      * downloads/updates the requested GitHub ref (git clone/pull when Git is
-        available, otherwise a GitHub ZIP download);
-      * detects a supported Python (3.10+);
-      * with permission, installs Python 3.13 through winget when Python is
-        missing/too old, using machine scope when already elevated and user
-        scope otherwise;
-      * creates an isolated .venv and installs SWM + dashboard dependencies;
-      * installs the Playwright Chromium runtime;
-      * checks for Google Chrome (required by interactive headed/native record
-        mode) and can install it with winget with user permission;
-      * verifies the SWM CLI;
-      * checks the dashboard and replay ports before reporting completion.
+    Python installation scope follows the caller's privileges:
+      - elevated PowerShell -> machine-wide Python installation
+      - standard PowerShell -> current-user Python installation
 
-    The application itself is installed per-user even when this script is run
-    elevated. This keeps SWM's writable WARC/replay/state folders out of
-    Program Files. Python's installation scope is what follows the caller's
-    privilege level.
+    SWM itself defaults to LOCALAPPDATA so its WARC/replay/state directories
+    remain writable without administrator rights.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\install\install-windows.ps1
@@ -35,7 +28,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "SimpleWebcrawlManager"),
-    [string]$Ref = "feature/record-session",
+    [string]$Branch = "feature/record-session",
     [int]$DashboardPort = 8080,
     [int]$ReplayPort = 8091,
     [switch]$Yes
@@ -45,24 +38,19 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 
-# GitHub source for this installer/version.
 $RepoOwner = "arifshaon"
 $RepoName = "webcrawlmanager"
 $RepoUrl = "https://github.com/$RepoOwner/$RepoName.git"
 $RepoBaseUrl = "https://github.com/$RepoOwner/$RepoName"
 $MinimumPython = [Version]"3.10"
-$WingetPythonId = "Python.Python.3.13"
-$WingetChromeId = "Google.Chrome"
+$PythonWingetId = "Python.Python.3.13"
+$ChromeWingetId = "Google.Chrome"
 
-# Windows PowerShell 5.1 can otherwise negotiate an obsolete TLS version on
-# older systems when downloading from GitHub/PyPI.
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-} catch {
-    # PowerShell 7+ / modern .NET does not need this.
-}
+} catch {}
 
-function Write-Title([string]$Text) {
+function Write-Step([string]$Text) {
     Write-Host ""
     Write-Host "=== $Text ===" -ForegroundColor Cyan
 }
@@ -75,7 +63,7 @@ function Write-Info([string]$Text) {
     Write-Host "[INFO] $Text" -ForegroundColor Gray
 }
 
-function Confirm-InstallAction([string]$Prompt) {
+function Confirm-Action([string]$Prompt) {
     if ($Yes) {
         Write-Info "$Prompt -> yes (-Yes)"
         return $true
@@ -87,7 +75,7 @@ function Confirm-InstallAction([string]$Prompt) {
     }
 }
 
-function Test-IsAdministrator {
+function Test-IsAdmin {
     try {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
         $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -98,72 +86,63 @@ function Test-IsAdministrator {
     }
 }
 
-function Invoke-Checked {
+function Invoke-External {
     param(
-        [Parameter(Mandatory=$true)][string]$FilePath,
-        [Parameter(Mandatory=$true)][string[]]$Arguments,
+        [Parameter(Mandatory=$true)][string]$Exe,
+        [Parameter(Mandatory=$true)][string[]]$Args,
         [Parameter(Mandatory=$true)][string]$Description
     )
     Write-Info $Description
-    & $FilePath @Arguments
+    & $Exe @Args
     if ($LASTEXITCODE -ne 0) {
         throw "$Description failed with exit code $LASTEXITCODE."
     }
 }
 
-function Get-DirectoryIsEmpty([string]$Path) {
+function Test-DirectoryEmpty([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
     return @((Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)).Count -eq 0
 }
 
-function Get-PythonCandidate {
+function Get-PythonInfo {
     $candidates = @()
 
     $py = Get-Command py.exe -ErrorAction SilentlyContinue
     if ($py) {
-        $candidates += [pscustomobject]@{
-            Exe = $py.Source
-            Prefix = @("-3")
-            Label = "py -3"
-        }
+        $candidates += [pscustomobject]@{ Exe=$py.Source; Prefix=@("-3"); Label="py -3" }
     }
 
     foreach ($name in @("python.exe", "python3.exe")) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if ($cmd) {
+            $candidates += [pscustomobject]@{ Exe=$cmd.Source; Prefix=@(); Label=$name }
+        }
+    }
+
+    # winget can install Python successfully without refreshing PATH in this
+    # already-running shell, so also search the normal install locations.
+    $patterns = @()
+    if ($env:LOCALAPPDATA) {
+        $patterns += (Join-Path $env:LOCALAPPDATA "Programs\Python\Python*\python.exe")
+    }
+    if ($env:ProgramFiles) {
+        $patterns += (Join-Path $env:ProgramFiles "Python*\python.exe")
+    }
+    if (${env:ProgramFiles(x86)}) {
+        $patterns += (Join-Path ${env:ProgramFiles(x86)} "Python*\python.exe")
+    }
+    foreach ($pattern in $patterns) {
+        foreach ($item in @(Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue)) {
             $candidates += [pscustomobject]@{
-                Exe = $cmd.Source
-                Prefix = @()
-                Label = $name
+                Exe=$item.FullName; Prefix=@(); Label=$item.FullName
             }
         }
     }
 
-    # winget installs may not be visible to this already-running PowerShell
-    # process immediately, so also inspect the standard install locations.
-    $known = @()
-    if ($env:LOCALAPPDATA) {
-        $known += Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA "Programs\Python\Python*\python.exe") `
-            -File -ErrorAction SilentlyContinue
-    }
-    if ($env:ProgramFiles) {
-        $known += Get-ChildItem -Path (Join-Path $env:ProgramFiles "Python*\python.exe") `
-            -File -ErrorAction SilentlyContinue
-    }
-    if (${env:ProgramFiles(x86)}) {
-        $known += Get-ChildItem -Path (Join-Path ${env:ProgramFiles(x86)} "Python*\python.exe") `
-            -File -ErrorAction SilentlyContinue
-    }
-    foreach ($item in $known) {
-        $candidates += [pscustomobject]@{
-            Exe = $item.FullName
-            Prefix = @()
-            Label = $item.FullName
-        }
-    }
-
     $seen = @{}
-    $best = $null
+    $bestSupported = $null
+    $bestUnsupported = $null
+
     foreach ($candidate in $candidates) {
         $key = $candidate.Exe + "|" + ($candidate.Prefix -join " ")
         if ($seen.ContainsKey($key)) { continue }
@@ -176,65 +155,131 @@ function Get-PythonCandidate {
             )
             $raw = (& $candidate.Exe @args 2>$null | Select-Object -First 1)
             if ($LASTEXITCODE -ne 0 -or -not $raw) { continue }
-            $version = [Version]($raw.Trim())
-            $entry = [pscustomobject]@{
-                Exe = $candidate.Exe
-                Prefix = @($candidate.Prefix)
-                Label = $candidate.Label
-                Version = $version
-                Supported = ($version -ge $MinimumPython)
+            $version = [Version]$raw.Trim()
+            $info = [pscustomobject]@{
+                Exe=$candidate.Exe
+                Prefix=@($candidate.Prefix)
+                Label=$candidate.Label
+                Version=$version
+                Supported=($version -ge $MinimumPython)
             }
-            if ($entry.Supported) {
-                if ($null -eq $best -or $entry.Version -gt $best.Version) {
-                    $best = $entry
+            if ($info.Supported) {
+                if ($null -eq $bestSupported -or $version -gt $bestSupported.Version) {
+                    $bestSupported = $info
                 }
-            } elseif ($null -eq $best) {
-                $best = $entry
+            } elseif ($null -eq $bestUnsupported -or $version -gt $bestUnsupported.Version) {
+                $bestUnsupported = $info
             }
-        } catch {
-            continue
-        }
+        } catch {}
     }
-    return $best
+
+    if ($bestSupported) { return $bestSupported }
+    return $bestUnsupported
 }
 
 function Invoke-Python {
     param(
         [Parameter(Mandatory=$true)]$Python,
-        [Parameter(Mandatory=$true)][string[]]$Arguments,
-        [string]$Description = "Python command"
+        [Parameter(Mandatory=$true)][string[]]$Args,
+        [Parameter(Mandatory=$true)][string]$Description
     )
-    $args = @($Python.Prefix) + $Arguments
-    Invoke-Checked -FilePath $Python.Exe -Arguments $args -Description $Description
+    $allArgs = @($Python.Prefix) + $Args
+    Invoke-External -Exe $Python.Exe -Args $allArgs -Description $Description
 }
 
-function Install-PythonWithWinget([bool]$IsAdmin) {
+function Install-Python([bool]$IsAdmin) {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if (-not $winget) {
-        Write-Warning "winget is not available on this Windows installation."
-        Write-Host "Install Python 3.10 or later from: https://www.python.org/downloads/windows/"
-        if (Confirm-InstallAction "Open the official Python download page now?") {
+        Write-Warning "winget is not available."
+        Write-Host "Install Python 3.10+ from https://www.python.org/downloads/windows/"
+        if (Confirm-Action "Open the official Python download page now?") {
             Start-Process "https://www.python.org/downloads/windows/"
         }
-        throw "Python installation is required. Install Python and run this installer again."
+        throw "Python is required. Install it and rerun this installer."
     }
 
     $scope = if ($IsAdmin) { "machine" } else { "user" }
-    Write-Info "Installing Python 3.13 with winget ($scope scope)."
-    if (-not $IsAdmin) {
-        Write-Info "No administrator rights detected; Python will be installed for the current user."
+    if ($IsAdmin) {
+        Write-Info "Administrator rights detected: Python will be installed machine-wide."
     } else {
-        Write-Info "Administrator rights detected; Python will be installed machine-wide."
+        Write-Info "Standard-user session detected: Python will be installed for this user only."
     }
 
-    $args = @(
-        "install", "--id", $WingetPythonId, "-e",
+    Invoke-External -Exe $winget.Source -Args @(
+        "install", "--id", $PythonWingetId, "-e",
         "--scope", $scope,
-        "--accept-package-agreements", "--accept-source-agreements",
-        "--disable-interactivity"
-    )
-    Invoke-Checked -FilePath $winget.Source -Arguments $args `
-        -Description "Installing Python 3.13"
+        "--accept-package-agreements", "--accept-source-agreements"
+    ) -Description "Installing Python 3.13 ($scope scope)"
+}
+
+function Download-SourceZip([string]$TargetDir, [string]$BranchName) {
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("swm-" + [Guid]::NewGuid().ToString("N"))
+    $zip = Join-Path $tmp "source.zip"
+    $expanded = Join-Path $tmp "expanded"
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+    $escapedBranch = (($BranchName -split "/") | ForEach-Object {
+        [Uri]::EscapeDataString($_)
+    }) -join "/"
+    $url = "$RepoBaseUrl/archive/refs/heads/$escapedBranch.zip"
+
+    try {
+        Write-Info "Downloading branch $BranchName from GitHub (ZIP fallback)."
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
+        $root = Get-ChildItem -LiteralPath $expanded -Directory | Where-Object {
+            Test-Path -LiteralPath (Join-Path $_.FullName "pyproject.toml")
+        } | Select-Object -First 1
+        if (-not $root) { throw "The downloaded GitHub archive is not a valid SWM source tree." }
+
+        New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
+        $config = Join-Path $TargetDir "config.yaml"
+        if (Test-Path -LiteralPath $config) {
+            $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            Copy-Item -LiteralPath $config -Destination "$config.$stamp.bak" -Force
+            Write-Info "Existing config.yaml backed up before ZIP refresh."
+        }
+
+        foreach ($item in Get-ChildItem -LiteralPath $root.FullName -Force) {
+            Copy-Item -LiteralPath $item.FullName -Destination $TargetDir -Recurse -Force
+        }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Sync-Source([string]$TargetDir, [string]$BranchName) {
+    $git = Get-Command git.exe -ErrorAction SilentlyContinue
+    $gitDir = Join-Path $TargetDir ".git"
+
+    if ($git -and (Test-Path -LiteralPath $gitDir)) {
+        Write-Info "Existing Git checkout detected."
+        # Ignore untracked runtime/install artefacts such as .venv, WARC output
+        # and swm.cmd, but protect actual edits to tracked source files.
+        $dirty = & $git.Source -C $TargetDir status --porcelain --untracked-files=no
+        if ($LASTEXITCODE -ne 0) { throw "Could not inspect the existing Git checkout." }
+        if ($dirty) {
+            throw "Tracked files in $TargetDir have local changes. Commit or stash them before updating."
+        }
+        Invoke-External -Exe $git.Source -Args @("-C", $TargetDir, "fetch", "origin", $BranchName) `
+            -Description "Fetching $BranchName from GitHub"
+        Invoke-External -Exe $git.Source -Args @("-C", $TargetDir, "checkout", $BranchName) `
+            -Description "Checking out $BranchName"
+        Invoke-External -Exe $git.Source -Args @("-C", $TargetDir, "pull", "--ff-only", "origin", $BranchName) `
+            -Description "Updating SWM from GitHub"
+        return
+    }
+
+    if ($git -and (Test-DirectoryEmpty $TargetDir)) {
+        $parent = Split-Path -Parent $TargetDir
+        if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        Invoke-External -Exe $git.Source -Args @(
+            "clone", "--branch", $BranchName, "--single-branch", $RepoUrl, $TargetDir
+        ) -Description "Cloning SWM $BranchName from GitHub"
+        return
+    }
+
+    Download-SourceZip -TargetDir $TargetDir -BranchName $BranchName
 }
 
 function Get-ChromePath {
@@ -257,107 +302,28 @@ function Get-ChromePath {
     return $null
 }
 
-function Install-ChromeWithWinget {
+function Install-Chrome {
     $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if (-not $winget) {
-        Write-Warning "winget is unavailable; install Google Chrome manually for interactive recording."
+        Write-Warning "winget is unavailable. Install Chrome manually before using interactive recording."
         Write-Host "https://www.google.com/chrome/"
         return
     }
     try {
-        $args = @(
-            "install", "--id", $WingetChromeId, "-e",
-            "--accept-package-agreements", "--accept-source-agreements",
-            "--disable-interactivity"
-        )
-        Invoke-Checked -FilePath $winget.Source -Arguments $args `
-            -Description "Installing Google Chrome"
+        Invoke-External -Exe $winget.Source -Args @(
+            "install", "--id", $ChromeWingetId, "-e",
+            "--accept-package-agreements", "--accept-source-agreements"
+        ) -Description "Installing Google Chrome"
     } catch {
-        # Chrome is useful for interactive recording, but failure to install it
-        # must not make the whole SWM installation unusable: headless crawling
-        # can still use Playwright Chromium.
         Write-Warning $_.Exception.Message
-        Write-Warning "SWM core installation will continue. Install Chrome manually before using 'swm record'."
+        Write-Warning "Chrome installation failed, but SWM core installation can continue."
     }
-}
-
-function Download-RepositoryZip([string]$TargetDir, [string]$GitRef) {
-    $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("swm-install-" + [Guid]::NewGuid().ToString("N"))
-    $zipPath = Join-Path $tempRoot "source.zip"
-    $extractPath = Join-Path $tempRoot "source"
-    New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
-
-    # refs/heads URLs work for branch names containing '/'. Escape each path
-    # segment but preserve branch slashes as ref separators.
-    $escapedRef = (($GitRef -split "/") | ForEach-Object { [Uri]::EscapeDataString($_) }) -join "/"
-    $archiveUrl = "$RepoBaseUrl/archive/refs/heads/$escapedRef.zip"
-
-    try {
-        Write-Info "Git is unavailable (or this is a ZIP-based install); downloading $GitRef from GitHub."
-        Invoke-WebRequest -Uri $archiveUrl -OutFile $zipPath -UseBasicParsing
-        Expand-Archive -LiteralPath $zipPath -DestinationPath $extractPath -Force
-        $sourceRoot = Get-ChildItem -LiteralPath $extractPath -Directory | Where-Object {
-            Test-Path -LiteralPath (Join-Path $_.FullName "pyproject.toml")
-        } | Select-Object -First 1
-        if (-not $sourceRoot) {
-            throw "Downloaded archive did not contain pyproject.toml."
-        }
-
-        New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
-
-        # Preserve a locally edited config during ZIP-based refreshes. Git-based
-        # installs use git's own dirty-tree protection instead.
-        $targetConfig = Join-Path $TargetDir "config.yaml"
-        if (Test-Path -LiteralPath $targetConfig) {
-            $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-            Copy-Item -LiteralPath $targetConfig -Destination "$targetConfig.$stamp.bak" -Force
-            Write-Info "Existing config.yaml backed up before refresh."
-        }
-
-        foreach ($item in Get-ChildItem -LiteralPath $sourceRoot.FullName -Force) {
-            Copy-Item -LiteralPath $item.FullName -Destination $TargetDir -Recurse -Force
-        }
-    } finally {
-        Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Sync-Repository([string]$TargetDir, [string]$GitRef) {
-    $git = Get-Command git.exe -ErrorAction SilentlyContinue
-    $gitDir = Join-Path $TargetDir ".git"
-
-    if ($git -and (Test-Path -LiteralPath $gitDir)) {
-        Write-Info "Existing Git checkout found at $TargetDir."
-        $dirty = & $git.Source -C $TargetDir status --porcelain
-        if ($LASTEXITCODE -ne 0) { throw "Could not inspect existing Git checkout." }
-        if ($dirty) {
-            throw "The existing SWM checkout has local changes. Commit/stash them before rerunning the installer so they are not overwritten."
-        }
-        Invoke-Checked -FilePath $git.Source -Arguments @("-C", $TargetDir, "fetch", "origin", $GitRef) `
-            -Description "Fetching $GitRef from GitHub"
-        Invoke-Checked -FilePath $git.Source -Arguments @("-C", $TargetDir, "checkout", $GitRef) `
-            -Description "Checking out $GitRef"
-        Invoke-Checked -FilePath $git.Source -Arguments @("-C", $TargetDir, "pull", "--ff-only", "origin", $GitRef) `
-            -Description "Updating SWM from GitHub"
-        return
-    }
-
-    if ($git -and (Get-DirectoryIsEmpty $TargetDir)) {
-        $parent = Split-Path -Parent $TargetDir
-        if ($parent) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
-        Invoke-Checked -FilePath $git.Source `
-            -Arguments @("clone", "--branch", $GitRef, "--single-branch", $RepoUrl, $TargetDir) `
-            -Description "Cloning SWM $GitRef from GitHub"
-        return
-    }
-
-    Download-RepositoryZip -TargetDir $TargetDir -GitRef $GitRef
 }
 
 function Test-PortAvailable([int]$Port) {
     $listener = $null
     try {
-        $listener = New-Object System.Net.Sockets.TcpListener(
+        $listener = [System.Net.Sockets.TcpListener]::new(
             [System.Net.IPAddress]::Loopback, $Port)
         $listener.Start()
         return $true
@@ -379,9 +345,7 @@ function Get-PortOwner([int]$Port) {
             if ($proc) { return "$($proc.ProcessName) (PID $($proc.Id))" }
             return "PID $($conn.OwningProcess)"
         }
-    } catch {
-        # Get-NetTCPConnection is unavailable on some older Windows builds.
-    }
+    } catch {}
     return "another process"
 }
 
@@ -392,164 +356,158 @@ function Find-FreePort([int]$StartPort) {
     return $null
 }
 
-function Write-PortStatus([string]$Name, [int]$Port) {
+function Show-PortStatus([string]$Name, [int]$Port) {
     if (Test-PortAvailable $Port) {
         Write-Ok "$Name port $Port is free for binding on 127.0.0.1."
         return
     }
-    $owner = Get-PortOwner $Port
-    Write-Warning "$Name port $Port is already in use by $owner."
-    $alternative = Find-FreePort ($Port + 1)
-    if ($alternative) {
-        Write-Host "      Suggested free port: $alternative" -ForegroundColor Yellow
-    }
+    Write-Warning "$Name port $Port is already in use by $(Get-PortOwner $Port)."
+    $next = Find-FreePort ($Port + 1)
+    if ($next) { Write-Host "      Suggested free port: $next" -ForegroundColor Yellow }
 }
 
 function Write-Launcher([string]$TargetDir) {
     $launcher = Join-Path $TargetDir "swm.cmd"
-    $content = @'
+    @'
 @echo off
 "%~dp0.venv\Scripts\swm.exe" %*
-'@
-    Set-Content -LiteralPath $launcher -Value $content -Encoding ASCII
+'@ | Set-Content -LiteralPath $launcher -Encoding ASCII
 }
 
 try {
     Write-Host "Simple Webcrawl Manager (SWM) - Windows Installer" -ForegroundColor White
-    Write-Host "Source: $RepoBaseUrl  ref: $Ref"
+    Write-Host "GitHub: $RepoBaseUrl"
+    Write-Host "Branch: $Branch"
     Write-Host "Install directory: $InstallDir"
 
-    $isAdmin = Test-IsAdministrator
+    $isAdmin = Test-IsAdmin
     Write-Info ("Privilege level: " + $(if ($isAdmin) { "Administrator" } else { "Standard user" }))
 
-    Write-Title "1. Download / update SWM"
-    Sync-Repository -TargetDir $InstallDir -GitRef $Ref
+    Write-Step "1. Download / update SWM"
+    Sync-Source -TargetDir $InstallDir -BranchName $Branch
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
-        throw "SWM source download completed but pyproject.toml is missing from $InstallDir."
+        throw "pyproject.toml is missing after source download."
     }
-    Write-Ok "SWM source is present at $InstallDir."
+    Write-Ok "SWM source is ready at $InstallDir."
 
-    Write-Title "2. Check Python"
-    $python = Get-PythonCandidate
+    Write-Step "2. Check Python"
+    $python = Get-PythonInfo
     if ($python -and $python.Supported) {
         Write-Ok "Python $($python.Version) found via $($python.Label)."
     } else {
         if ($python) {
-            Write-Warning "Python $($python.Version) was found, but SWM requires Python 3.10 or later."
+            Write-Warning "Python $($python.Version) is installed, but SWM requires Python 3.10+."
         } else {
-            Write-Warning "Python 3.10 or later was not found."
+            Write-Warning "Python 3.10+ was not found."
         }
-        if (-not (Confirm-InstallAction "Install Python 3.13 now using winget?")) {
+        if (-not (Confirm-Action "Install Python 3.13 now using winget?")) {
             throw "Python 3.10+ is required. Installation cancelled by user."
         }
-        Install-PythonWithWinget -IsAdmin $isAdmin
+        Install-Python -IsAdmin $isAdmin
         Start-Sleep -Seconds 2
-        $python = Get-PythonCandidate
+        $python = Get-PythonInfo
         if (-not $python -or -not $python.Supported) {
-            throw "Python installation completed but a usable Python 3.10+ could not be located. Open a new terminal and rerun the installer."
+            throw "Python was installed but is not visible to this shell. Open a new PowerShell window and rerun the installer."
         }
         Write-Ok "Python $($python.Version) is ready."
     }
 
-    Write-Title "3. Create isolated environment and install Python packages"
+    Write-Step "3. Install SWM Python environment"
     $venvDir = Join-Path $InstallDir ".venv"
     $venvPython = Join-Path $venvDir "Scripts\python.exe"
 
     if (Test-Path -LiteralPath $venvPython) {
         try {
-            $venvVersionText = (& $venvPython -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null | Select-Object -First 1)
-            $venvVersion = [Version]$venvVersionText.Trim()
+            $raw = (& $venvPython -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null |
+                Select-Object -First 1)
+            $venvVersion = [Version]$raw.Trim()
             if ($venvVersion -lt $MinimumPython) {
-                Write-Warning "Existing .venv uses unsupported Python $venvVersion; recreating it."
+                Write-Warning "Existing .venv uses Python $venvVersion; recreating it."
                 Remove-Item -LiteralPath $venvDir -Recurse -Force
             } else {
                 Write-Ok "Existing .venv uses Python $venvVersion; reusing it."
             }
         } catch {
-            Write-Warning "Existing .venv is not usable; recreating it."
+            Write-Warning "Existing .venv is unusable; recreating it."
             Remove-Item -LiteralPath $venvDir -Recurse -Force
         }
     }
 
     if (-not (Test-Path -LiteralPath $venvPython)) {
-        Invoke-Python -Python $python -Arguments @("-m", "venv", $venvDir) `
-            -Description "Creating SWM virtual environment"
+        Invoke-Python -Python $python -Args @("-m", "venv", $venvDir) `
+            -Description "Creating isolated SWM virtual environment"
     }
 
-    Invoke-Checked -FilePath $venvPython `
-        -Arguments @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel") `
-        -Description "Updating pip/setuptools/wheel"
+    Invoke-External -Exe $venvPython -Args @(
+        "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"
+    ) -Description "Updating pip/setuptools/wheel"
 
-    # pyproject.toml declares the core dependencies and the dashboard extra.
-    # Editable installation keeps the installed CLI tied to the GitHub checkout,
-    # so a later installer update immediately updates the executable as well.
-    $editableTarget = "$InstallDir[dashboard]"
-    Invoke-Checked -FilePath $venvPython `
-        -Arguments @("-m", "pip", "install", "-e", $editableTarget) `
-        -Description "Installing SWM and dashboard dependencies"
+    # Installs core dependencies plus FastAPI/Uvicorn dashboard support from
+    # pyproject.toml. Editable mode keeps the CLI tied to the checked-out code.
+    Invoke-External -Exe $venvPython -Args @(
+        "-m", "pip", "install", "-e", "$InstallDir[dashboard]"
+    ) -Description "Installing SWM and dashboard dependencies"
 
-    Invoke-Checked -FilePath $venvPython `
-        -Arguments @("-m", "playwright", "install", "chromium") `
-        -Description "Installing Playwright Chromium"
-    Write-Ok "Python dependencies and Playwright Chromium are installed."
+    Invoke-External -Exe $venvPython -Args @(
+        "-m", "playwright", "install", "chromium"
+    ) -Description "Installing Playwright Chromium"
+    Write-Ok "SWM Python dependencies are installed."
 
-    Write-Title "4. Check Google Chrome for interactive recording"
+    Write-Step "4. Check Google Chrome"
     $chrome = Get-ChromePath
     if ($chrome) {
         Write-Ok "Google Chrome found: $chrome"
     } else {
-        Write-Warning "Google Chrome was not found. 'swm record --browser headed/native' requires Chrome."
-        if (Confirm-InstallAction "Install Google Chrome now using winget?") {
-            Install-ChromeWithWinget
+        Write-Warning "Google Chrome was not found. Interactive 'swm record' headed/native modes require Chrome."
+        if (Confirm-Action "Install Google Chrome now using winget?") {
+            Install-Chrome
             $chrome = Get-ChromePath
             if ($chrome) {
                 Write-Ok "Google Chrome found: $chrome"
             } else {
-                Write-Warning "Chrome is still not detectable in this terminal. A sign-out/new terminal may be required."
+                Write-Warning "Chrome is not visible yet. A new terminal/sign-in may be required."
             }
         } else {
             Write-Info "Skipping Chrome. Headless crawling can still use Playwright Chromium."
         }
     }
 
-    Write-Title "5. Verify SWM"
+    Write-Step "5. Verify SWM"
     $swmExe = Join-Path $venvDir "Scripts\swm.exe"
     if (-not (Test-Path -LiteralPath $swmExe)) {
-        throw "SWM console executable was not created at $swmExe."
+        throw "SWM executable was not created at $swmExe."
     }
     & $swmExe --help *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "SWM CLI smoke test failed with exit code $LASTEXITCODE."
-    }
+    if ($LASTEXITCODE -ne 0) { throw "SWM CLI smoke test failed." }
     Write-Launcher -TargetDir $InstallDir
     Write-Ok "SWM CLI smoke test passed."
 
-    Write-Title "6. Check local ports"
-    Write-PortStatus -Name "Dashboard" -Port $DashboardPort
-    Write-PortStatus -Name "Replay" -Port $ReplayPort
+    Write-Step "6. Check local ports"
+    Show-PortStatus -Name "Dashboard" -Port $DashboardPort
+    Show-PortStatus -Name "Replay" -Port $ReplayPort
 
-    Write-Title "Installation complete"
+    Write-Step "Installation complete"
     Write-Host "Installed to: $InstallDir" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Run SWM from any Command Prompt/PowerShell with:"
+    Write-Host "CLI:"
     Write-Host "  $InstallDir\swm.cmd --help"
     Write-Host ""
-    Write-Host "Start the dashboard (default port $DashboardPort):"
+    Write-Host "Dashboard:"
     Write-Host "  $InstallDir\swm.cmd serve --port $DashboardPort"
     Write-Host ""
-    Write-Host "Replay an archive (default port $ReplayPort):"
+    Write-Host "Replay:"
     Write-Host "  $InstallDir\swm.cmd replay <warc-folder> --port $ReplayPort"
     Write-Host ""
     Write-Host "Interactive recording:"
     Write-Host "  $InstallDir\swm.cmd record https://example.org"
-    Write-Host ""
     exit 0
 } catch {
     Write-Host ""
     Write-Host "INSTALLATION FAILED" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Host ""
-    Write-Host "Nothing is silently elevated by this installer. If a machine-wide"
-    Write-Host "Python install is required, run PowerShell as Administrator and retry."
+    Write-Host "The installer never silently elevates itself. When Python is missing,"
+    Write-Host "it asks before using winget and selects machine/user scope from the"
+    Write-Host "privileges of the PowerShell session."
     exit 1
 }
