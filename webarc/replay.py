@@ -401,8 +401,18 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
         ui_src = f"{CDN}/ui.js"
         sw_import = f"{CDN}/sw.js"
 
+    # skipWaiting + clients.claim: when the shim changes (e.g. switching from
+    # the CDN worker to the vendored, patched one), the browser installs the
+    # new service worker but leaves it WAITING while any tab of this origin is
+    # open — the stale worker keeps serving replays until every tab closes.
+    # Activating immediately makes a rebuilt replay site take effect on the
+    # next reload instead of requiring the user to clear site data.
     (site_dir / "replay" / "sw.js").write_text(
-        f'importScripts("{sw_import}");\n', encoding="utf-8")
+        f'importScripts("{sw_import}");\n'
+        'self.addEventListener("install", () => self.skipWaiting());\n'
+        'self.addEventListener("activate",'
+        ' (e) => e.waitUntil(self.clients.claim()));\n',
+        encoding="utf-8")
 
     url_attr = f'\n    url="{seed_url}"' if seed_url else ""
     (site_dir / "index.html").write_text(
