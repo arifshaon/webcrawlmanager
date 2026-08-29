@@ -494,6 +494,14 @@ For automated crawls, SWM follows a back-off-and-stop policy:
 2. repeated blocks stop the seed after the configured threshold;
 3. a successful page resets the block counter and delay behaviour.
 
+JS-challenge WAFs (for example AWS WAF's HTTP 202 "challenge" action, used by
+Figshare-based repository portals) serve a small interstitial that solves a
+puzzle and then reloads the real page. The crawler waits up to
+`behavior.challenge_grace` seconds for that to happen before capturing, so the
+archive holds the real page rather than the interstitial. Challenge verdicts on
+API subresources are archived faithfully but flagged loudly (see below), because
+the page will replay without its dynamically loaded records.
+
 Example configuration:
 
 ```yaml
@@ -502,7 +510,18 @@ behavior:
   block_backoff_factor: 3.0
   block_cooldown: 30
   block_max_consecutive: 3
+  challenge_grace: 20       # seconds to let a WAF JS challenge clear
+  scroll_max_screens: 40    # cap per-page infinite-scroll capture
 ```
+
+Sites that load their records dynamically (search portals, infinite-scroll
+repositories) depend entirely on their XHR/fetch responses being archived
+intact. The crawler warns whenever a page's dynamic content looks incomplete
+(WAF-challenged API calls, failed or empty API responses, bodies lost to
+navigation), and `python -m webarc.cli inspect <warc-dir>` reports the affected
+URLs after the fact — a page can replay with intact HTML but missing records,
+so these warnings are the fastest way to spot a broken capture before relying
+on it.
 
 This is not an evasion mechanism. For persistent blocking, the appropriate
 solution is to request allowlisting of the archive operator's IP address and an

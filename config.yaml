@@ -29,6 +29,11 @@ defaults:
     wait_until: networkidle # load | domcontentloaded | networkidle
     scroll: true            # incremental human-like scrolling
     scroll_pause: [0.4, 1.2]
+    scroll_max_screens: 40  # stop infinite-scroll feeds after this many screens
+                            # of new content per page (0 = unlimited)
+    challenge_grace: 20     # seconds to let a WAF JS challenge (e.g. AWS WAF's
+                            # HTTP 202 interstitial) solve itself and load the
+                            # real page before capturing (0 = don't wait)
     mouse_jitter: true
   warc:
     max_size_mb: 900        # rotate WARC when exceeded

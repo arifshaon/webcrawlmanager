@@ -56,7 +56,39 @@ _REPLAY_COMPAT_JS = r"""
     proto[name] = wrapped;
   }
 
+  // Archived pages behind AWS WAF reference the WAF's challenge/token SDK
+  // (challenge.js from *.awswaf.com). Its URL rotates, so during replay the
+  // script is usually not in the archive and never loads — and an application
+  // that waits on AwsWafIntegration.getToken() before fetching its data then
+  // hangs or errors out ("we could not load the content") even though the
+  // data responses ARE archived. Pre-seed an already-resolved integration
+  // object in replayed realms so such applications proceed straight to their
+  // (archived) API calls. Never touch fetch/XHR here: wrapping fetch inside
+  // replay realms breaks wombat's URL rewriting.
+  function isReplayedRealm(win) {
+    // Archived documents replay under .../w/<id>/mp_/<original-url>. Only
+    // those realms get the WAF stub — the ReplayWeb.page app frames must be
+    // left alone.
+    try { return win.location.href.indexOf("mp_/") !== -1; }
+    catch (_) { return false; }
+  }
+
+  function neutralizeWafSdk(win) {
+    try {
+      if (!win || !isReplayedRealm(win)) return;
+      if (!win.AwsWafIntegration) {
+        win.AwsWafIntegration = {
+          getToken: () => Promise.resolve("replay-stub"),
+          hasToken: () => true,
+          fetch: (...args) => win.fetch(...args),
+          saveReferrer: () => {},
+        };
+      }
+    } catch (_) {}
+  }
+
   function patchRealm(win) {
+    neutralizeWafSdk(win);
     try {
       const ElementProto = win.Element && win.Element.prototype;
       const IFrame = win.HTMLIFrameElement;

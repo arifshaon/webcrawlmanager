@@ -352,9 +352,13 @@ def main(argv: list[str] | None = None) -> int:
         if not warcs:
             print(f"No WARC files found in {warc_dir}", file=sys.stderr)
             return 1
+        from .detect import WAF_ACTION_HEADER
+
         hosts: Counter = Counter()
         empty = 0
         shown = total = 0
+        waf_challenged: list[str] = []
+        empty_api: list[str] = []
         for path in warcs:
             with open(path, "rb") as fh:
                 for record in ArchiveIterator(fh):
@@ -363,10 +367,15 @@ def main(argv: list[str] | None = None) -> int:
                     uri = record.rec_headers.get_header("WARC-Target-URI") or ""
                     total += 1
                     hosts[_us(uri).hostname or "?"] += 1
-                    length = record.http_headers.get_header(
-                        "Content-Length") if record.http_headers else None
+                    http = record.http_headers
+                    length = http.get_header("Content-Length") if http else None
                     if length == "0" and record.rec_type == "response":
                         empty += 1
+                        ctype = (http.get_header("Content-Type") or "").lower()
+                        if ctype.startswith("application/json"):
+                            empty_api.append(uri)
+                    if http and http.get_header(WAF_ACTION_HEADER):
+                        waf_challenged.append(uri)
                     if not args.hosts:
                         if args.grep and args.grep.lower() not in uri.lower():
                             continue
@@ -382,6 +391,26 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {n:5d}  {host}")
         elif args.grep:
             print(f"\n{shown} of {total} exchange(s) matched {args.grep!r}")
+
+        def _preview(urls: list[str], limit: int = 5) -> None:
+            for u in urls[:limit]:
+                print(f"    {u}")
+            if len(urls) > limit:
+                print(f"    … and {len(urls) - limit} more")
+
+        if waf_challenged:
+            print(f"\nWARNING: {len(waf_challenged)} response(s) are WAF "
+                  "bot-challenge verdicts (x-amzn-waf-action), not real "
+                  "content. The crawl was challenged; those URLs will show "
+                  "as missing/broken content on replay:")
+            _preview(waf_challenged)
+        if empty_api:
+            print(f"\nWARNING: {len(empty_api)} JSON/API response(s) were "
+                  "archived with EMPTY bodies. Pages whose records load "
+                  "dynamically from these URLs will replay with missing "
+                  "content ('could not load') even though the HTML looks "
+                  "fine:")
+            _preview(empty_api)
         return 0
 
     if args.command == "record":

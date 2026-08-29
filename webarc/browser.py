@@ -22,8 +22,15 @@ from typing import Callable
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 from .config import BehaviorConfig, BrowserConfig
+from .detect import is_waf_challenge
 
 log = logging.getLogger(__name__)
+
+# Content markers of an in-progress WAF JS challenge interstitial (AWS WAF's
+# "challenge" action). While one of these is in the DOM the real page has not
+# loaded yet — archiving and moving on at that point captures the interstitial
+# and loses the page's API traffic.
+_WAF_CHALLENGE_MARKERS = ("gokuprops", "awswaf.com")
 
 # Pages served from the back/forward cache or a prerender never touch the
 # network, so nothing reaches the capture layer and the page is silently
@@ -218,6 +225,8 @@ class BrowserDriver:
             log.warning("Navigation failed for %s: %s", url, exc)
             return None
 
+        self._wait_out_challenge(page, resp)
+
         if b.mouse_jitter:
             for _ in range(random.randint(1, 3)):
                 page.mouse.move(random.randint(80, 1000),
@@ -233,6 +242,65 @@ class BrowserDriver:
         except Exception:
             pass
         return resp
+
+    def _looks_like_challenge_interstitial(self, page: Page) -> bool:
+        """A WAF interstitial is a small self-contained document that is mostly
+        challenge script. A real content page may also reference the WAF SDK,
+        so marker presence alone is not enough — require a stub-sized document
+        too, or the wait below would burn its full grace period on every page
+        of a site that embeds the SDK permanently."""
+        try:
+            html = page.content()
+        except Exception:
+            return False
+        if len(html) > 30_000:
+            return False
+        head = html[:8000].lower()
+        return any(marker in head for marker in _WAF_CHALLENGE_MARKERS)
+
+    def _wait_out_challenge(self, page: Page, resp) -> bool:
+        """Let a WAF JS challenge interstitial finish before capture proceeds.
+
+        AWS WAF's "challenge" action answers the first navigation with an
+        HTTP 202 interstitial (header x-amzn-waf-action) that solves a JS
+        puzzle, sets a token cookie, and reloads the real page. Sites like
+        Figshare portals then also load all their records through XHRs, so
+        leaving too early archives the interstitial state — the page replays
+        with '0 posts' and 'could not load content' errors. Returns True if a
+        challenge was seen (cleared or not)."""
+        grace = getattr(self.behavior, "challenge_grace", 0) or 0
+        if grace <= 0:
+            return False
+        challenged = False
+        try:
+            challenged = resp is not None and is_waf_challenge(resp.headers)
+        except Exception:
+            pass
+        if not challenged:
+            challenged = self._looks_like_challenge_interstitial(page)
+        if not challenged:
+            return False
+
+        log.info("WAF JS challenge detected at %s — waiting up to %.0fs for "
+                 "it to clear", page.url, grace)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            try:
+                page.wait_for_timeout(500)
+            except Exception:
+                return True
+            if not self._looks_like_challenge_interstitial(page):
+                log.info("WAF challenge cleared at %s — capturing the real "
+                         "page", page.url)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=8000)
+                except Exception:
+                    pass
+                return True
+        log.warning("WAF challenge did NOT clear within %.0fs at %s — the "
+                    "archived copy is likely the challenge page, not the "
+                    "content", grace, page.url)
+        return True
 
     @staticmethod
     def page_signature(page: Page) -> tuple[str, str]:
@@ -254,8 +322,19 @@ class BrowserDriver:
             viewport = page.evaluate("() => window.innerHeight") or 800
         except Exception:
             return
+        # An infinite-scroll feed grows for as long as it is scrolled (a
+        # repository listing thousands of records would keep a crawler on one
+        # page for hours), so cap the walk at a screen budget.
+        max_screens = getattr(b, "scroll_max_screens", 0) or 0
+        budget_px = max_screens * viewport if max_screens > 0 else float("inf")
         pos = 0
         while pos < total:
+            if pos >= budget_px:
+                log.info("Scroll budget of %d screens reached on a still-"
+                         "growing page (infinite scroll) — moving on; raise "
+                         "behavior.scroll_max_screens to capture more of the "
+                         "feed", max_screens)
+                break
             step = int(viewport * random.uniform(0.6, 0.95))
             pos += step
             try:

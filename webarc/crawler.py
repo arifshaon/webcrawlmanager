@@ -6,12 +6,13 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import Counter
 
 from .browser import BrowserDriver
 from .capture import WarcSession
 from .config import CrawlConfig, SeedConfig
 from .control import Controller, NullController
-from .detect import BlockController, detect_block
+from .detect import BlockController, detect_block, is_waf_challenge
 from .frontier import Frontier
 from .frontier import RobotsCache
 from .scope import ScopeMatcher, canonicalize
@@ -99,29 +100,102 @@ def _write_pdf_response(warc: WarcSession, driver: BrowserDriver,
     )
 
 
-def _make_response_handler(warc: WarcSession, driver: BrowserDriver):
-    """Playwright 'response' event -> WARC request+response records."""
+class PageCapture:
+    """Playwright network events -> WARC records, with body-loss accounting.
 
-    def on_response(response):
+    Sites that load their records dynamically (search portals, infinite-scroll
+    repositories) live or die by their XHR/fetch responses being archived
+    intact. Two failure modes used to be silent here:
+
+    - a body not yet readable at the 'response' event (streaming responses, or
+      scroll-triggered requests still in flight) was archived as an EMPTY 200,
+      which replays as 'we could not load the content'. Bodies are now retried
+      at 'requestfinished', mirroring the interactive recorder.
+    - WAF bot-challenge verdicts on API calls (e.g. AWS WAF's HTTP 202 with
+      x-amzn-waf-action) were archived as if they were the content.
+
+    Both are now counted per page so the crawl loop can warn that a page's
+    dynamic content is incomplete in the archive.
+    """
+
+    def __init__(self, warc: WarcSession, driver: BrowserDriver):
+        self.warc = warc
+        self.driver = driver
+        self._pending: dict = {}          # request -> response awaiting body
+        self.page_counts: Counter = Counter()
+
+    # -- event handlers ------------------------------------------------------
+    def on_response(self, response):
         try:
             request = response.request
+            if 300 <= response.status < 400:
+                # redirects never expose a readable body
+                self._write(response, b"")
+                return
             ctype = (response.headers.get("content-type") or "").lower()
             if (ctype.startswith("application/pdf")
                     and request.resource_type == "document"):
-                _write_pdf_response(warc, driver, response)
+                _write_pdf_response(self.warc, self.driver, response)
                 return
-
+            self._note_suspect(response, request)
             try:
                 body = response.body()
             except Exception:
-                body = b""  # redirects / cached / aborted bodies
+                # retry when the transfer completes (requestfinished)
+                self._pending[request] = response
+                return
+            self._write(response, body)
+        except Exception as exc:
+            log.debug("Capture skipped for %s: %s", response.url, exc)
 
-            post = request.post_data_buffer or None
-            warc.write_exchange(
+    def on_request_finished(self, request):
+        response = self._pending.pop(request, None)
+        if response is None:
+            return
+        try:
+            body = response.body()
+        except Exception as exc:
+            self.page_counts["body-unavailable"] += 1
+            log.warning("Body unavailable for %s (%s) — archived with an "
+                        "empty body; this resource will be missing/broken "
+                        "on replay", response.url, exc)
+            self._write(response, b"")
+            return
+        self._write(response, body)
+
+    def on_request_failed(self, request):
+        response = self._pending.pop(request, None)
+        if response is not None:
+            # a response arrived but its transfer never completed (typically
+            # an XHR cancelled by navigating away mid-flight)
+            self.page_counts["lost-inflight"] += 1
+            log.warning("In-flight response for %s was cancelled before its "
+                        "body arrived — not archived", response.url)
+
+    # -- helpers -------------------------------------------------------------
+    def _note_suspect(self, response, request) -> None:
+        """Count subresource responses that are WAF verdicts or errors: the
+        archived page will replay without the content they should carry."""
+        try:
+            if is_waf_challenge(response.headers):
+                self.page_counts["waf-challenged"] += 1
+                log.warning("WAF challenge verdict archived for %s (the real "
+                            "content of this request is NOT in the archive)",
+                            response.url)
+            elif (response.status >= 400
+                    and request.resource_type in ("xhr", "fetch")):
+                self.page_counts["subresource-error"] += 1
+        except Exception:
+            pass
+
+    def _write(self, response, body: bytes) -> None:
+        try:
+            request = response.request
+            self.warc.write_exchange(
                 url=response.url,
                 method=request.method,
                 req_headers=request.headers,
-                post_data=post,
+                post_data=request.post_data_buffer or None,
                 status=response.status,
                 status_text=response.status_text or "",
                 resp_headers=response.headers,
@@ -130,7 +204,11 @@ def _make_response_handler(warc: WarcSession, driver: BrowserDriver):
         except Exception as exc:
             log.debug("Capture skipped for %s: %s", response.url, exc)
 
-    return on_response
+    def take_page_report(self) -> dict:
+        """Return and reset this page's dynamic-content problem counters."""
+        report = {k: v for k, v in self.page_counts.items() if v}
+        self.page_counts.clear()
+        return report
 
 
 def _capture_nonrenderable_url(warc: WarcSession, driver: BrowserDriver,
@@ -184,7 +262,8 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
 
     warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
                        seed_idx, crawl.operator, seed.warc)
-    stats = {"visited": 0, "skipped_robots": 0, "failed": 0, "blocked": 0}
+    stats = {"visited": 0, "skipped_robots": 0, "failed": 0, "blocked": 0,
+             "dynamic_incomplete": 0}
     controller.seed_status(seed_idx, RUNNING)
     blocks = BlockController(seed.behavior)
     stopped = False
@@ -192,7 +271,10 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
 
     try:
         with BrowserDriver(seed.browser, seed.behavior) as driver:
-            page = driver.new_page(_make_response_handler(warc, driver))
+            capture = PageCapture(warc, driver)
+            page = driver.new_page(capture.on_response)
+            page.on("requestfinished", capture.on_request_finished)
+            page.on("requestfailed", capture.on_request_failed)
 
             while (item := frontier.next()) is not None:
                 # honour pause (blocks) and stop (breaks) between pages
@@ -215,6 +297,16 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
                 controller.report(seed_idx, current_url=url, queued=len(frontier))
                 resp = driver.visit(page, url)
                 frontier.mark_done()
+                # dynamic-content health for the page just visited (counters
+                # reset here so problems attribute to the right page)
+                dyn = capture.take_page_report()
+                if dyn:
+                    stats["dynamic_incomplete"] += 1
+                    log.warning(
+                        "Dynamic content of %s is likely incomplete in the "
+                        "archive (%s) — on replay this page may show missing "
+                        "records or 'could not load content' errors", url,
+                        ", ".join(f"{k}={v}" for k, v in sorted(dyn.items())))
                 if resp is None:
                     if _capture_nonrenderable_url(warc, driver, url):
                         stats["visited"] += 1

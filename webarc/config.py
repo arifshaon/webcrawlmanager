@@ -48,6 +48,13 @@ class BehaviorConfig:
     wait_until: str = "networkidle"
     scroll: bool = True
     scroll_pause: tuple[float, float] = (0.4, 1.2)
+    # Infinite-scroll feeds grow while being scrolled; without a budget a page
+    # with tens of thousands of records never finishes. 0 disables the cap.
+    scroll_max_screens: int = 40
+    # Seconds to let a WAF JS challenge interstitial (e.g. AWS WAF's HTTP 202
+    # "challenge" action) solve itself and reload the real page before the
+    # crawler proceeds. 0 disables the wait.
+    challenge_grace: float = 20.0
     mouse_jitter: bool = True
     # WAF / bot-block handling
     detect_blocks: bool = True
