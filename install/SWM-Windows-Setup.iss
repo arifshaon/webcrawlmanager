@@ -73,6 +73,7 @@ begin
 
   Params := '-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' +
             AddQuotes(ScriptPath) +
+            ' -InstallDir ' + AddQuotes(ExpandConstant('{app}')) +
             ' -Branch ' + AddQuotes('{#SourceBranch}');
 
   Log('Starting SWM bootstrap: ' + PowerShellExe() + ' ' + Params);
