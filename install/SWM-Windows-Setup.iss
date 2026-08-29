@@ -28,9 +28,9 @@ VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Windows Installer
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
-; Inno Setup's {autopf} maps to Program Files for an all-users/admin install
-; and to the current user's Programs folder for a per-user install. The user
-; can change this path on the Select Destination Location page.
+; {autopf} maps to Program Files for an all-users/admin install and to the
+; current user's Programs folder for a normal per-user install. The directory
+; page is intentionally shown so the user can choose another writable folder.
 DefaultDirName={autopf}\Simple Webcrawl Manager
 DisableProgramGroupPage=yes
 DisableDirPage=no
@@ -50,8 +50,21 @@ SetupLogging=yes
 CloseApplications=no
 RestartApplications=no
 
+[Tasks]
+Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"
+
 [Files]
 Source: "{#BootstrapScript}"; Flags: dontcopy
+
+; The bootstrap creates Start SWM Server.cmd in {app}. These shortcuts are
+; created after the bootstrap finishes and give the end user a normal
+; double-click entry point without needing a terminal.
+[Icons]
+Name: "{autoprograms}\Simple Webcrawl Manager"; Filename: "{app}\Start SWM Server.cmd"; WorkingDir: "{app}"; Comment: "Start the Simple Webcrawl Manager dashboard server"
+Name: "{autodesktop}\Simple Webcrawl Manager"; Filename: "{app}\Start SWM Server.cmd"; WorkingDir: "{app}"; Comment: "Start the Simple Webcrawl Manager dashboard server"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\Start SWM Server.cmd"; Description: "Start Simple Webcrawl Manager now"; WorkingDir: "{app}"; Flags: postinstall nowait skipifsilent
 
 [Code]
 var
