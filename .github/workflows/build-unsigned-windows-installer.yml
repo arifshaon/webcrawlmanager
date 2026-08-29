@@ -1,0 +1,64 @@
+name: Build unsigned Windows installer
+
+on:
+  push:
+    branches:
+      - feature/record-session
+    paths:
+      - 'install/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build-unsigned-windows-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: feature/record-session
+
+      - name: Install Inno Setup 6
+        shell: powershell
+        run: |
+          choco install innosetup -y --no-progress
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) {
+            throw 'Inno Setup 6 compiler was not found after installation.'
+          }
+          Write-Host "ISCC=$iscc"
+
+      - name: Build unsigned installer
+        shell: powershell
+        run: |
+          .\install\build-windows-installer.ps1 -Branch feature/record-session -AllowUnsigned
+
+      - name: Verify installer exists and is unsigned
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem .\install\dist\SWM-Setup-*.exe | Select-Object -First 1
+          if (-not $exe) {
+            throw 'Installer EXE was not created.'
+          }
+          $sig = Get-AuthenticodeSignature -FilePath $exe.FullName
+          Write-Host "Installer: $($exe.FullName)"
+          Write-Host "Signature status: $($sig.Status)"
+          if ($sig.Status -eq 'Valid') {
+            throw 'Testing workflow unexpectedly produced a signed installer.'
+          }
+
+      - name: Upload unsigned installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SWM-unsigned-windows-installer
+          path: install/dist/SWM-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 14
