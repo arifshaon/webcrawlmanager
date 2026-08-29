@@ -98,12 +98,12 @@ function Invoke-External {
 
     Write-Info $Description
 
-    # Capture native stdout/stderr locally, then print it with Write-Host. This
-    # is important because callers such as Install-PrivatePythonEnvironment
-    # return a path. Letting native command output escape into PowerShell's
-    # success pipeline would turn that return value into an array containing
-    # download/progress text as well as the path.
-    $commandOutput = & $Exe @ArgumentList 2>&1
+    # Capture stdout locally so native progress/output cannot escape into a
+    # caller's PowerShell return value. Leave stderr unredirected: Git and
+    # other normal command-line tools legitimately write progress to stderr,
+    # and merging it with 2>&1 under ErrorActionPreference=Stop can turn those
+    # progress lines into PowerShell errors.
+    $commandOutput = & $Exe @ArgumentList
     $exitCode = $LASTEXITCODE
     foreach ($line in @($commandOutput)) {
         Write-Host $line
