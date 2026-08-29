@@ -28,9 +28,12 @@ VersionInfoCompany={#AppPublisher}
 VersionInfoDescription={#AppName} Windows Installer
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppVersion}
-DefaultDirName={localappdata}\SimpleWebcrawlManager
+; Inno Setup's {autopf} maps to Program Files for an all-users/admin install
+; and to the current user's Programs folder for a per-user install. The user
+; can change this path on the Select Destination Location page.
+DefaultDirName={autopf}\Simple Webcrawl Manager
 DisableProgramGroupPage=yes
-DisableDirPage=yes
+DisableDirPage=no
 DisableReadyMemo=no
 DisableReadyPage=no
 PrivilegesRequired=lowest
