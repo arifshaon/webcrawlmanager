@@ -23,6 +23,47 @@ jobs:
         with:
           ref: feature/record-session
 
+      - name: Parse PowerShell bootstrap
+        shell: powershell
+        run: |
+          $text = Get-Content .\install\install-windows.ps1 -Raw
+          [void][scriptblock]::Create($text)
+          Write-Host 'PowerShell bootstrap syntax is valid.'
+
+      - name: Smoke test private-runtime bootstrap
+        shell: powershell
+        run: |
+          $testDir = Join-Path $env:RUNNER_TEMP 'swm-private-runtime-test'
+          if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
+
+          .\install\install-windows.ps1 `
+            -InstallDir $testDir `
+            -Branch feature/record-session `
+            -DashboardPort 18080 `
+            -ReplayPort 18091 `
+            -Yes
+
+          $required = @(
+            (Join-Path $testDir '.runtime\uv\uv.exe'),
+            (Join-Path $testDir '.runtime\python'),
+            (Join-Path $testDir '.venv\Scripts\python.exe'),
+            (Join-Path $testDir '.venv\Scripts\swm.exe'),
+            (Join-Path $testDir 'Start SWM Server.cmd'),
+            (Join-Path $testDir 'swm.cmd'),
+            (Join-Path $testDir 'server-port.txt')
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) { throw "Bootstrap did not create: $path" }
+          }
+
+          $port = (Get-Content (Join-Path $testDir 'server-port.txt') -Raw).Trim()
+          if ($port -ne '18080') { throw "Unexpected server port: $port" }
+
+          $privatePython = & (Join-Path $testDir '.venv\Scripts\python.exe') -c "import sys; print(sys.version.split()[0])"
+          Write-Host "Private Python: $privatePython"
+          & (Join-Path $testDir '.venv\Scripts\swm.exe') --help | Select-Object -First 8
+          if ($LASTEXITCODE -ne 0) { throw 'Installed SWM CLI smoke test failed.' }
+
       - name: Install Inno Setup 6
         shell: powershell
         run: |
