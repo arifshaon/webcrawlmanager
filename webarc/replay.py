@@ -200,6 +200,40 @@ def collection_name(crawl_id: int | str) -> str:
     return f"crawl-{crawl_id}"
 
 
+# Hosts whose records are kept in the archive but excluded from the REPLAY
+# copy. AWS WAF's token service serves the challenge SDK (challenge.js) and
+# its verify endpoints; captured faithfully they are part of the archival
+# record, but replaying the SDK breaks the archived site: its freshly
+# generated token calls can never match archived responses, and applications
+# that gate their data fetches on the SDK then hang or error out. With the
+# SDK absent, the compat script's pre-seeded AwsWafIntegration stub takes
+# over and the application proceeds straight to its archived API calls.
+_REPLAY_EXCLUDED_HOSTS = ("awswaf.com",)
+
+
+def _replay_excluded(uri: str) -> bool:
+    from urllib.parse import urlsplit
+    host = (urlsplit(uri).hostname or "").lower()
+    return any(host == h or host.endswith("." + h)
+               for h in _REPLAY_EXCLUDED_HOSTS)
+
+
+def _replay_excluded_record(record) -> bool:
+    """True for records that must not enter the replay copy: WAF challenge-SDK
+    hosts, and challenge-verdict responses (e.g. the HTTP 202 interstitial
+    captured for a page URL before the real page loaded — left in, it can
+    shadow the real 200 document under the same URL at replay)."""
+    uri = record.rec_headers.get_header("WARC-Target-URI") or ""
+    if uri and _replay_excluded(uri):
+        return True
+    if record.rec_type in ("response", "revisit"):
+        from .detect import WAF_ACTION_HEADER
+        http = record.http_headers
+        if http is not None and http.get_header(WAF_ACTION_HEADER):
+            return True
+    return False
+
+
 def detect_start_url(warc_paths: list[Path]) -> str | None:
     """Pick a sensible replay entry page: the first successful, non-empty
     HTML response in the archive. Without a start URL, ReplayWeb.page shows
@@ -236,20 +270,39 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
     site_dir = Path(site_dir).resolve()
     (site_dir / "replay").mkdir(parents=True, exist_ok=True)
 
-    # Concatenate WARCs into one archive (gzip members concatenate into a single
-    # valid WARC that wabac.js indexes in-browser). The filename carries a
+    # Combine the WARCs into one replay archive, dropping records from hosts
+    # that must not replay (WAF challenge SDK — see _REPLAY_EXCLUDED_HOSTS).
+    # The originals are never modified; this is a per-record rewrite of the
+    # replay copy only, which costs a parse pass but keeps archived bot
+    # challenges from sabotaging their own replay. The filename carries a
     # content digest: ReplayWeb.page caches loaded archives by source URL, so
     # a stable name could serve a stale index after new captures are added —
     # a changed archive must get a changed URL.
     import hashlib
-    digest = hashlib.sha1()
+
+    from warcio.archiveiterator import ArchiveIterator
+    from warcio.warcwriter import WARCWriter
+
     tmp = site_dir / "archive.tmp"
+    excluded = 0
     with open(tmp, "wb") as out:
+        writer = WARCWriter(out, gzip=True)
         for p in warc_paths:
             with open(Path(p).resolve(), "rb") as f:
-                while chunk := f.read(1024 * 1024):
-                    digest.update(chunk)
-                    out.write(chunk)
+                for record in ArchiveIterator(f):
+                    if _replay_excluded_record(record):
+                        excluded += 1
+                        continue
+                    writer.write_record(record)
+    if excluded:
+        log.info("Excluded %d WAF challenge record(s) from the replay copy "
+                 "so the archived challenge cannot break replay (original "
+                 "WARCs are untouched)", excluded)
+
+    digest = hashlib.sha1()
+    with open(tmp, "rb") as f:
+        while chunk := f.read(1024 * 1024):
+            digest.update(chunk)
     archive_name = f"archive-{digest.hexdigest()[:12]}.warc.gz"
     archive = site_dir / archive_name
     for old in site_dir.glob("archive-*.warc.gz"):

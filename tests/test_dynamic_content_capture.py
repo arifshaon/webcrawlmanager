@@ -306,6 +306,89 @@ class ChallengeWaitTests(unittest.TestCase):
         self.assertEqual(page.polls, 0)
 
 
+class ReplaySiteFilterTests(unittest.TestCase):
+    """The replay copy must not contain the WAF challenge SDK or challenge
+    verdicts: replayed, the SDK's fresh token calls match nothing in the
+    archive and the archived application hangs on it, and a 202 interstitial
+    can shadow the real 200 document captured for the same URL."""
+
+    def _write_source_warc(self, out_dir):
+        from webarc.capture import WarcSession
+        from webarc.config import WarcConfig
+
+        warc = WarcSession(out_dir, "t", "https://portal.example.org/", 1,
+                           "op", WarcConfig())
+        # the challenge interstitial served first for the page URL
+        warc.write_exchange(
+            url="https://portal.example.org/", method="GET", req_headers={},
+            post_data=None, status=202, status_text="",
+            resp_headers={"x-amzn-waf-action": "challenge",
+                          "content-type": "text/html"},
+            body=b"<html>challenge</html>")
+        # the WAF SDK and its token calls
+        warc.write_exchange(
+            url="https://abc.def.eu-west-1.token.awswaf.com/abc/challenge.js",
+            method="GET", req_headers={}, post_data=None, status=200,
+            status_text="OK",
+            resp_headers={"content-type": "text/javascript"},
+            body=b"// sdk")
+        # the real page and its API data
+        warc.write_exchange(
+            url="https://portal.example.org/", method="GET", req_headers={},
+            post_data=None, status=200, status_text="OK",
+            resp_headers={"content-type": "text/html"},
+            body=b"<html>real page</html>")
+        warc.write_exchange(
+            url="https://portal.example.org/api/graphql?operation=search",
+            method="GET", req_headers={}, post_data=None, status=200,
+            status_text="OK",
+            resp_headers={"content-type": "application/json"},
+            body=b'{"items":[1,2,3]}')
+        warc.close()
+        return sorted(out_dir.glob("*.warc.gz"))
+
+    def test_challenge_records_are_excluded_from_replay_copy(self):
+        import tempfile
+
+        from warcio.archiveiterator import ArchiveIterator
+
+        from webarc.replay import build_replay_site
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            warcs = self._write_source_warc(tmp / "warcs")
+            site = build_replay_site(warcs, tmp / "site")
+
+            kept = []
+            archive = next(site.glob("archive-*.warc.gz"))
+            with open(archive, "rb") as fh:
+                for record in ArchiveIterator(fh):
+                    if record.rec_type != "response":
+                        continue
+                    kept.append((
+                        record.rec_headers.get_header("WARC-Target-URI"),
+                        record.http_headers.get_statuscode(),
+                    ))
+
+            urls = [u for u, _ in kept]
+            self.assertNotIn(
+                "https://abc.def.eu-west-1.token.awswaf.com/abc/challenge.js",
+                urls)
+            # the 202 verdict for the page URL is gone; the real 200 stays
+            self.assertEqual(
+                [s for u, s in kept
+                 if u == "https://portal.example.org/"], ["200"])
+            self.assertIn(
+                "https://portal.example.org/api/graphql?operation=search",
+                urls)
+            # the source WARC is untouched: all four responses still there
+            with open(warcs[0], "rb") as fh:
+                originals = sum(
+                    1 for r in ArchiveIterator(fh)
+                    if r.rec_type == "response")
+            self.assertEqual(originals, 4)
+
+
 class ConfigDefaultsTests(unittest.TestCase):
     def test_new_behavior_defaults_present(self):
         behavior = BehaviorConfig()
