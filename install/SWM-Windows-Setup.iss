@@ -13,6 +13,7 @@
 #define AppPublisher "Arif Shaon"
 #define AppURL "https://github.com/arifshaon/webcrawlmanager"
 #define BootstrapScript "install-windows.ps1"
+#define BootstrapWrapper "run-bootstrap.ps1"
 
 [Setup]
 AppId={{E131A061-383B-4C35-A5DF-B5C944552F10}
@@ -55,6 +56,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 [Files]
 Source: "{#BootstrapScript}"; Flags: dontcopy
+Source: "{#BootstrapWrapper}"; Flags: dontcopy
 
 ; The bootstrap creates Start SWM Server.cmd in {app}. These shortcuts are
 ; created after the bootstrap finishes and give the end user a normal
@@ -78,6 +80,10 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ScriptPath: String;
+  WrapperPath: String;
+  InstallLogPath: String;
+  LogText: AnsiString;
+  LogTail: String;
   Params: String;
   Ok: Boolean;
 begin
@@ -85,14 +91,18 @@ begin
     Exit;
 
   ExtractTemporaryFile('{#BootstrapScript}');
+  ExtractTemporaryFile('{#BootstrapWrapper}');
   ScriptPath := ExpandConstant('{tmp}\{#BootstrapScript}');
+  WrapperPath := ExpandConstant('{tmp}\{#BootstrapWrapper}');
+  InstallLogPath := ExpandConstant('{app}\install.log');
 
   Params := '-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' +
-            AddQuotes(ScriptPath) +
+            AddQuotes(WrapperPath) +
+            ' -BootstrapScript ' + AddQuotes(ScriptPath) +
             ' -InstallDir ' + AddQuotes(ExpandConstant('{app}')) +
             ' -Branch ' + AddQuotes('{#SourceBranch}');
 
-  Log('Starting SWM bootstrap: ' + PowerShellExe() + ' ' + Params);
+  Log('Starting SWM bootstrap wrapper: ' + PowerShellExe() + ' ' + Params);
   Ok := Exec(PowerShellExe(), Params, '', SW_SHOW, ewWaitUntilTerminated,
              BootstrapExitCode);
 
@@ -100,8 +110,26 @@ begin
     RaiseException('Windows could not start the SWM installation bootstrap.');
 
   if BootstrapExitCode <> 0 then
-    RaiseException(
-      'SWM installation failed (bootstrap exit code ' +
-      IntToStr(BootstrapExitCode) +
-      '). Review the PowerShell output and setup log.');
+  begin
+    LogTail := '';
+    if LoadStringFromFile(InstallLogPath, LogText) then
+    begin
+      if Length(LogText) > 1800 then
+        LogTail := Copy(String(LogText), Length(LogText) - 1799, 1800)
+      else
+        LogTail := String(LogText);
+    end;
+
+    if LogTail <> '' then
+      RaiseException(
+        'SWM installation failed (bootstrap exit code ' +
+        IntToStr(BootstrapExitCode) + ').' + #13#10 + #13#10 +
+        'Detailed log: ' + InstallLogPath + #13#10 + #13#10 +
+        'Last installer output:' + #13#10 + LogTail)
+    else
+      RaiseException(
+        'SWM installation failed (bootstrap exit code ' +
+        IntToStr(BootstrapExitCode) + ').' + #13#10 +
+        'Detailed log: ' + InstallLogPath);
+  end;
 end;
