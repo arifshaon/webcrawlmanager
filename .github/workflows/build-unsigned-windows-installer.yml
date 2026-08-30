@@ -41,13 +41,34 @@ jobs:
           if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
           if (Test-Path $runtimeDir) { Remove-Item $runtimeDir -Recurse -Force }
 
-          .\install\install-windows.ps1 `
-            -InstallDir $testDir `
-            -RuntimeRoot $runtimeDir `
-            -Branch feature/record-session `
-            -DashboardPort 18080 `
-            -ReplayPort 18091 `
-            -Yes
+          $bootstrapArgs = @(
+            '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+            '-File', (Resolve-Path '.\install\install-windows.ps1').Path,
+            '-InstallDir', $testDir,
+            '-RuntimeRoot', $runtimeDir,
+            '-Branch', 'feature/record-session',
+            '-DashboardPort', '18080',
+            '-ReplayPort', '18091',
+            '-Yes'
+          )
+          & powershell.exe @bootstrapArgs
+          $bootstrapExit = $LASTEXITCODE
+
+          $pythonRoot = Join-Path $runtimeDir 'python'
+          Write-Host "Bootstrap exit code: $bootstrapExit"
+          if (Test-Path $pythonRoot) {
+            Write-Host 'Extracted private Python tree (top level):'
+            Get-ChildItem -LiteralPath $pythonRoot -Force | Select-Object -First 30 | ForEach-Object { Write-Host $_.FullName }
+            $topPython = Join-Path $pythonRoot 'python.exe'
+            if (Test-Path $topPython) {
+              Write-Host "Testing top-level interpreter directly: $topPython"
+              & cmd.exe /d /c "`"$topPython`" --version 2>&1"
+              Write-Host "Direct python exit code: $LASTEXITCODE"
+            }
+          }
+          if ($bootstrapExit -ne 0) {
+            throw "Bootstrap failed with exit code $bootstrapExit after diagnostics above."
+          }
 
           $required = @(
             (Join-Path $testDir '.runtime\uv\uv.exe'),
@@ -61,13 +82,12 @@ jobs:
             if (-not (Test-Path $path)) { throw "Bootstrap did not create: $path" }
           }
 
-          $privatePythonExe = Get-ChildItem -LiteralPath (Join-Path $runtimeDir 'python') -Filter python.exe -File -Recurse | Select-Object -First 1
-          if (-not $privatePythonExe) { throw 'Private python-build-standalone runtime was not extracted.' }
-          $privateVersion = & $privatePythonExe.FullName -c "import sys; print(sys.version.split()[0])"
+          $privatePythonExe = Join-Path $runtimeDir 'python\python.exe'
+          $privateVersion = & $privatePythonExe -c "import sys; print(sys.version.split()[0])"
           if ($LASTEXITCODE -ne 0 -or $privateVersion -notmatch '^3\.13\.') {
             throw "Unexpected private Python runtime: $privateVersion"
           }
-          Write-Host "Private runtime Python: $privateVersion at $($privatePythonExe.FullName)"
+          Write-Host "Private runtime Python: $privateVersion at $privatePythonExe"
 
           $port = (Get-Content (Join-Path $testDir 'server-port.txt') -Raw).Trim()
           if ($port -ne '18080') { throw "Unexpected server port: $port" }
