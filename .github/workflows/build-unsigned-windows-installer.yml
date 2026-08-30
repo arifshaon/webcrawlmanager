@@ -34,10 +34,13 @@ jobs:
         shell: powershell
         run: |
           $testDir = Join-Path $env:RUNNER_TEMP 'swm-private-runtime-test'
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'swm-localappdata-runtime-test'
           if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
+          if (Test-Path $runtimeRoot) { Remove-Item $runtimeRoot -Recurse -Force }
 
           .\install\install-windows.ps1 `
             -InstallDir $testDir `
+            -RuntimeRoot $runtimeRoot `
             -Branch feature/record-session `
             -DashboardPort 18080 `
             -ReplayPort 18091 `
@@ -45,7 +48,7 @@ jobs:
 
           $required = @(
             (Join-Path $testDir '.runtime\uv\uv.exe'),
-            (Join-Path $testDir '.runtime\python'),
+            (Join-Path $runtimeRoot 'python'),
             (Join-Path $testDir '.venv\Scripts\python.exe'),
             (Join-Path $testDir '.venv\Scripts\swm.exe'),
             (Join-Path $testDir 'Start SWM Server.cmd'),
@@ -56,15 +59,16 @@ jobs:
             if (-not (Test-Path $path)) { throw "Bootstrap did not create: $path" }
           }
 
+          $managedPython = Get-ChildItem -Path (Join-Path $runtimeRoot 'python') -Filter python.exe -File -Recurse | Select-Object -First 1
+          if (-not $managedPython) { throw 'Managed CPython executable was not found in RuntimeRoot.' }
+          Write-Host "Managed CPython: $($managedPython.FullName)"
+
           $port = (Get-Content (Join-Path $testDir 'server-port.txt') -Raw).Trim()
           if ($port -ne '18080') { throw "Unexpected server port: $port" }
 
           $privatePython = & (Join-Path $testDir '.venv\Scripts\python.exe') -c "import sys; print(sys.version.split()[0])"
           Write-Host "Private Python: $privatePython"
 
-          # Capture all help output before truncating it for the log. Piping the
-          # native executable directly into Select-Object -First can close its
-          # stdout early and make Python exit with a broken-pipe status.
           $helpOutput = & (Join-Path $testDir '.venv\Scripts\swm.exe') --help
           $helpExitCode = $LASTEXITCODE
           $helpOutput | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
