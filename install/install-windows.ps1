@@ -38,15 +38,10 @@ $RepoName = "webcrawlmanager"
 $RepoUrl = "https://github.com/$RepoOwner/$RepoName.git"
 $RepoBaseUrl = "https://github.com/$RepoOwner/$RepoName"
 
-# uv remains a portable application-local dependency for venv/pip operations.
-# It is NOT used to install or discover Python.
 $UvVersion = "0.11.29"
 $UvUrl = "https://github.com/astral-sh/uv/releases/download/$UvVersion/uv-x86_64-pc-windows-msvc.zip"
 $UvSha256 = "a047d55651bc3e0ca24595b25ec4cfcb10f9dca9fb56514e661269b37d4fae68"
 
-# Pinned private CPython build from Astral's python-build-standalone project.
-# Pinning both the archive and digest makes the installer reproducible and
-# avoids executing the normal CPython system installer.
 $PythonVersion = "3.13.14"
 $PythonBuildRelease = "20260804"
 $PythonArchiveUrl = "https://github.com/astral-sh/python-build-standalone/releases/download/20260804/cpython-3.13.14%2B20260804-x86_64-pc-windows-msvc-install_only.tar.gz"
@@ -229,7 +224,8 @@ function Get-ValidPrivatePython([string]$PythonDir) {
         return $null
     }
 
-    $candidates = Get-ChildItem -LiteralPath $PythonDir -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue
+    $candidates = Get-ChildItem -LiteralPath $PythonDir -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Sort-Object { $_.FullName.Length }
     foreach ($candidate in $candidates) {
         try {
             $version = (& $candidate.FullName -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null | Select-Object -First 1)
@@ -288,22 +284,24 @@ function Install-PrivatePythonArchive([string]$PrivateRuntimeRoot) {
 
         Invoke-External -Exe $tarExe -ArgumentList @("-xzf", $archive, "-C", $expanded) -Description "Extracting private CPython runtime"
 
-        $extractedPython = Get-ChildItem -LiteralPath $expanded -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-        if (-not $extractedPython) {
-            throw "The verified CPython archive did not contain python.exe."
+        # python-build-standalone install_only archives have a top-level
+        # `python` directory with the real interpreter at python\python.exe.
+        # Do not select the first recursive python.exe: the stdlib also carries
+        # venv template executables under Lib\venv\scripts\nt, and copying that
+        # directory would produce a broken runtime.
+        $archivePythonDir = Join-Path $expanded "python"
+        $archivePythonExe = Join-Path $archivePythonDir "python.exe"
+        if (-not (Test-Path -LiteralPath $archivePythonExe)) {
+            throw "The verified CPython install_only archive did not contain the expected python\python.exe runtime."
         }
 
-        # install_only archives normally contain a top-level python directory.
-        # Copy the directory containing python.exe so the installer does not
-        # depend on the archive's top-level folder name.
         if (Test-Path -LiteralPath $pythonDir) {
             Remove-Item -LiteralPath $pythonDir -Recurse -Force
         }
-        New-Item -ItemType Directory -Path $pythonDir -Force | Out-Null
-        foreach ($item in Get-ChildItem -LiteralPath $extractedPython.Directory.FullName -Force) {
-            Copy-Item -LiteralPath $item.FullName -Destination $pythonDir -Recurse -Force
-        }
+
+        # Preserve the standalone distribution as a unit. Moving the complete
+        # top-level directory keeps its DLL/Lib/tcl layout intact.
+        Move-Item -LiteralPath $archivePythonDir -Destination $pythonDir
     } finally {
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
