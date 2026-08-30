@@ -31,7 +31,10 @@ jobs:
           if ($text -match '"python"\s*,\s*"install"') {
             throw 'Installer must not use uv python install; that path fails under Windows RedirectionGuard on affected systems.'
           }
-          Write-Host 'PowerShell bootstrap syntax is valid and contains no uv managed-Python install call.'
+
+          $wrapperText = Get-Content .\install\run-bootstrap.ps1 -Raw
+          [void][scriptblock]::Create($wrapperText)
+          Write-Host 'PowerShell bootstrap and wrapper syntax are valid; bootstrap contains no uv managed-Python install call.'
 
       - name: Smoke test private-runtime bootstrap
         shell: powershell
