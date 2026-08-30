@@ -4,24 +4,18 @@
     Windows bootstrap installer for Simple Webcrawl Manager (SWM).
 
 .DESCRIPTION
-    Installs the feature/record-session build of SWM. The installer downloads
-    or updates the source from GitHub and creates a private application runtime.
+    Installs the feature/record-session build of SWM. The application source,
+    launchers, virtual environment, and Playwright browser files are kept in the
+    user-selected installation directory.
 
-    SWM does NOT install Python system-wide. It uses a pinned portable uv
-    bootstrapper to download a managed CPython 3.13 runtime into the selected
-    SWM installation directory, without administrator rights, PATH changes, or
-    Windows Python-registry registration. A private .venv is then created from
-    that runtime and SWM, dashboard dependencies, and Playwright Chromium are
-    installed into the application directory.
+    SWM does NOT install Python system-wide. A private CPython 3.13 runtime is
+    installed under the current user's LocalAppData directory. This avoids
+    administrator rights, PATH changes, Python registry registration, and the
+    Windows "untrusted mount point" failure that can occur when uv creates
+    Python launcher links in some user-selected folders.
 
-    The installer also creates a double-clickable "Start SWM Server.cmd"
-    launcher. It starts the dashboard server and opens the user's default browser.
-
-.EXAMPLE
-    powershell -ExecutionPolicy Bypass -File .\install\install-windows.ps1
-
-.EXAMPLE
-    .\install\install-windows.ps1 -InstallDir "D:\Apps\SWM" -Yes
+    The installer creates a double-clickable "Start SWM Server.cmd" launcher
+    which starts the dashboard and opens it in the user's default browser.
 #>
 
 [CmdletBinding()]
@@ -30,6 +24,7 @@ param(
     [string]$Branch = "feature/record-session",
     [int]$DashboardPort = 8080,
     [int]$ReplayPort = 8091,
+    [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA "SimpleWebcrawlManager\runtime"),
     [switch]$Yes
 )
 
@@ -42,8 +37,6 @@ $RepoName = "webcrawlmanager"
 $RepoUrl = "https://github.com/$RepoOwner/$RepoName.git"
 $RepoBaseUrl = "https://github.com/$RepoOwner/$RepoName"
 
-# Pinned portable uv build. The SHA-256 is the digest published on the uv
-# GitHub release for uv-x86_64-pc-windows-msvc.zip.
 $UvVersion = "0.11.29"
 $UvUrl = "https://github.com/astral-sh/uv/releases/download/$UvVersion/uv-x86_64-pc-windows-msvc.zip"
 $UvSha256 = "a047d55651bc3e0ca24595b25ec4cfcb10f9dca9fb56514e661269b37d4fae68"
@@ -82,8 +75,7 @@ function Test-IsAdmin {
     try {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
         $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-        return $principal.IsInRole(
-            [Security.Principal.WindowsBuiltInRole]::Administrator)
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     } catch {
         return $false
     }
@@ -97,18 +89,11 @@ function Invoke-External {
     )
 
     Write-Info $Description
-
-    # Capture stdout locally so native progress/output cannot escape into a
-    # caller's PowerShell return value. Leave stderr unredirected: Git and
-    # other normal command-line tools legitimately write progress to stderr,
-    # and merging it with 2>&1 under ErrorActionPreference=Stop can turn those
-    # progress lines into PowerShell errors.
     $commandOutput = & $Exe @ArgumentList
     $exitCode = $LASTEXITCODE
     foreach ($line in @($commandOutput)) {
         Write-Host $line
     }
-
     if ($exitCode -ne 0) {
         throw "$Description failed with exit code $exitCode."
     }
@@ -170,12 +155,9 @@ function Sync-Source([string]$TargetDir, [string]$BranchName) {
         if ($dirty) {
             throw "Tracked files in $TargetDir have local changes. Commit or stash them before updating."
         }
-        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "fetch", "origin", $BranchName) `
-            -Description "Fetching $BranchName from GitHub"
-        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "checkout", $BranchName) `
-            -Description "Checking out $BranchName"
-        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "pull", "--ff-only", "origin", $BranchName) `
-            -Description "Updating SWM from GitHub"
+        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "fetch", "origin", $BranchName) -Description "Fetching $BranchName from GitHub"
+        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "checkout", $BranchName) -Description "Checking out $BranchName"
+        Invoke-External -Exe $git.Source -ArgumentList @("-C", $TargetDir, "pull", "--ff-only", "origin", $BranchName) -Description "Updating SWM from GitHub"
         return
     }
 
@@ -229,8 +211,7 @@ function Install-PortableUv([string]$TargetDir) {
         Write-Ok "uv download SHA-256 verified."
 
         Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
-        $downloadedUv = Get-ChildItem -LiteralPath $expanded -Filter "uv.exe" -File -Recurse |
-            Select-Object -First 1
+        $downloadedUv = Get-ChildItem -LiteralPath $expanded -Filter "uv.exe" -File -Recurse | Select-Object -First 1
         if (-not $downloadedUv) {
             throw "The verified uv archive did not contain uv.exe."
         }
@@ -249,32 +230,40 @@ function Install-PortableUv([string]$TargetDir) {
     return $uvExe
 }
 
-function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe) {
-    $runtimeDir = Join-Path $TargetDir ".runtime"
-    $pythonDir = Join-Path $runtimeDir "python"
-    $pythonBinDir = Join-Path $runtimeDir "python-bin"
-    $uvCacheDir = Join-Path $runtimeDir "uv-cache"
+function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe, [string]$PrivateRuntimeRoot) {
+    $pythonDir = Join-Path $PrivateRuntimeRoot "python"
+    $uvDataDir = Join-Path $PrivateRuntimeRoot "uv-data"
+    $uvCacheDir = Join-Path $PrivateRuntimeRoot "uv-cache"
     $venvDir = Join-Path $TargetDir ".venv"
     $venvPython = Join-Path $venvDir "Scripts\python.exe"
 
-    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $PrivateRuntimeRoot -Force | Out-Null
 
-    # Keep every Python artefact inside the chosen SWM installation folder.
-    # No PATH changes and no Python registration in the Windows registry.
-    $env:UV_PYTHON_INSTALL_DIR = $pythonDir
-    $env:UV_PYTHON_BIN_DIR = $pythonBinDir
+    # Keep uv's managed Python and state in LocalAppData. Explicitly disable
+    # launcher/bin creation and registry integration. This avoids Windows
+    # STATUS_UNTRUSTED_MOUNT_POINT / os error 448 on affected systems.
+    $env:UV_DATA_DIR = $uvDataDir
     $env:UV_CACHE_DIR = $uvCacheDir
+    $env:UV_PYTHON_INSTALL_DIR = $pythonDir
     $env:UV_PYTHON_NO_REGISTRY = "1"
+    $env:UV_PYTHON_INSTALL_BIN = "0"
 
     Write-Info "Python will be private to SWM: $pythonDir"
     Invoke-External -Exe $UvExe -ArgumentList @(
         "python", "install", $ManagedPython,
         "--install-dir", $pythonDir,
-        "--managed-python"
+        "--managed-python",
+        "--no-bin",
+        "--no-registry"
     ) -Description "Downloading private CPython $ManagedPython runtime"
 
-    # Always rebuild the venv during installation/update so it cannot retain a
-    # dependency on a system Python from an older installer version.
+    $privatePythonExe = Get-ChildItem -LiteralPath $pythonDir -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $privatePythonExe) {
+        throw "Private CPython was installed but python.exe could not be found under $pythonDir."
+    }
+    Write-Ok "Private CPython executable: $($privatePythonExe.FullName)"
+
     if (Test-Path -LiteralPath $venvDir) {
         Write-Info "Recreating SWM virtual environment from the private runtime."
         Remove-Item -LiteralPath $venvDir -Recurse -Force
@@ -282,8 +271,7 @@ function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe) {
 
     Invoke-External -Exe $UvExe -ArgumentList @(
         "venv", $venvDir,
-        "--python", $ManagedPython,
-        "--managed-python",
+        "--python", $privatePythonExe.FullName,
         "--seed"
     ) -Description "Creating isolated SWM virtual environment"
 
@@ -297,8 +285,8 @@ function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe) {
         "-e", "$TargetDir[dashboard]"
     ) -Description "Installing SWM and dashboard dependencies"
 
-    # Keep the Playwright browser runtime inside the application as well.
-    $env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $runtimeDir "ms-playwright"
+    $playwrightDir = Join-Path $TargetDir ".runtime\ms-playwright"
+    $env:PLAYWRIGHT_BROWSERS_PATH = $playwrightDir
     Invoke-External -Exe $venvPython -ArgumentList @(
         "-m", "playwright", "install", "chromium"
     ) -Description "Installing Playwright Chromium into SWM's private runtime"
@@ -308,9 +296,7 @@ function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe) {
 
 function Get-ChromePath {
     $cmd = Get-Command chrome.exe -ErrorAction SilentlyContinue
-    if ($cmd) {
-        return $cmd.Source
-    }
+    if ($cmd) { return $cmd.Source }
 
     $paths = @()
     if ($env:ProgramFiles) {
@@ -323,9 +309,7 @@ function Get-ChromePath {
         $paths += (Join-Path $env:LOCALAPPDATA "Google\Chrome\Application\chrome.exe")
     }
     foreach ($path in $paths) {
-        if (Test-Path -LiteralPath $path) {
-            return $path
-        }
+        if (Test-Path -LiteralPath $path) { return $path }
     }
     return $null
 }
@@ -333,8 +317,7 @@ function Get-ChromePath {
 function Test-PortAvailable([int]$Port) {
     $listener = $null
     try {
-        $listener = [System.Net.Sockets.TcpListener]::new(
-            [System.Net.IPAddress]::Loopback, $Port)
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
         $listener.Start()
         return $true
     } catch {
@@ -348,13 +331,10 @@ function Test-PortAvailable([int]$Port) {
 
 function Get-PortOwner([int]$Port) {
     try {
-        $conn = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop |
-            Select-Object -First 1
+        $conn = Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop | Select-Object -First 1
         if ($conn) {
             $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
-            if ($proc) {
-                return "$($proc.ProcessName) (PID $($proc.Id))"
-            }
+            if ($proc) { return "$($proc.ProcessName) (PID $($proc.Id))" }
             return "PID $($conn.OwningProcess)"
         }
     } catch {}
@@ -363,9 +343,7 @@ function Get-PortOwner([int]$Port) {
 
 function Find-FreePort([int]$StartPort) {
     for ($port = $StartPort; $port -lt ($StartPort + 100); $port++) {
-        if (Test-PortAvailable $port) {
-            return $port
-        }
+        if (Test-PortAvailable $port) { return $port }
     }
     return $null
 }
@@ -411,9 +389,7 @@ endlocal
 "@
     $serverText | Set-Content -LiteralPath $serverLauncher -Encoding ASCII
 
-    Set-Content -LiteralPath (Join-Path $TargetDir "server-port.txt") `
-        -Value $ServerPort -Encoding ASCII
-
+    Set-Content -LiteralPath (Join-Path $TargetDir "server-port.txt") -Value $ServerPort -Encoding ASCII
     Write-Ok "Created double-click server launcher: $serverLauncher"
 }
 
@@ -422,10 +398,11 @@ try {
     Write-Host "GitHub: $RepoBaseUrl"
     Write-Host "Branch: $Branch"
     Write-Host "Install directory: $InstallDir"
+    Write-Host "Private runtime directory: $RuntimeRoot"
 
     $isAdmin = Test-IsAdmin
     Write-Info ("Privilege level: " + $(if ($isAdmin) { "Administrator" } else { "Standard user" }))
-    Write-Info "SWM will use a private Python runtime; administrator rights are not required for Python."
+    Write-Info "SWM uses a per-user private Python runtime; administrator rights are not required for Python."
 
     Write-Step "1. Download / update SWM"
     Sync-Source -TargetDir $InstallDir -BranchName $Branch
@@ -436,7 +413,7 @@ try {
 
     Write-Step "2. Prepare private Python runtime"
     $uvExe = Install-PortableUv -TargetDir $InstallDir
-    $venvPython = Install-PrivatePythonEnvironment -TargetDir $InstallDir -UvExe $uvExe
+    $venvPython = Install-PrivatePythonEnvironment -TargetDir $InstallDir -UvExe $uvExe -PrivateRuntimeRoot $RuntimeRoot
     $pythonVersion = (& $venvPython -c "import sys; print(sys.version.split()[0])" | Select-Object -First 1)
     Write-Ok "Private Python $pythonVersion is ready. No system Python was installed."
 
@@ -469,7 +446,7 @@ try {
 
     Write-Step "Installation complete"
     Write-Host "Installed to: $InstallDir" -ForegroundColor Green
-    Write-Host "Private Python runtime: $InstallDir\.runtime\python"
+    Write-Host "Private Python runtime: $RuntimeRoot\python"
     Write-Host ""
     Write-Host "To start SWM, double-click:"
     Write-Host "  $InstallDir\Start SWM Server.cmd" -ForegroundColor Green
@@ -487,7 +464,7 @@ try {
     Write-Host "INSTALLATION FAILED" -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Red
     Write-Host ""
-    Write-Host "SWM does not require a system-wide Python installation. Its private Python"
-    Write-Host "runtime is stored inside the chosen SWM installation directory."
+    Write-Host "SWM does not require a system-wide Python installation."
+    Write-Host "Private Python runtime location: $RuntimeRoot"
     exit 1
 }
