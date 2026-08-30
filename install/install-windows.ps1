@@ -228,11 +228,22 @@ function Get-ValidPrivatePython([string]$PythonDir) {
         Sort-Object { $_.FullName.Length }
     foreach ($candidate in $candidates) {
         try {
-            $version = (& $candidate.FullName -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null | Select-Object -First 1)
-            if ($LASTEXITCODE -eq 0 -and $version -match '^3\.13\.') {
+            # Capture the native process output without piping it through another
+            # PowerShell command. In Windows PowerShell 5.1, reading native output
+            # through a pipeline and then inspecting $LASTEXITCODE can be unreliable
+            # enough to reject a healthy interpreter intermittently.
+            $versionLines = @(& $candidate.FullName -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null)
+            $pythonExitCode = $LASTEXITCODE
+            $version = if ($versionLines.Count -gt 0) { ([string]$versionLines[0]).Trim() } else { "" }
+
+            if ($pythonExitCode -eq 0 -and $version -match '^3\.13\.') {
                 return $candidate.FullName
             }
-        } catch {}
+
+            Write-Info "Rejected private Python candidate $($candidate.FullName): exit=$pythonExitCode version='$version'"
+        } catch {
+            Write-Info "Private Python probe failed for $($candidate.FullName): $($_.Exception.Message)"
+        }
     }
     return $null
 }
