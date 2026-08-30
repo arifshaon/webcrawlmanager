@@ -9,10 +9,11 @@
     user-selected installation directory.
 
     SWM does NOT install Python system-wide. A private CPython 3.13 runtime is
-    installed under the current user's LocalAppData directory. This avoids
-    administrator rights, PATH changes, Python registry registration, and the
-    Windows "untrusted mount point" failure that can occur when uv creates
-    Python launcher links in some user-selected folders.
+    kept under the current user's LocalAppData directory. Fresh installations
+    download a pinned python-build-standalone archive directly and verify its
+    SHA-256 before extraction. This deliberately avoids `uv python install` and
+    its Windows launcher/link creation path, which can fail under AppCompat /
+    RedirectionGuard with STATUS_UNTRUSTED_MOUNT_POINT (os error 448).
 
     The installer creates a double-clickable "Start SWM Server.cmd" launcher
     which starts the dashboard and opens it in the user's default browser.
@@ -37,10 +38,19 @@ $RepoName = "webcrawlmanager"
 $RepoUrl = "https://github.com/$RepoOwner/$RepoName.git"
 $RepoBaseUrl = "https://github.com/$RepoOwner/$RepoName"
 
+# uv remains a portable application-local dependency for venv/pip operations.
+# It is NOT used to install or discover Python.
 $UvVersion = "0.11.29"
 $UvUrl = "https://github.com/astral-sh/uv/releases/download/$UvVersion/uv-x86_64-pc-windows-msvc.zip"
 $UvSha256 = "a047d55651bc3e0ca24595b25ec4cfcb10f9dca9fb56514e661269b37d4fae68"
-$ManagedPython = "3.13"
+
+# Pinned private CPython build from Astral's python-build-standalone project.
+# Pinning both the archive and digest makes the installer reproducible and
+# avoids executing the normal CPython system installer.
+$PythonVersion = "3.13.14"
+$PythonBuildRelease = "20260804"
+$PythonArchiveUrl = "https://github.com/astral-sh/python-build-standalone/releases/download/20260804/cpython-3.13.14%2B20260804-x86_64-pc-windows-msvc-install_only.tar.gz"
+$PythonArchiveSha256 = "84012b1c9d4bff00e2989e47c41c8ee74f43d4cee061df45d2f6c8459627cb28"
 
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -57,18 +67,6 @@ function Write-Ok([string]$Text) {
 
 function Write-Info([string]$Text) {
     Write-Host "[INFO] $Text" -ForegroundColor Gray
-}
-
-function Confirm-Action([string]$Prompt) {
-    if ($Yes) {
-        Write-Info "$Prompt -> yes (-Yes)"
-        return $true
-    }
-    while ($true) {
-        $answer = (Read-Host "$Prompt [Y/N]").Trim().ToLowerInvariant()
-        if ($answer -in @("y", "yes")) { return $true }
-        if ($answer -in @("n", "no")) { return $false }
-    }
 }
 
 function Test-IsAdmin {
@@ -192,10 +190,6 @@ function Install-PortableUv([string]$TargetDir) {
         Remove-Item -LiteralPath $uvDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not (Confirm-Action "Download SWM's private Python runtime tools (no administrator rights or system Python installation)?")) {
-        throw "A private Python runtime is required to run SWM. Installation cancelled by user."
-    }
-
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("swm-uv-" + [Guid]::NewGuid().ToString("N"))
     $zip = Join-Path $tmp "uv.zip"
     $expanded = Join-Path $tmp "expanded"
@@ -230,39 +224,108 @@ function Install-PortableUv([string]$TargetDir) {
     return $uvExe
 }
 
-function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe, [string]$PrivateRuntimeRoot) {
+function Get-ValidPrivatePython([string]$PythonDir) {
+    if (-not (Test-Path -LiteralPath $PythonDir)) {
+        return $null
+    }
+
+    $candidates = Get-ChildItem -LiteralPath $PythonDir -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue
+    foreach ($candidate in $candidates) {
+        try {
+            $version = (& $candidate.FullName -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null | Select-Object -First 1)
+            if ($LASTEXITCODE -eq 0 -and $version -match '^3\.13\.') {
+                return $candidate.FullName
+            }
+        } catch {}
+    }
+    return $null
+}
+
+function Get-TarExe {
+    if ($env:SystemRoot) {
+        $systemTar = Join-Path $env:SystemRoot "System32\tar.exe"
+        if (Test-Path -LiteralPath $systemTar) {
+            return $systemTar
+        }
+    }
+
+    $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if ($tar) {
+        return $tar.Source
+    }
+    return $null
+}
+
+function Install-PrivatePythonArchive([string]$PrivateRuntimeRoot) {
     $pythonDir = Join-Path $PrivateRuntimeRoot "python"
-    $uvDataDir = Join-Path $PrivateRuntimeRoot "uv-data"
+    New-Item -ItemType Directory -Path $PrivateRuntimeRoot -Force | Out-Null
+
+    $existing = Get-ValidPrivatePython -PythonDir $pythonDir
+    if ($existing) {
+        Write-Ok "Existing private CPython 3.13 found: $existing"
+        return $existing
+    }
+
+    $tarExe = Get-TarExe
+    if (-not $tarExe) {
+        throw "Windows tar.exe is required to unpack the private CPython runtime but was not found."
+    }
+
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("swm-python-" + [Guid]::NewGuid().ToString("N"))
+    $archive = Join-Path $tmp "python.tar.gz"
+    $expanded = Join-Path $tmp "expanded"
+    New-Item -ItemType Directory -Path $expanded -Force | Out-Null
+
+    try {
+        Write-Info "Downloading private CPython $PythonVersion (python-build-standalone $PythonBuildRelease)."
+        Invoke-WebRequest -Uri $PythonArchiveUrl -OutFile $archive -UseBasicParsing
+
+        $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($actualHash -ne $PythonArchiveSha256) {
+            throw "CPython archive SHA-256 verification failed. Expected $PythonArchiveSha256 but received $actualHash."
+        }
+        Write-Ok "Private CPython archive SHA-256 verified."
+
+        Invoke-External -Exe $tarExe -ArgumentList @("-xzf", $archive, "-C", $expanded) -Description "Extracting private CPython runtime"
+
+        $extractedPython = Get-ChildItem -LiteralPath $expanded -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if (-not $extractedPython) {
+            throw "The verified CPython archive did not contain python.exe."
+        }
+
+        # install_only archives normally contain a top-level python directory.
+        # Copy the directory containing python.exe so the installer does not
+        # depend on the archive's top-level folder name.
+        if (Test-Path -LiteralPath $pythonDir) {
+            Remove-Item -LiteralPath $pythonDir -Recurse -Force
+        }
+        New-Item -ItemType Directory -Path $pythonDir -Force | Out-Null
+        foreach ($item in Get-ChildItem -LiteralPath $extractedPython.Directory.FullName -Force) {
+            Copy-Item -LiteralPath $item.FullName -Destination $pythonDir -Recurse -Force
+        }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    $installed = Get-ValidPrivatePython -PythonDir $pythonDir
+    if (-not $installed) {
+        throw "Private CPython was extracted but a working Python 3.13 executable could not be found under $pythonDir."
+    }
+
+    Write-Ok "Private CPython $PythonVersion is ready: $installed"
+    return $installed
+}
+
+function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe, [string]$PrivateRuntimeRoot) {
     $uvCacheDir = Join-Path $PrivateRuntimeRoot "uv-cache"
     $venvDir = Join-Path $TargetDir ".venv"
     $venvPython = Join-Path $venvDir "Scripts\python.exe"
 
     New-Item -ItemType Directory -Path $PrivateRuntimeRoot -Force | Out-Null
-
-    # Keep uv's managed Python and state in LocalAppData. Explicitly disable
-    # launcher/bin creation and registry integration. This avoids Windows
-    # STATUS_UNTRUSTED_MOUNT_POINT / os error 448 on affected systems.
-    $env:UV_DATA_DIR = $uvDataDir
     $env:UV_CACHE_DIR = $uvCacheDir
-    $env:UV_PYTHON_INSTALL_DIR = $pythonDir
-    $env:UV_PYTHON_NO_REGISTRY = "1"
-    $env:UV_PYTHON_INSTALL_BIN = "0"
 
-    Write-Info "Python will be private to SWM: $pythonDir"
-    Invoke-External -Exe $UvExe -ArgumentList @(
-        "python", "install", $ManagedPython,
-        "--install-dir", $pythonDir,
-        "--managed-python",
-        "--no-bin",
-        "--no-registry"
-    ) -Description "Downloading private CPython $ManagedPython runtime"
-
-    $privatePythonExe = Get-ChildItem -LiteralPath $pythonDir -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if (-not $privatePythonExe) {
-        throw "Private CPython was installed but python.exe could not be found under $pythonDir."
-    }
-    Write-Ok "Private CPython executable: $($privatePythonExe.FullName)"
+    $privatePythonExe = Install-PrivatePythonArchive -PrivateRuntimeRoot $PrivateRuntimeRoot
 
     if (Test-Path -LiteralPath $venvDir) {
         Write-Info "Recreating SWM virtual environment from the private runtime."
@@ -271,7 +334,7 @@ function Install-PrivatePythonEnvironment([string]$TargetDir, [string]$UvExe, [s
 
     Invoke-External -Exe $UvExe -ArgumentList @(
         "venv", $venvDir,
-        "--python", $privatePythonExe.FullName,
+        "--python", $privatePythonExe,
         "--seed"
     ) -Description "Creating isolated SWM virtual environment"
 
@@ -398,7 +461,7 @@ try {
     Write-Host "GitHub: $RepoBaseUrl"
     Write-Host "Branch: $Branch"
     Write-Host "Install directory: $InstallDir"
-    Write-Host "Private runtime directory: $RuntimeRoot"
+    Write-Host "Private runtime: $RuntimeRoot"
 
     $isAdmin = Test-IsAdmin
     Write-Info ("Privilege level: " + $(if ($isAdmin) { "Administrator" } else { "Standard user" }))
@@ -414,8 +477,8 @@ try {
     Write-Step "2. Prepare private Python runtime"
     $uvExe = Install-PortableUv -TargetDir $InstallDir
     $venvPython = Install-PrivatePythonEnvironment -TargetDir $InstallDir -UvExe $uvExe -PrivateRuntimeRoot $RuntimeRoot
-    $pythonVersion = (& $venvPython -c "import sys; print(sys.version.split()[0])" | Select-Object -First 1)
-    Write-Ok "Private Python $pythonVersion is ready. No system Python was installed."
+    $pythonVersionText = (& $venvPython -c "import sys; print(sys.version.split()[0])" | Select-Object -First 1)
+    Write-Ok "Private Python $pythonVersionText is ready. No system Python was installed."
 
     Write-Step "3. Check Google Chrome"
     $chrome = Get-ChromePath
@@ -446,7 +509,7 @@ try {
 
     Write-Step "Installation complete"
     Write-Host "Installed to: $InstallDir" -ForegroundColor Green
-    Write-Host "Private Python runtime: $RuntimeRoot\python"
+    Write-Host "Private Python runtime: $RuntimeRoot"
     Write-Host ""
     Write-Host "To start SWM, double-click:"
     Write-Host "  $InstallDir\Start SWM Server.cmd" -ForegroundColor Green
