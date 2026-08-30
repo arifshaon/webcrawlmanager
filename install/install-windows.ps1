@@ -233,16 +233,31 @@ function Get-ValidPrivatePython([string]$PythonDir) {
 
         for ($attempt = 1; $attempt -le 5; $attempt++) {
             try {
-                # Capture native output directly rather than piping it through
-                # Select-Object. Also retry briefly because Windows security /
-                # filesystem scanning can transiently delay a just-extracted EXE.
-                $versionLines = @(& $candidate.FullName -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null)
-                $pythonExitCode = $LASTEXITCODE
-                $version = if ($versionLines.Count -gt 0) { ([string]$versionLines[0]).Trim() } else { "" }
+                # Use System.Diagnostics.Process so the exit code belongs to the
+                # Python process itself. $LASTEXITCODE is scope-sensitive in
+                # Windows PowerShell 5.1 and can be $null inside this helper even
+                # when python.exe ran successfully and printed a valid version.
+                $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+                $startInfo.FileName = $candidate.FullName
+                $startInfo.Arguments = '-c "import sys; print(sys.version_info.major, sys.version_info.minor, sys.version_info.micro, sep=chr(46))"'
+                $startInfo.UseShellExecute = $false
+                $startInfo.CreateNoWindow = $true
+                $startInfo.RedirectStandardOutput = $true
+                $startInfo.RedirectStandardError = $true
 
+                $process = New-Object System.Diagnostics.Process
+                $process.StartInfo = $startInfo
+                [void]$process.Start()
+                $stdout = $process.StandardOutput.ReadToEnd()
+                $stderr = $process.StandardError.ReadToEnd()
+                $process.WaitForExit()
+
+                $pythonExitCode = $process.ExitCode
+                $version = $stdout.Trim()
                 $lastExitCode = $pythonExitCode
                 $lastVersion = $version
-                $lastError = ""
+                $lastError = $stderr.Trim()
+                $process.Dispose()
 
                 if ($pythonExitCode -eq 0 -and $version -match '^3\.13\.') {
                     return $candidate.FullName
@@ -257,7 +272,7 @@ function Get-ValidPrivatePython([string]$PythonDir) {
         }
 
         if ($lastError) {
-            Write-Info "Private Python probe failed for $($candidate.FullName) after 5 attempts: $lastError"
+            Write-Info "Private Python probe failed for $($candidate.FullName) after 5 attempts: exit=$lastExitCode version='$lastVersion' error='$lastError'"
         } else {
             Write-Info "Rejected private Python candidate $($candidate.FullName) after 5 attempts: exit=$lastExitCode version='$lastVersion'"
         }
