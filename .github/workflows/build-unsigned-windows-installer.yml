@@ -28,19 +28,22 @@ jobs:
         run: |
           $text = Get-Content .\install\install-windows.ps1 -Raw
           [void][scriptblock]::Create($text)
-          Write-Host 'PowerShell bootstrap syntax is valid.'
+          if ($text -match '"python"\s*,\s*"install"') {
+            throw 'Installer must not use uv python install; that path fails under Windows RedirectionGuard on affected systems.'
+          }
+          Write-Host 'PowerShell bootstrap syntax is valid and contains no uv managed-Python install call.'
 
       - name: Smoke test private-runtime bootstrap
         shell: powershell
         run: |
           $testDir = Join-Path $env:RUNNER_TEMP 'swm-private-runtime-test'
-          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'swm-localappdata-runtime-test'
+          $runtimeDir = Join-Path $env:RUNNER_TEMP 'swm-private-python-runtime'
           if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
-          if (Test-Path $runtimeRoot) { Remove-Item $runtimeRoot -Recurse -Force }
+          if (Test-Path $runtimeDir) { Remove-Item $runtimeDir -Recurse -Force }
 
           .\install\install-windows.ps1 `
             -InstallDir $testDir `
-            -RuntimeRoot $runtimeRoot `
+            -RuntimeRoot $runtimeDir `
             -Branch feature/record-session `
             -DashboardPort 18080 `
             -ReplayPort 18091 `
@@ -48,7 +51,6 @@ jobs:
 
           $required = @(
             (Join-Path $testDir '.runtime\uv\uv.exe'),
-            (Join-Path $runtimeRoot 'python'),
             (Join-Path $testDir '.venv\Scripts\python.exe'),
             (Join-Path $testDir '.venv\Scripts\swm.exe'),
             (Join-Path $testDir 'Start SWM Server.cmd'),
@@ -59,15 +61,19 @@ jobs:
             if (-not (Test-Path $path)) { throw "Bootstrap did not create: $path" }
           }
 
-          $managedPython = Get-ChildItem -Path (Join-Path $runtimeRoot 'python') -Filter python.exe -File -Recurse | Select-Object -First 1
-          if (-not $managedPython) { throw 'Managed CPython executable was not found in RuntimeRoot.' }
-          Write-Host "Managed CPython: $($managedPython.FullName)"
+          $privatePythonExe = Get-ChildItem -LiteralPath (Join-Path $runtimeDir 'python') -Filter python.exe -File -Recurse | Select-Object -First 1
+          if (-not $privatePythonExe) { throw 'Private python-build-standalone runtime was not extracted.' }
+          $privateVersion = & $privatePythonExe.FullName -c "import sys; print(sys.version.split()[0])"
+          if ($LASTEXITCODE -ne 0 -or $privateVersion -notmatch '^3\.13\.') {
+            throw "Unexpected private Python runtime: $privateVersion"
+          }
+          Write-Host "Private runtime Python: $privateVersion at $($privatePythonExe.FullName)"
 
           $port = (Get-Content (Join-Path $testDir 'server-port.txt') -Raw).Trim()
           if ($port -ne '18080') { throw "Unexpected server port: $port" }
 
-          $privatePython = & (Join-Path $testDir '.venv\Scripts\python.exe') -c "import sys; print(sys.version.split()[0])"
-          Write-Host "Private Python: $privatePython"
+          $venvVersion = & (Join-Path $testDir '.venv\Scripts\python.exe') -c "import sys; print(sys.version.split()[0])"
+          Write-Host "Venv Python: $venvVersion"
 
           $helpOutput = & (Join-Path $testDir '.venv\Scripts\swm.exe') --help
           $helpExitCode = $LASTEXITCODE
