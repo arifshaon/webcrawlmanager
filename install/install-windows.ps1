@@ -227,22 +227,39 @@ function Get-ValidPrivatePython([string]$PythonDir) {
     $candidates = Get-ChildItem -LiteralPath $PythonDir -Filter "python.exe" -File -Recurse -ErrorAction SilentlyContinue |
         Sort-Object { $_.FullName.Length }
     foreach ($candidate in $candidates) {
-        try {
-            # Capture the native process output without piping it through another
-            # PowerShell command. In Windows PowerShell 5.1, reading native output
-            # through a pipeline and then inspecting $LASTEXITCODE can be unreliable
-            # enough to reject a healthy interpreter intermittently.
-            $versionLines = @(& $candidate.FullName -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null)
-            $pythonExitCode = $LASTEXITCODE
-            $version = if ($versionLines.Count -gt 0) { ([string]$versionLines[0]).Trim() } else { "" }
+        $lastExitCode = $null
+        $lastVersion = ""
+        $lastError = ""
 
-            if ($pythonExitCode -eq 0 -and $version -match '^3\.13\.') {
-                return $candidate.FullName
+        for ($attempt = 1; $attempt -le 5; $attempt++) {
+            try {
+                # Capture native output directly rather than piping it through
+                # Select-Object. Also retry briefly because Windows security /
+                # filesystem scanning can transiently delay a just-extracted EXE.
+                $versionLines = @(& $candidate.FullName -c "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null)
+                $pythonExitCode = $LASTEXITCODE
+                $version = if ($versionLines.Count -gt 0) { ([string]$versionLines[0]).Trim() } else { "" }
+
+                $lastExitCode = $pythonExitCode
+                $lastVersion = $version
+                $lastError = ""
+
+                if ($pythonExitCode -eq 0 -and $version -match '^3\.13\.') {
+                    return $candidate.FullName
+                }
+            } catch {
+                $lastError = $_.Exception.Message
             }
 
-            Write-Info "Rejected private Python candidate $($candidate.FullName): exit=$pythonExitCode version='$version'"
-        } catch {
-            Write-Info "Private Python probe failed for $($candidate.FullName): $($_.Exception.Message)"
+            if ($attempt -lt 5) {
+                Start-Sleep -Milliseconds (200 * $attempt)
+            }
+        }
+
+        if ($lastError) {
+            Write-Info "Private Python probe failed for $($candidate.FullName) after 5 attempts: $lastError"
+        } else {
+            Write-Info "Rejected private Python candidate $($candidate.FullName) after 5 attempts: exit=$lastExitCode version='$lastVersion'"
         }
     }
     return $null
