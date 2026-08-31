@@ -116,6 +116,38 @@ def canonical_facebook_page_url(value: object) -> str:
     return urlunsplit(("https", "www.facebook.com", path, "", ""))
 
 
+def _page_path_segment(url: str) -> str:
+    """The vanity segment of a Page URL: the part that names the entity."""
+    path = re.sub(r"/{2,}", "/", urlsplit(url).path or "")
+    return path.strip("/").split("/")[0].lower()
+
+
+def _root_identity_segments(root: dict) -> set[str]:
+    """Vanity segments a GraphQL root node claims for itself.
+
+    Used to tell whether a node describes the Page that was requested or some
+    other entity that happens to appear in the same response -- most often the
+    logged-in curator's own account, which Facebook attaches to many replies.
+    """
+    segments: set[str] = set()
+    for key in ("url", "profile_url", "permalink_url", "www_url", "page_url",
+                "vanity", "username", "short_name"):
+        value = _scalar_text(root.get(key))
+        if not value:
+            continue
+        if "/" not in value:
+            segments.add(value.strip().lower())
+            continue
+        parts = urlsplit(value)
+        host = (parts.hostname or "").lower()
+        if host and host not in _FACEBOOK_HOSTS:
+            continue
+        segment = _page_path_segment(value)
+        if segment:
+            segments.add(segment)
+    return segments
+
+
 def facebook_page_key(url: str) -> str:
     parts = urlsplit(canonical_facebook_page_url(url))
     path = re.sub(r"/{2,}", "/", parts.path).rstrip("/").lower()
@@ -574,9 +606,18 @@ def _looks_like_comment(obj: dict, path: tuple[str, ...]) -> bool:
     )
 
 
-def extract_graphql_records(documents: Iterable[object]) -> tuple[
+def extract_graphql_records(
+        documents: Iterable[object],
+        page_segment: Optional[str] = None) -> tuple[
         list[FacebookPost], list[FacebookComment], Optional[str], Optional[str]]:
-    """Extract schema-tolerant Page records from decoded GraphQL documents."""
+    """Extract schema-tolerant Page records from decoded GraphQL documents.
+
+    ``page_segment`` is the vanity segment of the requested Page. A ``User``
+    root only counts as the capture target when it claims that segment as its
+    own identity; without that check the logged-in curator's own account --
+    which Facebook attaches to many responses, and which carries timeline
+    references of its own -- is mistaken for the requested target.
+    """
     posts: dict[str, FacebookPost] = {}
     comments: dict[str, FacebookComment] = {}
     target_type: Optional[str] = None
@@ -590,13 +631,14 @@ def extract_graphql_records(documents: Iterable[object]) -> tuple[
                     root = data.get(key)
                     if isinstance(root, dict):
                         typename = str(root.get("__typename") or "")
-                        root_has_timeline = any(
-                            "timeline" in ".".join(path).lower()
-                            or "feed_units" in ".".join(path).lower()
-                            for _item, path, _ancestors in _walk(root)
-                        )
-                        if typename == "Page" or (
-                                typename == "User" and root_has_timeline):
+                        if typename == "Page":
+                            # A Page root can only make the target look more
+                            # like a Page, so it needs no identity check.
+                            target_type = typename
+                            page_name = page_name or _scalar_text(root.get("name"))
+                            break
+                        if (typename == "User" and page_segment
+                                and page_segment in _root_identity_segments(root)):
                             target_type = typename
                             page_name = page_name or _scalar_text(root.get("name"))
                             break
@@ -1084,6 +1126,7 @@ class FacebookCaptureSession(RecordingSession):
         self._last_checkpoint_at = 0.0
         self._profile_rejected = False
         self._exhaustion_notified = False
+        self._page_segment = _page_path_segment(config.page_url)
         self.archive.event(
             "capture_created", mode=config.mode, page_url=config.page_url,
             continuation_of=config.continuation_of,
@@ -1219,17 +1262,26 @@ class FacebookCaptureSession(RecordingSession):
             self.counters["graphql_errors"] += error_count
             self.counters["pagination_failures"] += 1
             self.archive.event("graphql_payload_errors", count=error_count)
-        posts, comments, target_type, page_name = extract_graphql_records(documents)
+        posts, comments, target_type, page_name = extract_graphql_records(
+            documents, self._page_segment)
         if target_type:
             self.target_type = target_type
             if target_type == "User" and not self._profile_rejected:
                 self._profile_rejected = True
-                self.failure = (
-                    "The supplied URL resolved to a personal Facebook profile. "
-                    "SWM Facebook capture supports Pages only."
+                # Stop rather than raise: whatever was captured before this
+                # point is still written out, and the curator gets a plain
+                # reason instead of a traceback.
+                self.phase_detail = (
+                    f"{self.config.page_url} resolved to a personal Facebook "
+                    "profile. SWM Facebook capture supports Pages only, so "
+                    "scrolling has stopped."
                 )
+                self._state_dirty = True
+                self.archive.event("target_is_personal_profile",
+                                   page_url=self.config.page_url)
                 self._request_stop("unsupported_personal_profile",
-                                   "graphql_root_type_was_user")
+                                   "graphql_root_identified_requested_target_"
+                                   "as_user")
         if page_name:
             self.page_name = page_name
         for post in posts:
@@ -2043,4 +2095,5 @@ class FacebookCaptureSession(RecordingSession):
             "bytes": self.warc.total_bytes,
             "current_url": self.current_url,
             "stop_reason": self.stop_reason,
+            "detail": self.phase_detail,
         }

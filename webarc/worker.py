@@ -280,8 +280,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # decide final crawl-level status from control state
-    if (kind == KIND_FACEBOOK and facebook_result
-            and facebook_result.get("stop_reason") == "browser_closed"):
+    facebook_stop = (facebook_result or {}).get("stop_reason") \
+        if kind == KIND_FACEBOOK else None
+    if facebook_stop == "unsupported_personal_profile":
+        # Not a crash, but not a completed capture either: record why, so the
+        # dashboard shows the reason rather than an empty successful run.
+        store.set_status(
+            args.crawl_id, FAILED,
+            error=(facebook_result or {}).get("detail")
+            or "The requested URL is a personal Facebook profile, not a Page.")
+    elif facebook_stop == "browser_closed":
         store.set_status(args.crawl_id, STOPPED)
     elif controller.should_stop():
         store.set_status(args.crawl_id, STOPPED)

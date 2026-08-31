@@ -19,7 +19,8 @@ from pathlib import Path
 from webarc.config import BrowserConfig
 from webarc.facebook import (FacebookCaptureConfig, FacebookCaptureSession,
                              FacebookPost, canonical_facebook_page_url,
-                             decode_graphql_documents, _redact_post_data)
+                             decode_graphql_documents, extract_graphql_records,
+                             _page_path_segment, _redact_post_data)
 
 PAGE = "https://www.facebook.com/qatarnationallibrary"
 
@@ -56,6 +57,21 @@ def post(post_id: str, *, date: str | None = None, pinned: bool = False,
          timeline: bool = True) -> FacebookPost:
     return FacebookPost(post_id=post_id, created_time=date, is_pinned=pinned,
                         timeline_item=timeline)
+
+
+class _FakeResponse:
+    """Minimal stand-in for a Playwright response object."""
+
+    url = "https://www.facebook.com/api/graphql/"
+    status = 200
+    status_text = "OK"
+    headers = {"content-type": "application/json"}
+
+    class request:
+        method = "POST"
+        headers: dict = {}
+        post_data_buffer = None
+        resource_type = "xhr"
 
 
 class SessionTestCase(unittest.TestCase):
@@ -227,6 +243,109 @@ class CoverageTests(SessionTestCase):
         self.assertEqual(manifest["coverage"]["exported_newest_post"],
                          "2026-05-01T09:00:00Z")
         self.assertNotIn("detected_gaps", manifest["counts"])
+
+
+class TargetIdentificationTests(unittest.TestCase):
+    """Which entity a response describes.
+
+    A logged-in capture carries the curator's own account through many
+    Facebook responses. Treating any User node in any response as the capture
+    target aborted real Page captures, so identification is tied to the vanity
+    segment of the requested URL.
+    """
+
+    SEGMENT = "qatarnationallibrary"
+
+    def test_viewers_own_account_is_not_the_target(self):
+        viewer = {"data": {"profile": {
+            "__typename": "User",
+            "name": "Arif Shaon",
+            "url": "https://www.facebook.com/arif.shaon",
+            "timeline_nav_app_sections": {"nodes": [{"id": "1"}]},
+        }}}
+
+        _posts, _comments, target_type, _name = extract_graphql_records(
+            [viewer], self.SEGMENT)
+
+        self.assertIsNone(target_type)
+
+    def test_an_unidentifiable_user_node_is_not_the_target(self):
+        anonymous = {"data": {"node": {
+            "__typename": "User",
+            "feed_units": {"edges": []},
+        }}}
+
+        _posts, _comments, target_type, _name = extract_graphql_records(
+            [anonymous], self.SEGMENT)
+
+        self.assertIsNone(target_type)
+
+    def test_requested_page_is_identified(self):
+        page = {"data": {"node": {
+            "__typename": "Page",
+            "name": "Qatar National Library",
+            "url": "https://www.facebook.com/qatarnationallibrary",
+        }}}
+
+        _posts, _comments, target_type, name = extract_graphql_records(
+            [page], self.SEGMENT)
+
+        self.assertEqual(target_type, "Page")
+        self.assertEqual(name, "Qatar National Library")
+
+    def test_a_user_claiming_the_requested_url_is_the_target(self):
+        profile = {"data": {"profile": {
+            "__typename": "User",
+            "name": "Someone",
+            "url": "https://www.facebook.com/qatarnationallibrary",
+        }}}
+
+        _posts, _comments, target_type, _name = extract_graphql_records(
+            [profile], self.SEGMENT)
+
+        self.assertEqual(target_type, "User")
+
+    def test_a_user_identified_by_vanity_field_is_the_target(self):
+        profile = {"data": {"profile": {
+            "__typename": "User", "vanity": "qatarnationallibrary"}}}
+
+        _posts, _comments, target_type, _name = extract_graphql_records(
+            [profile], self.SEGMENT)
+
+        self.assertEqual(target_type, "User")
+
+    def test_page_segment_is_taken_from_the_url(self):
+        self.assertEqual(
+            _page_path_segment("https://www.facebook.com/QatarNL"), "qatarnl")
+        self.assertEqual(
+            _page_path_segment("https://www.facebook.com/QatarNL/photos"),
+            "qatarnl")
+
+
+class SessionTargetTests(SessionTestCase):
+    def test_capture_survives_the_viewers_own_account(self):
+        session = make_session(self.tmp)
+        session._consume_graphql(
+            _FakeResponse(),
+            b'{"data":{"profile":{"__typename":"User","name":"Curator",'
+            b'"url":"https://www.facebook.com/curator.account"}}}')
+
+        self.assertFalse(session._profile_rejected)
+        self.assertIsNone(session._pending_stop)
+
+    def test_capture_stops_when_the_requested_url_is_a_profile(self):
+        session = make_session(self.tmp,
+                               page_url="https://www.facebook.com/someone")
+        session._consume_graphql(
+            _FakeResponse(),
+            b'{"data":{"profile":{"__typename":"User","name":"Someone",'
+            b'"url":"https://www.facebook.com/someone"}}}')
+
+        self.assertTrue(session._profile_rejected)
+        self.assertEqual(session._pending_stop[0],
+                         "unsupported_personal_profile")
+        # a rejected target must not also be reported as a crash
+        self.assertIsNone(session.failure)
 
 
 class GraphQLDecodingTests(unittest.TestCase):
