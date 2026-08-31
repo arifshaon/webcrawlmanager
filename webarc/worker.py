@@ -20,8 +20,9 @@ from pathlib import Path
 from .config import CrawlConfig, SeedConfig, _build_section
 from .config import (BehaviorConfig, BrowserConfig, ScopeConfig, WarcConfig)
 from .control import StoreController
-from .store import (COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, FAILED,
-                    KIND_RECORDING, PAUSED, RUNNING, STOPPED, Store)
+from .store import (BLOCKED, COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP,
+                    FAILED, KIND_FACEBOOK, KIND_RECORDING, PAUSED, RUNNING,
+                    STOPPED, Store)
 
 log = logging.getLogger("webarc.worker")
 
@@ -155,6 +156,86 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
     session.run()
 
 
+def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
+    """Run a visible, curator-controlled Facebook Page capture."""
+    import json
+
+    from .facebook import (BLOCKED as FB_BLOCKED, FacebookCaptureConfig,
+                           FacebookCaptureSession, FacebookWarcSession)
+
+    raw = json.loads(row["config_json"])
+    fb_raw = raw.get("facebook", {})
+    fb_config = FacebookCaptureConfig.from_dict(fb_raw)
+    browser = _build_section(BrowserConfig, fb_raw.get("browser", {}))
+    if browser.mode not in ("headed", "native"):
+        browser.mode = "headed"
+    operator = str(fb_raw.get("operator") or "webarc")
+    output_dir = Path(row["output_dir"])
+
+    warc = FacebookWarcSession(
+        output_dir, row["name"], fb_config.page_url, 1, operator,
+        WarcConfig(),
+        info_extra={
+            "robots": "none",
+            "description": (
+                "Curator-controlled Facebook Page capture. Automatic scrolling "
+                "may be paused while WARC capture remains active."
+            ),
+            "facebook-capture-mode": fb_config.mode,
+            "facebook-page-key": fb_config.page_key,
+        },
+    )
+
+    def control_poll():
+        command = store.get_control(crawl_id)
+        if command == CTRL_STOP:
+            return "stop"
+        if command == CTRL_PAUSE:
+            store.clear_control(crawl_id)
+            return "pause"
+        if command == CTRL_RESUME:
+            store.clear_control(crawl_id)
+            return "resume"
+        return None
+
+    last_state = {"state": None}
+
+    def on_progress(state, visited, bytes_written, current_url,
+                    queued=0, failed=0, details=None):
+        store.update_progress(
+            crawl_id, 1, status=state, visited=visited, queued=queued,
+            failed=failed, bytes_written=bytes_written,
+            current_url=current_url, details=details or {},
+        )
+        if state != last_state["state"]:
+            last_state["state"] = state
+            if state == PAUSED:
+                store.set_status(crawl_id, PAUSED)
+            elif state == FB_BLOCKED:
+                store.set_status(crawl_id, BLOCKED)
+            elif state == "recording":
+                store.set_status(crawl_id, RUNNING)
+
+    def persist_posts(posts: list[dict], page_name: str | None) -> None:
+        store.record_facebook_posts(
+            fb_config.page_key, fb_config.page_url, page_name, crawl_id, posts)
+
+    session = FacebookCaptureSession(
+        config=fb_config,
+        browser_cfg=browser,
+        warc=warc,
+        output_dir=output_dir,
+        crawl_id=crawl_id,
+        crawl_name=row["name"],
+        operator=operator,
+        known_post_ids=store.get_facebook_post_ids(fb_config.page_key),
+        control_poll=control_poll,
+        on_progress=on_progress,
+        persist_posts=persist_posts,
+    )
+    return session.run()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="webarc.worker")
     parser.add_argument("crawl_id", type=int)
@@ -179,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     store.clear_control(args.crawl_id)
 
     kind = row.get("kind", "crawl")
+    facebook_result: dict | None = None
     try:
         if args.simulate:
             # recordings simulate fine too: config_json carries a one-seed
@@ -187,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
             _simulate(_config_from_row(row), controller)
         elif kind == KIND_RECORDING:
             _run_recording(store, args.crawl_id, row)
+        elif kind == KIND_FACEBOOK:
+            facebook_result = _run_facebook(store, args.crawl_id, row)
         else:
             from .crawler import run_crawl
             run_crawl(_config_from_row(row), controller)
@@ -196,7 +280,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     # decide final crawl-level status from control state
-    if controller.should_stop():
+    if (kind == KIND_FACEBOOK and facebook_result
+            and facebook_result.get("stop_reason") == "browser_closed"):
+        store.set_status(args.crawl_id, STOPPED)
+    elif controller.should_stop():
         store.set_status(args.crawl_id, STOPPED)
     else:
         store.set_status(args.crawl_id, COMPLETED)

@@ -6,6 +6,8 @@ Endpoints:
   POST /api/config/parse      -> parse YAML for the guided editor
   POST /api/config/render     -> render guided-editor JSON as YAML
   POST /api/recordings        -> create + launch an interactive recording
+  POST /api/facebook          -> create + launch a Facebook Page capture
+  GET  /api/facebook/state    -> previous per-Page capture state
   GET  /api/crawls            -> list crawls with live progress + storage
   POST /api/crawls            -> create + launch a crawl (YAML or JSON body)
   GET  /api/crawls/{id}       -> single crawl detail
@@ -33,8 +35,9 @@ import yaml
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .store import (CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_RECORDING,
-                    PENDING, RUNNING, STOPPED, STOPPING, Store)
+from .store import (BLOCKED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
+                    KIND_RECORDING, PAUSED, PENDING, RUNNING, STOPPED, STOPPING,
+                    Store)
 
 BASE = Path(__file__).resolve().parent
 DASHBOARD = BASE / "dashboard.html"
@@ -222,7 +225,12 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
     @app.get("/api/capabilities")
     def capabilities():
-        return {"recording": _recording_capability(), "simulate": _SIMULATE}
+        visible = _recording_capability()
+        return {
+            "recording": visible,
+            "facebook": dict(visible),
+            "simulate": _SIMULATE,
+        }
 
     @app.post("/api/recordings")
     def create_recording(payload: dict = Body(...)):
@@ -272,6 +280,120 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         _store().set_pid(crawl_id, pid)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
+
+    def _active_facebook_job() -> dict | None:
+        for job in _store().list_crawls():
+            if (job.get("kind") == KIND_FACEBOOK
+                    and job.get("status") in (
+                        PENDING, RUNNING, PAUSED, BLOCKED, STOPPING)
+                    and _pid_alive(job.get("pid"))):
+                return job
+        return None
+
+    def _launch_facebook_job(name: str, facebook: dict) -> JSONResponse:
+        """Validate, persist and launch one Facebook job configuration."""
+        from .facebook import FacebookCaptureConfig
+
+        try:
+            FacebookCaptureConfig.from_dict(facebook)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        active = _active_facebook_job()
+        if active and not _SIMULATE:
+            raise HTTPException(
+                409,
+                f"Facebook capture #{active['id']} is already using the "
+                "persistent browser profile. Stop it before starting another.",
+            )
+        config = {
+            "facebook": facebook,
+            "seeds": [{"url": facebook["page_url"]}],
+        }
+        crawl_id = _store().create_crawl(
+            name=name, config=config, output_dir="", seeds_total=1,
+            kind=KIND_FACEBOOK,
+        )
+        crawl_dir = _WARC_ROOT / str(crawl_id)
+        config["output_dir"] = str(crawl_dir)
+        _store().finalize_config(crawl_id, config, str(crawl_dir))
+        pid = _launch_worker(crawl_id)
+        _store().set_pid(crawl_id, pid)
+        return JSONResponse(
+            status_code=201,
+            content=_crawl_view(_store().get_crawl(crawl_id)),
+        )
+
+    @app.get("/api/facebook/state")
+    def facebook_state(url: str):
+        from .facebook import canonical_facebook_page_url, facebook_page_key
+
+        try:
+            page_url = canonical_facebook_page_url(url)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        state = _store().get_facebook_page(facebook_page_key(page_url))
+        return {"available": bool(state), "state": state}
+
+    @app.post("/api/facebook")
+    def create_facebook_capture(payload: dict = Body(...)):
+        """Open a visible browser and capture one Facebook Page timeline."""
+        from .facebook import canonical_facebook_page_url, facebook_page_key
+
+        cap = _recording_capability()
+        if not cap["available"]:
+            raise HTTPException(409, cap["reason"])
+        try:
+            page_url = canonical_facebook_page_url(payload.get("page_url"))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        page_key = facebook_page_key(page_url)
+        mode = str(payload.get("mode") or "date_range")
+        browser_mode = str(payload.get("browser") or "headed")
+        if browser_mode not in ("headed", "native"):
+            raise HTTPException(400, "browser must be 'headed' or 'native'")
+
+        operator = str(payload.get("operator") or "webarc").strip() or "webarc"
+        if len(operator) > 200:
+            raise HTTPException(400, "operator must be 200 characters or fewer")
+        default_name = "fb-" + page_key.split(":", 1)[-1].strip("/").replace(
+            "/", "-")
+        name = str(payload.get("name") or default_name or "facebook-page").strip()
+        if not name:
+            name = "facebook-page"
+        if len(name) > 200:
+            raise HTTPException(400, "capture name must be 200 characters or fewer")
+
+        profile_dir = Path(_store().db_path).resolve().parent / \
+            "browser-profiles" / "facebook"
+        facebook = {
+            "page_url": page_url,
+            "page_key": page_key,
+            "mode": mode,
+            "from_date": payload.get("from_date"),
+            "to_date": payload.get("to_date"),
+            "latest_n": payload.get("latest_n"),
+            "consecutive_older": 5,
+            "capture_media": bool(payload.get("capture_media", True)),
+            "include_comments": bool(payload.get("include_comments", False)),
+            "max_comments_per_post": payload.get("max_comments_per_post", 25),
+            "include_replies": bool(payload.get("include_replies", False)),
+            "operator": operator,
+            "browser": {
+                "mode": browser_mode,
+                "user_data_dir": str(profile_dir),
+            },
+        }
+        if mode == "since_last":
+            previous = _store().get_facebook_page(page_key)
+            if not previous or not previous.get("newest_post_date"):
+                raise HTTPException(
+                    409,
+                    "No previous capture state exists for this Facebook Page. "
+                    "Run another capture mode first.",
+                )
+            facebook["prior_newest_post_id"] = previous.get("newest_post_id")
+            facebook["prior_newest_post_date"] = previous.get("newest_post_date")
+        return _launch_facebook_job(name, facebook)
 
     @app.post("/api/config/parse")
     def parse_config(payload: dict = Body(...)):
@@ -345,6 +467,33 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         _store().set_control(crawl_id, CTRL_STOP)
         _store().set_status(crawl_id, STOPPING)
         return {"ok": True, "control": CTRL_STOP}
+
+    @app.post("/api/crawls/{crawl_id}/continue")
+    def continue_capture(crawl_id: int):
+        """Create a provenance-linked continuation of a Facebook capture.
+
+        A continuation deliberately starts a new WARC set and manifest. It
+        re-scrolls through already observed post IDs without re-exporting them,
+        then continues into records not yet present in the durable Page index.
+        """
+        import json
+
+        row = _require(crawl_id)
+        if row.get("kind") != KIND_FACEBOOK:
+            raise HTTPException(409, "Only Facebook captures can be continued.")
+        if _pid_alive(row.get("pid")):
+            raise HTTPException(409, "Stop the current capture before continuing it.")
+        try:
+            source = json.loads(row["config_json"])
+            facebook = dict(source["facebook"])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(500, "The stored Facebook configuration is invalid.") from exc
+        facebook["continuation_of"] = crawl_id
+        facebook["root_capture_id"] = (
+            facebook.get("root_capture_id") or crawl_id
+        )
+        name = f"{row['name']} — continuation"
+        return _launch_facebook_job(name[:200], facebook)
 
     @app.post("/api/crawls/{crawl_id}/kill")
     def kill(crawl_id: int):

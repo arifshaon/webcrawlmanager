@@ -30,13 +30,15 @@ SWM is designed around two complementary approaches to web archiving:
 - **Local replay**: replay WARCs through Webrecorder ReplayWeb.page without
   uploading the archive anywhere.
 - **Optional dashboard**: start and monitor automated crawls and interactive
-  recording sessions; pause, resume, stop, delete and replay them.
+  recording sessions or Facebook Page captures; pause, resume, stop, continue,
+  delete and replay them.
 
 ## Workflows at a glance
 
 | Workflow | Who controls the browser? | Browser modes | Available through |
 |---|---|---|---|
 | Interactive recording | The operator | `headed`, `native` | Command line and dashboard |
+| Facebook Page capture | SWM scrolls; the curator handles login, verification and manual overrides | `headed`, `native` | Dashboard |
 | Automated crawling | SWM, using human-like browser behaviour | `headless`, `headed`, `native` | Command line and dashboard |
 | Replay and QA | The operator | Default browser | Command line; replay also available from the dashboard |
 
@@ -55,6 +57,7 @@ SWM is designed around two complementary approaches to web archiving:
   - [Record embedded and streaming media](#record-embedded-and-streaming-media)
   - [Recording options](#recording-options)
   - [Privacy and sensitive content](#privacy-and-sensitive-content)
+- [Facebook Page capture](#facebook-page-capture)
 - [Automated crawling](#automated-crawling)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
@@ -157,6 +160,12 @@ an operator, for example:
 
 Use **automated crawling** when a website can be explored predictably from one or
 more seed URLs using repeatable scope, depth and page-limit rules.
+
+Use **Facebook Page capture** for authorised collection of a public or
+authenticated Facebook Page timeline. The curator signs in directly in a
+visible, persistent Chrome profile; SWM never receives the password. SWM can
+scroll automatically, while the curator can pause scrolling, resolve a
+checkpoint or navigate manually without pausing WARC capture.
 
 The two approaches can be used together. An automated crawl can capture the main
 site structure, while an interactive recording preserves difficult pages,
@@ -278,6 +287,59 @@ Everything loaded during an interactive session may be written to the WARC,
 including authenticated pages, cookies, form submissions, private URLs and media.
 Record only content you are authorised to preserve, and manage the resulting WARC
 according to its sensitivity and applicable access restrictions.
+
+## Facebook Page capture
+
+The dashboard's **Facebook** tab captures a Facebook **Page** in a visible
+Chrome window. Personal profiles, groups and other Facebook surfaces are out of
+scope for v1. Use it only for material that you are authorised to preserve.
+
+The browser initially opens with automatic scrolling paused. Sign in if needed,
+confirm that the requested Page is open, then use the in-browser control or the
+dashboard to select **Start / resume scrolling**. **Pause scrolling** stops only
+SWM's scrolling loop: network exchanges, manual navigation and records loaded by
+curator actions continue to be written to WARC and noted in the manifest.
+Chrome retains its own session cookies in the dedicated local profile. Before
+WARC writing, SWM removes Cookie/Authorization request headers, Set-Cookie
+response headers and recognised login/session fields from request bodies.
+
+Capture modes are:
+
+- **Date range** — normalise posts between `From` and optional `To`; stop only
+  after five consecutive non-pinned timeline posts older than `From`. Pinned
+  posts are ignored by the stopping calculation.
+- **Latest N posts** — count N non-pinned timeline posts; pinned posts are
+  retained without consuming the limit.
+- **Until I stop it** — keep scrolling under curator control.
+- **End of available timeline** — stop after repeated scroll attempts expose no
+  new posts. This is recorded as `end_of_available_timeline`, never “all posts.”
+- **Since last capture** — use the durable newest post ID/date from the Page's
+  previous run as the lower boundary.
+
+Every run writes WARC plus:
+
+- `facebook-posts.jsonl` and `facebook-posts.csv`;
+- comment JSONL/CSV when comments are requested;
+- `facebook-manifest.json`, recording selection, exclusions, stopping rule,
+  failures, detected gaps and continuation provenance;
+- `facebook-checkpoint.json` and `facebook-events.jsonl`.
+
+Posts newer than an optional `To` date are necessarily traversed to reach older
+posts. Their exchanges remain in the raw WARC but they are excluded from the
+normalised exports. Comment capture is deliberately opt-in because Facebook
+paginates comments separately per post; maximum-comments and include-replies
+controls bound this best-effort expansion but can still add substantial runtime
+and blocking risk.
+
+Facebook verification is a recoverable state. Resolve the checkpoint in the
+visible browser and select **Verification resolved — resume**. A stopped or
+failed run can be **Continued** as a new, provenance-linked capture; post IDs
+already present in the durable Page index are traversed but not re-exported.
+
+The managed headed browser uses an SWM-owned persistent Facebook profile below
+the state directory. This lets a curator remain signed in between authorised
+captures without SWM asking for or storing the password itself. Protect that
+profile as sensitive local data.
 
 ## Automated crawling
 
@@ -411,17 +473,18 @@ an offline machine, place compatible `ui.js` and `sw.js` files in
 
 ## Dashboard
 
-The optional dashboard manages **automated crawls** and **interactive recording
-sessions**. The *New job* area has two tabs: *Automated crawl* (guided form or
-raw YAML) and *Record session* (starting URL, session name, operator, browser
-mode). Starting a recording opens a visible browser on the machine running the
-server; pause, resume and stop work from the dashboard or from the in-page
-SWM Recording widget, and both control surfaces stay in sync.
+The optional dashboard manages **automated crawls**, **interactive recording
+sessions** and **Facebook Page captures**. The *New job* area has three tabs:
+*Automated crawl* (guided form or raw YAML), *Record session* and *Facebook*.
+Visible-browser controls work from the dashboard and the relevant in-page SWM
+widget, and both control surfaces stay in sync.
 
 Recording from the dashboard requires an interactive desktop on the server
 machine, and is disabled (with an explanation) when the server binds to a
 non-loopback address — pass `--allow-remote-recording` to override that check
-deliberately. Recordings appear in the job list with a **REC** marker.
+deliberately. Recordings appear in the job list with a **REC** marker and
+Facebook captures with an **FB** marker. Only one Facebook job can use the
+persistent Facebook profile at a time.
 
 Install and start the dashboard:
 
@@ -450,6 +513,8 @@ Dashboard controls include:
 - **Stop** gracefully and close the WARC;
 - **Delete** the crawl record and optionally its files;
 - **Replay** captured crawl data;
+- **Pause scrolling**, resume after login/verification, stop and continue a
+  Facebook Page capture;
 - monitor progress, storage use and available disk space.
 
 Try the dashboard without starting a browser crawl:
@@ -540,6 +605,11 @@ honest identifying User-Agent from the website owner.
 - Large recordings take longer to import and replay.
 - Dashboard-started recordings open the browser on the machine running the
   server, so the server must run where the operator is sitting.
+- Facebook GraphQL schemas and rendered controls can change without notice;
+  SWM records extraction failures and does not claim that a Page capture is
+  complete.
+- Facebook Page capture is limited to Pages in v1. Comment limits are
+  best-effort because one Facebook response can return several comments.
 
 ## Licence and citation
 

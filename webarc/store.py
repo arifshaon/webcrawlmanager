@@ -19,6 +19,7 @@ from typing import Any, Iterator, Optional
 # job kinds
 KIND_CRAWL = "crawl"
 KIND_RECORDING = "recording"
+KIND_FACEBOOK = "facebook"
 
 # crawl lifecycle states
 PENDING = "pending"
@@ -28,6 +29,7 @@ STOPPING = "stopping"
 COMPLETED = "completed"
 STOPPED = "stopped"
 FAILED = "failed"
+BLOCKED = "blocked"
 
 # control commands the API can set; the worker polls and acts on these
 CTRL_NONE = "none"
@@ -62,9 +64,36 @@ CREATE TABLE IF NOT EXISTS progress (
     skipped_robots INTEGER NOT NULL DEFAULT 0,
     bytes          INTEGER NOT NULL DEFAULT 0,
     current_url    TEXT,
+    details_json   TEXT NOT NULL DEFAULT '{}',
     updated_at     TEXT NOT NULL,
     PRIMARY KEY (crawl_id, seed_idx)
 );
+
+CREATE TABLE IF NOT EXISTS facebook_pages (
+    page_key          TEXT PRIMARY KEY,
+    page_url          TEXT NOT NULL,
+    page_name         TEXT,
+    newest_post_id    TEXT,
+    newest_post_date  TEXT,
+    oldest_post_id    TEXT,
+    oldest_post_date  TEXT,
+    last_crawl_id     INTEGER,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS facebook_posts (
+    page_key       TEXT NOT NULL,
+    post_id        TEXT NOT NULL,
+    post_date      TEXT,
+    first_crawl_id INTEGER NOT NULL,
+    last_crawl_id  INTEGER NOT NULL,
+    first_seen_at  TEXT NOT NULL,
+    last_seen_at   TEXT NOT NULL,
+    PRIMARY KEY (page_key, post_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_facebook_posts_page_date
+    ON facebook_posts (page_key, post_date);
 """
 
 
@@ -84,6 +113,12 @@ class Store:
             if "kind" not in cols:
                 c.execute("ALTER TABLE crawls ADD COLUMN kind TEXT NOT NULL "
                           "DEFAULT 'crawl'")
+            progress_cols = {
+                r["name"] for r in c.execute("PRAGMA table_info(progress)")
+            }
+            if "details_json" not in progress_cols:
+                c.execute("ALTER TABLE progress ADD COLUMN details_json TEXT "
+                          "NOT NULL DEFAULT '{}'")
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -142,7 +177,17 @@ class Store:
             rows = c.execute(
                 "SELECT * FROM progress WHERE crawl_id=? ORDER BY seed_idx",
                 (crawl_id,)).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for row in rows:
+                item = dict(row)
+                try:
+                    item["details"] = json.loads(
+                        item.pop("details_json", "{}") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    item["details"] = {}
+                    item.pop("details_json", None)
+                result.append(item)
+            return result
 
     def set_status(self, crawl_id: int, status: str,
                    error: str | None = None) -> None:
@@ -180,7 +225,8 @@ class Store:
                         queued: int | None = None, failed: int | None = None,
                         skipped_robots: int | None = None,
                         bytes_written: int | None = None,
-                        current_url: str | None = None) -> None:
+                        current_url: str | None = None,
+                        details: dict | None = None) -> None:
         sets: list[str] = ["updated_at=?"]
         vals: list[Any] = [_now()]
         for col, val in (("status", status), ("visited", visited),
@@ -190,10 +236,95 @@ class Store:
             if val is not None:
                 sets.append(f"{col}=?")
                 vals.append(val)
+        if details is not None:
+            sets.append("details_json=?")
+            vals.append(json.dumps(details, ensure_ascii=False))
         vals.extend([crawl_id, seed_idx])
         with self._conn() as c:
             c.execute(f"UPDATE progress SET {', '.join(sets)} "
                       f"WHERE crawl_id=? AND seed_idx=?", vals)
+
+    # -- Facebook Page collection state -----------------------------------
+    def get_facebook_page(self, page_key: str) -> Optional[dict]:
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM facebook_pages WHERE page_key=?", (page_key,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def get_facebook_post_ids(self, page_key: str) -> set[str]:
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT post_id FROM facebook_posts WHERE page_key=?",
+                (page_key,),
+            ).fetchall()
+            return {str(row["post_id"]) for row in rows}
+
+    def record_facebook_posts(self, page_key: str, page_url: str,
+                              page_name: str | None, crawl_id: int,
+                              posts: list[dict]) -> None:
+        """Persist observed post identities for incremental and resumed runs.
+
+        This index describes what SWM observed in the raw capture, including
+        posts outside a requested normalised-export date range. The run
+        manifest makes that distinction explicit.
+        """
+        ts = _now()
+        with self._conn() as c:
+            for post in posts:
+                post_id = str(post.get("post_id") or "").strip()
+                if not post_id:
+                    continue
+                post_date = post.get("created_time") or None
+                c.execute(
+                    "INSERT INTO facebook_posts "
+                    "(page_key, post_id, post_date, first_crawl_id, "
+                    "last_crawl_id, first_seen_at, last_seen_at) "
+                    "VALUES (?,?,?,?,?,?,?) "
+                    "ON CONFLICT(page_key, post_id) DO UPDATE SET "
+                    "post_date=COALESCE(excluded.post_date, post_date), "
+                    "last_crawl_id=excluded.last_crawl_id, "
+                    "last_seen_at=excluded.last_seen_at",
+                    (page_key, post_id, post_date, crawl_id, crawl_id, ts, ts),
+                )
+
+            newest = c.execute(
+                "SELECT post_id, post_date FROM facebook_posts "
+                "WHERE page_key=? AND post_date IS NOT NULL "
+                "ORDER BY post_date DESC LIMIT 1", (page_key,)
+            ).fetchone()
+            oldest = c.execute(
+                "SELECT post_id, post_date FROM facebook_posts "
+                "WHERE page_key=? AND post_date IS NOT NULL "
+                "ORDER BY post_date ASC LIMIT 1", (page_key,)
+            ).fetchone()
+            c.execute(
+                "INSERT INTO facebook_pages "
+                "(page_key, page_url, page_name, newest_post_id, "
+                "newest_post_date, oldest_post_id, oldest_post_date, "
+                "last_crawl_id, updated_at) VALUES (?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(page_key) DO UPDATE SET "
+                "page_url=excluded.page_url, "
+                "page_name=COALESCE(excluded.page_name, page_name), "
+                "newest_post_id=COALESCE(excluded.newest_post_id, "
+                "newest_post_id), "
+                "newest_post_date=COALESCE(excluded.newest_post_date, "
+                "newest_post_date), "
+                "oldest_post_id=COALESCE(excluded.oldest_post_id, "
+                "oldest_post_id), "
+                "oldest_post_date=COALESCE(excluded.oldest_post_date, "
+                "oldest_post_date), "
+                "last_crawl_id=excluded.last_crawl_id, "
+                "updated_at=excluded.updated_at",
+                (
+                    page_key, page_url, page_name,
+                    newest["post_id"] if newest else None,
+                    newest["post_date"] if newest else None,
+                    oldest["post_id"] if oldest else None,
+                    oldest["post_date"] if oldest else None,
+                    crawl_id, ts,
+                ),
+            )
 
     def delete_crawl(self, crawl_id: int) -> None:
         with self._conn() as c:

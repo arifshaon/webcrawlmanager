@@ -119,6 +119,9 @@
   .rec-chip { font-family: var(--mono); font-size: 10px; letter-spacing: .05em;
     color: var(--stop); background: var(--stop-bg); border-radius: 4px;
     padding: 2px 6px; margin-right: 7px; vertical-align: 1px; }
+  .fb-chip { font-family: var(--mono); font-size: 10px; letter-spacing: .05em;
+    color: #1D4ED8; background: #E4ECFA; border-radius: 4px;
+    padding: 2px 6px; margin-right: 7px; vertical-align: 1px; }
   .rec-warning { border: 1px solid var(--rule); border-left: 3px solid var(--pause);
     background: var(--pause-bg); border-radius: 6px; padding: 10px 12px;
     font-size: 12px; color: var(--ink); margin-top: 4px; }
@@ -140,7 +143,7 @@
   .field.wide { grid-column: 1 / -1; }
   label.field-label { display: block; font-weight: 600; margin-bottom: 5px; }
   .help { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
-  input[type=text], input[type=url], input[type=number], select, textarea {
+  input[type=text], input[type=url], input[type=number], input[type=date], select, textarea {
     font-family: var(--mono); font-size: 13px; border: 1px solid var(--rule);
     background: var(--paper); color: var(--ink); border-radius: 6px; padding: 8px 10px; width: 100%;
   }
@@ -165,6 +168,11 @@
   .form-foot .spacer { flex: 1; }
   .msg { font-family: var(--mono); font-size: 12px; }
   .msg.err { color: var(--stop); } .msg.ok { color: var(--run); }
+  .cost-warning { border-left: 3px solid var(--stop); background: var(--stop-bg);
+    padding: 9px 11px; border-radius: 5px; color: var(--ink); font-size: 12px;
+    margin-top: 10px; }
+  .mode-explanation { padding: 9px 11px; background: var(--surface);
+    border-radius: 5px; color: var(--muted); font-size: 12px; }
   @media (max-width: 760px) {
     .storage { grid-template-columns: repeat(2, 1fr); }
     .crawl .row { grid-template-columns: 4px 1fr auto; }
@@ -193,6 +201,8 @@
       data-job="crawl" role="tab" aria-selected="true">Automated crawl</button>
     <button type="button" class="mode-tab" id="job-tab-record"
       data-job="record" role="tab" aria-selected="false">Record session</button>
+    <button type="button" class="mode-tab" id="job-tab-facebook"
+      data-job="facebook" role="tab" aria-selected="false">Facebook</button>
   </div>
   <form id="new-form" onsubmit="return false">
     <div class="editor-head">
@@ -395,6 +405,106 @@
       <span class="msg" id="record-msg"></span>
       <span class="spacer"></span>
       <span class="mode-note" id="record-cap-note"></span>
+    </div>
+  </div>
+  <div id="facebook-form" class="hidden" style="border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:var(--paper)">
+    <div class="guided">
+      <div class="form-section">
+        <div class="section-head">
+          <span class="section-title">Capture a Facebook Page</span>
+          <span class="section-hint">A visible Chrome window opens; sign in yourself if Facebook requires it.</span>
+        </div>
+        <div class="section-body form-grid">
+          <div class="field wide">
+            <label class="field-label" for="fb-url">Facebook Page URL</label>
+            <input type="url" id="fb-url" placeholder="https://www.facebook.com/PageName" required>
+            <span class="help">V1 supports Pages only. Personal profiles, groups and other Facebook surfaces are rejected.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="fb-name">Capture name</label>
+            <input type="text" id="fb-name" placeholder="derived from the Page if empty">
+          </div>
+          <div class="field">
+            <label class="field-label" for="fb-operator">Operator</label>
+            <input type="text" id="fb-operator" placeholder="webarc">
+            <span class="help">Stored in the WARC and capture manifest.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="fb-browser">Browser</label>
+            <select id="fb-browser">
+              <option value="headed">Headed — persistent managed Chrome (recommended)</option>
+              <option value="native">Native — system Chrome via CDP (advanced)</option>
+            </select>
+            <span class="help">SWM keeps a dedicated Facebook browser profile so your login can persist between captures.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="fb-mode">Capture mode</label>
+            <select id="fb-mode">
+              <option value="date_range">Date range</option>
+              <option value="latest_n">Latest N posts</option>
+              <option value="until_stopped">Until I stop it</option>
+              <option value="end_of_timeline">End of available timeline</option>
+              <option value="since_last">Since last capture</option>
+            </select>
+          </div>
+          <div class="field wide" id="fb-date-options">
+            <label class="field-label">Requested post dates</label>
+            <div class="inline-fields">
+              <div>
+                <label class="help" for="fb-from">From (required)</label>
+                <input type="date" id="fb-from">
+              </div>
+              <div>
+                <label class="help" for="fb-to">To (optional)</label>
+                <input type="date" id="fb-to">
+              </div>
+            </div>
+            <span class="help">Pinned posts never trigger the lower boundary. SWM stops after five consecutive non-pinned posts older than From.</span>
+            <div class="mode-explanation" style="margin-top:8px">Posts newer than To must be traversed to reach older material. Their traffic remains in WARC but they are excluded from the normalised CSV and JSONL.</div>
+          </div>
+          <div class="field wide hidden" id="fb-latest-options">
+            <label class="field-label" for="fb-latest-n">Number of latest non-pinned posts</label>
+            <input type="number" id="fb-latest-n" min="1" max="100000" step="1" value="100">
+            <span class="help">Pinned posts are preserved but do not consume the N-post limit.</span>
+          </div>
+          <div class="field wide hidden" id="fb-mode-note"></div>
+          <div class="field wide">
+            <label class="field-label">Capture options</label>
+            <label class="check-row">
+              <input type="checkbox" id="fb-media" checked>
+              <span class="check-copy"><strong>Capture images and media</strong><span>Retain media requests loaded by the timeline.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="fb-comments">
+              <span class="check-copy"><strong>Capture comments</strong><span>Expand and normalise comments loaded for captured posts.</span></span>
+            </label>
+            <div id="fb-comment-options" class="hidden">
+              <div class="inline-fields" style="margin-top:10px">
+                <div>
+                  <label class="field-label" for="fb-comment-max">Maximum comments per post</label>
+                  <input type="number" id="fb-comment-max" min="1" max="5000" step="1" value="25">
+                </div>
+                <label class="check-row" style="align-self:end;padding-bottom:7px">
+                  <input type="checkbox" id="fb-replies">
+                  <span class="check-copy"><strong>Include replies</strong><span>Also expand reply threads.</span></span>
+                </label>
+              </div>
+              <div class="cost-warning"><b>Comments are expensive.</b> Facebook paginates comments separately for each post. This can add hundreds of requests, greatly increase runtime and raise the likelihood of throttling or verification.</div>
+            </div>
+          </div>
+          <div class="field wide">
+            <div class="rec-warning">
+              SWM never asks for your Facebook password. Chrome retains its own session cookies in the dedicated local profile; SWM redacts Cookie/Authorization and Set-Cookie headers plus recognised login/session fields before writing WARC. The browser opens with automatic scrolling paused: log in or resolve verification directly in Chrome, make sure the requested Page is open, then select <b>Start / resume scrolling</b>. WARC capture remains active while scrolling is paused.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form-foot">
+      <button type="button" class="primary" id="facebook-start-btn">Open browser and prepare capture</button>
+      <span class="msg" id="facebook-msg"></span>
+      <span class="spacer"></span>
+      <span class="mode-note" id="facebook-cap-note"></span>
     </div>
   </div>
 </main>
@@ -628,22 +738,34 @@ function resetExample() {
   setMessage("");
 }
 let recordingCapability = null;
+let facebookCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
     recordingCapability = caps.recording;
+    facebookCapability = caps.facebook;
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
+    facebookCapability = {available: false, reason: "capability check failed"};
   }
   const tab = $("#job-tab-record");
   if (recordingCapability && !recordingCapability.available) {
     tab.classList.add("disabled");
     tab.title = recordingCapability.reason || "unavailable";
   }
+  const facebookTab = $("#job-tab-facebook");
+  if (facebookCapability && !facebookCapability.available) {
+    facebookTab.classList.add("disabled");
+    facebookTab.title = facebookCapability.reason || "unavailable";
+  }
 }
 function switchJob(job) {
   if (job === "record" && recordingCapability && !recordingCapability.available) {
     $("#record-cap-note").textContent = recordingCapability.reason || "";
+    return;
+  }
+  if (job === "facebook" && facebookCapability && !facebookCapability.available) {
+    $("#facebook-cap-note").textContent = facebookCapability.reason || "";
     return;
   }
   $$(".job-tabs .mode-tab").forEach(tab => {
@@ -653,6 +775,7 @@ function switchJob(job) {
   });
   $("#new-form").classList.toggle("hidden", job !== "crawl");
   $("#record-form").classList.toggle("hidden", job !== "record");
+  $("#facebook-form").classList.toggle("hidden", job !== "facebook");
 }
 async function startRecording() {
   const msg = $("#record-msg");
@@ -679,15 +802,89 @@ async function startRecording() {
     $("#record-start-btn").disabled = false;
   }
 }
+function updateFacebookMode() {
+  const mode = $("#fb-mode").value;
+  $("#fb-date-options").classList.toggle("hidden", mode !== "date_range");
+  $("#fb-latest-options").classList.toggle("hidden", mode !== "latest_n");
+  const note = $("#fb-mode-note");
+  const notes = {
+    until_stopped: "SWM keeps scrolling until you select Stop and save, the browser closes, or Facebook exposes no additional posts.",
+    end_of_timeline: "SWM stops only after repeated scroll attempts reveal no additional posts. The manifest calls this end_of_available_timeline—not all posts.",
+    since_last: "SWM uses the newest post date and ID from this Page’s previous capture. Pinned posts do not trigger the boundary.",
+  };
+  note.classList.toggle("hidden", !notes[mode]);
+  note.classList.toggle("mode-explanation", Boolean(notes[mode]));
+  note.textContent = notes[mode] || "";
+  if (mode === "since_last") refreshFacebookState();
+}
+async function refreshFacebookState() {
+  const note = $("#facebook-cap-note");
+  const url = $("#fb-url").value.trim();
+  if (!url || $("#fb-mode").value !== "since_last") return;
+  try {
+    const result = await api(`/api/facebook/state?url=${encodeURIComponent(url)}`);
+    note.textContent = result.available
+      ? `Previous newest post: ${result.state.newest_post_date || "date unavailable"} (capture #${result.state.last_crawl_id})`
+      : "No previous capture state exists for this Page.";
+  } catch (error) {
+    note.textContent = error.message;
+  }
+}
+async function startFacebook() {
+  const msg = $("#facebook-msg");
+  const setFbMessage = (text, cls="") => {
+    msg.textContent = text; msg.className = "msg" + (cls ? " " + cls : "");
+  };
+  const pageUrl = $("#fb-url").value.trim();
+  if (!pageUrl) { setFbMessage("Enter a Facebook Page URL.", "err"); return; }
+  const mode = $("#fb-mode").value;
+  if (mode === "date_range" && !$("#fb-from").value) {
+    setFbMessage("Choose a From date for Date range mode.", "err"); return;
+  }
+  if (mode === "date_range" && $("#fb-to").value &&
+      $("#fb-from").value > $("#fb-to").value) {
+    setFbMessage("From must be on or before To.", "err"); return;
+  }
+  const body = {
+    page_url: pageUrl,
+    mode,
+    browser: $("#fb-browser").value,
+    from_date: $("#fb-from").value || null,
+    to_date: $("#fb-to").value || null,
+    latest_n: Number($("#fb-latest-n").value || 100),
+    capture_media: $("#fb-media").checked,
+    include_comments: $("#fb-comments").checked,
+    max_comments_per_post: Number($("#fb-comment-max").value || 25),
+    include_replies: $("#fb-replies").checked,
+  };
+  if ($("#fb-name").value.trim()) body.name = $("#fb-name").value.trim();
+  if ($("#fb-operator").value.trim()) body.operator = $("#fb-operator").value.trim();
+  setFbMessage("Opening browser…");
+  $("#facebook-start-btn").disabled = true;
+  try {
+    await api("/api/facebook", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    setFbMessage("Browser opened. Log in if needed, then start scrolling from the in-browser control.", "ok");
+    refresh();
+  } catch (error) {
+    setFbMessage(error.message, "err");
+  } finally {
+    $("#facebook-start-btn").disabled = false;
+  }
+}
 function statusClass(s) { return s.toLowerCase(); }
 function crawlRow(c) {
   const s = c.status;
   const isRec = c.kind === "recording";
-  const running = s === "running", paused = s === "paused";
-  const canPause = running, canResume = paused;
-  const canStop = running || paused || s === "stopping";
+  const isFacebook = c.kind === "facebook";
+  const running = s === "running", paused = s === "paused", blocked = s === "blocked";
+  const canPause = running, canResume = paused || blocked;
+  const canStop = running || paused || blocked || s === "stopping";
   const isOpen = openState.has(c.id);
   const t = c.totals;
+  const fb = isFacebook && c.seeds[0] ? (c.seeds[0].details || {}) : {};
   const seedRows = c.seeds.map(sd => `
     <div class="seed">
       <div>
@@ -701,25 +898,34 @@ function crawlRow(c) {
     <div class="row" onclick="toggle(${c.id})">
       <div class="gutter g-${statusClass(s)}"></div>
       <div>
-        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : ""}${c.name}</div>
-        <div class="meta"><span class="id">#${c.id}</span> · ${isRec ? "recording session" : `${c.seeds_total} seed(s)`} · ${c.created_at}</div>
+        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : ""}${c.name}</div>
+        <div class="meta"><span class="id">#${c.id}</span> · ${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : `${c.seeds_total} seed(s)`} · ${c.created_at}</div>
       </div>
       <div class="counts">
         ${isRec
           ? `<b>${t.visited}</b> pages<br>${fmtBytes(t.bytes)}`
+          : isFacebook
+          ? `<b>${fb.posts_exported || 0}</b> posts · <b>${fb.comments_exported || 0}</b> comments<br>${fb.pagination_failures || 0} pagination failures · ${fmtBytes(t.bytes)}`
           : `<b>${t.visited}</b> pages · <b>${t.queued}</b> queued${t.failed ? ` · ${t.failed} failed` : ""}<br>${fmtBytes(t.bytes)}`}
       </div>
       <span class="badge b-${statusClass(s)}">${s}</span>
     </div>
     <div class="actions">
-      <button class="act" onclick="ctl(${c.id},'pause')"  ${canPause?"":"disabled"}>Pause</button>
-      <button class="act" onclick="ctl(${c.id},'resume')" ${canResume?"":"disabled"}>Resume</button>
-      <button class="act danger" onclick="ctl(${c.id},'stop')" ${canStop?"":"disabled"}>Stop</button>
+      <button class="act" onclick="ctl(${c.id},'pause')"  ${canPause?"":"disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
+      <button class="act" onclick="ctl(${c.id},'resume')" ${canResume?"":"disabled"}>${isFacebook ? (blocked ? "Verification resolved — resume" : "Start / resume scrolling") : "Resume"}</button>
+      <button class="act danger" onclick="ctl(${c.id},'stop')" ${canStop?"":"disabled"}>${isFacebook ? "Stop and save" : "Stop"}</button>
+      ${isFacebook ? `<button class="act" onclick="continueFacebook(${c.id})" ${(["stopped","failed"].includes(s))?"":"disabled"}>Continue</button>` : ""}
       <button class="act replay" onclick="replay(${c.id})" ${t.bytes>0?"":"disabled"}>Replay</button>
-      <button class="act danger" onclick="del(${c.id})" ${(running||paused)?"disabled":""}>Delete</button>
+      <button class="act danger" onclick="del(${c.id})" ${(running||paused||blocked)?"disabled":""}>Delete</button>
     </div>
     <div class="seeds">${seedRows}</div>
   </div>`;
+}
+async function continueFacebook(id) {
+  try {
+    await api(`/api/crawls/${id}/continue`, {method:"POST"});
+    refresh();
+  } catch (e) { alert("Continuation failed: " + e.message); }
 }
 function toggle(id) {
   if (openState.has(id)) openState.delete(id); else openState.add(id);
@@ -767,7 +973,7 @@ async function start() {
 async function refresh() {
   try {
     const [crawls, storage] = await Promise.all([api("/api/crawls"), api("/api/storage")]);
-    const active = crawls.filter(c => ["running","paused","stopping"].includes(c.status)).length;
+    const active = crawls.filter(c => ["running","paused","blocked","stopping"].includes(c.status)).length;
     const diskPercent = storage.disk.total ? storage.disk.used/storage.disk.total*100 : 0;
     $("#storage").innerHTML = `
       <div class="cell"><div class="k">Captured total</div><div class="v">${fmtBytes(storage.total_bytes)}</div></div>
@@ -788,8 +994,15 @@ $("#reset-btn").addEventListener("click", resetExample);
 $$("#new-form .mode-tab").forEach(tab => tab.addEventListener("click", () => switchMode(tab.dataset.mode)));
 $$(".job-tabs .mode-tab").forEach(tab => tab.addEventListener("click", () => switchJob(tab.dataset.job)));
 $("#record-start-btn").addEventListener("click", startRecording);
+$("#facebook-start-btn").addEventListener("click", startFacebook);
+$("#fb-mode").addEventListener("change", updateFacebookMode);
+$("#fb-url").addEventListener("blur", refreshFacebookState);
+$("#fb-comments").addEventListener("change", () => {
+  $("#fb-comment-options").classList.toggle("hidden", !$("#fb-comments").checked);
+});
 loadCapabilities();
 resetExample();
+updateFacebookMode();
 setInterval(() => $("#clock").textContent = new Date().toISOString().replace("T"," ").slice(0,19)+"Z", 1000);
 refresh();
 setInterval(refresh, 2000);
