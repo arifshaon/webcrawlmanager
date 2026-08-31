@@ -82,6 +82,9 @@ _PRIVATE_FORM_FIELDS = {
     "pass", "password", "email", "login", "approvals_code", "otp",
     "one_time_code", "fb_dtsg", "lsd", "access_token", "auth_token",
     "session_key",
+    # Not credentials, but they identify the account doing the capturing and
+    # are of no archival value, so they are redacted alongside the secrets.
+    "__user", "jazoest",
 }
 _AUTH_PATH_MARKERS = (
     "/login/", "/checkpoint/", "/recover/", "/two_factor/",
@@ -702,6 +705,28 @@ def decode_graphql_documents(body: bytes) -> list[object]:
     return documents
 
 
+def _whole_number(value: object, default: int, label: str) -> int:
+    """Parse a curator-supplied whole number, naming the field when it fails."""
+    if value in (None, ""):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a whole number.") from exc
+
+
+def _positive_number(value: object, default: float, label: str) -> float:
+    if value in (None, ""):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a number.") from exc
+    if number <= 0:
+        raise ValueError(f"{label} must be greater than zero.")
+    return number
+
+
 @dataclass
 class FacebookCaptureConfig:
     page_url: str
@@ -746,10 +771,21 @@ class FacebookCaptureConfig:
             raise ValueError("Date range mode requires a From date.")
         if mode == "since_last" and not raw.get("prior_newest_post_date"):
             raise ValueError("No previous capture date is available for this Page.")
-        maximum = int(raw.get("max_comments_per_post") or 25)
+        maximum = _whole_number(
+            raw.get("max_comments_per_post"), 25, "Maximum comments per post")
         if not 1 <= maximum <= 5_000:
             raise ValueError("Maximum comments per post must be between 1 and 5,000.")
-        consecutive = int(raw.get("consecutive_older") or 5)
+        consecutive = _whole_number(
+            raw.get("consecutive_older"), 5, "Consecutive older posts")
+        stall_rounds = _whole_number(
+            raw.get("end_stall_rounds"), 8, "Scroll attempts before stopping")
+        pause_min = _positive_number(
+            raw.get("scroll_pause_min"), 1.5, "Minimum scroll pause")
+        pause_max = _positive_number(
+            raw.get("scroll_pause_max"), 3.0, "Maximum scroll pause")
+        if pause_min > pause_max:
+            raise ValueError(
+                "The minimum scroll pause must not be longer than the maximum.")
         return cls(
             page_url=page_url,
             page_key=page_key,
@@ -762,9 +798,9 @@ class FacebookCaptureConfig:
             include_comments=bool(raw.get("include_comments", False)),
             max_comments_per_post=maximum,
             include_replies=bool(raw.get("include_replies", False)),
-            scroll_pause_min=max(0.5, float(raw.get("scroll_pause_min") or 1.5)),
-            scroll_pause_max=max(0.5, float(raw.get("scroll_pause_max") or 3.0)),
-            end_stall_rounds=max(3, int(raw.get("end_stall_rounds") or 8)),
+            scroll_pause_min=max(0.5, pause_min),
+            scroll_pause_max=max(0.5, pause_max),
+            end_stall_rounds=max(3, stall_rounds),
             prior_newest_post_id=raw.get("prior_newest_post_id"),
             prior_newest_post_date=_normalise_datetime(
                 raw.get("prior_newest_post_date")),
@@ -1023,7 +1059,19 @@ class FacebookCaptureSession(RecordingSession):
         self._pending_stop: Optional[tuple[str, str]] = None
         self._pending_block_reason: Optional[str] = None
         self._old_consecutive = 0
-        self._latest_regular = 0
+        # Per-post bookkeeping. Facebook streams a post across several GraphQL
+        # fragments, so the same post_id is observed repeatedly and later
+        # fragments enrich earlier ones. Selection, counting, persistence and
+        # the stopping boundary therefore have to be idempotent per post while
+        # still reacting to fields that only arrive on a later observation.
+        self._timeline_posts: set[str] = set()
+        self._nontimeline_posts: set[str] = set()
+        self._pinned_posts: set[str] = set()
+        self._synthetic_posts: set[str] = set()
+        self._latest_admitted: set[str] = set()
+        self._boundary_applied: set[str] = set()
+        self._exclusion_reason: dict[str, str] = {}
+        self._persisted_dates: dict[str, Optional[str]] = {}
         self._scrolls = 0
         self._stagnant_rounds = 0
         self._last_scroll_observed = 0
@@ -1035,6 +1083,7 @@ class FacebookCaptureSession(RecordingSession):
         self._last_cursor: Optional[str] = None
         self._last_checkpoint_at = 0.0
         self._profile_rejected = False
+        self._exhaustion_notified = False
         self.archive.event(
             "capture_created", mode=config.mode, page_url=config.page_url,
             continuation_of=config.continuation_of,
@@ -1190,31 +1239,106 @@ class FacebookCaptureSession(RecordingSession):
                 self._consider_comment(comment)
 
     def _consider_post(self, post: FacebookPost) -> None:
+        """Record an observation of a post and (re)assess what to do with it.
+
+        Facebook delivers one post across several GraphQL fragments, so the
+        same post_id arrives repeatedly and a later fragment may supply the
+        timestamp, the pinned flag or the timeline context that the first one
+        lacked. Assessment therefore runs on every observation against the
+        merged record, and each side effect is guarded so it happens once.
+        """
         existing = self.seen_this_run.get(post.post_id)
         if existing is not None:
-            _merge_post(existing, post)
+            record = _merge_post(existing, post)
             self.counters["duplicate_post_observations"] += 1
-            return
-        self.seen_this_run[post.post_id] = post
+        else:
+            self.seen_this_run[post.post_id] = post
+            record = post
+        self._assess_post(record)
+
+    def _assess_post(self, post: FacebookPost) -> None:
+        """Idempotent per post; safe to re-run as later fragments enrich it."""
+        post_id = post.post_id
         if not post.timeline_item:
-            self.counters["non_timeline_post_candidates"] += 1
+            # Might still be promoted by a later fragment that carries the
+            # timeline context, so keep it out of the observed count for now.
+            self._nontimeline_posts.add(post_id)
+            self._refresh_observation_counters()
             return
-        self.counters["posts_observed"] += 1
+
+        if post_id not in self._timeline_posts:
+            self._timeline_posts.add(post_id)
+            self._nontimeline_posts.discard(post_id)
         if post.is_pinned:
-            self.counters["pinned_posts_observed"] += 1
+            self._pinned_posts.add(post_id)
+        else:
+            self._pinned_posts.discard(post_id)
         if post.synthetic_id:
-            self.counters["synthetic_post_ids"] += 1
-        self._persist_batch.append(asdict(post))
+            self._synthetic_posts.add(post_id)
+        else:
+            self._synthetic_posts.discard(post_id)
+        self._refresh_observation_counters()
+
+        # Persist on first sight, and again once a timestamp appears, so the
+        # incremental state used by since_last is not left holding a null date.
+        if (post_id not in self._persisted_dates
+                or (self._persisted_dates[post_id] is None
+                    and post.created_time is not None)):
+            self._persisted_dates[post_id] = post.created_time
+            self._persist_batch.append(asdict(post))
 
         should_export, exclusion = self._select_post(post)
         if should_export:
             if self.archive.add_post(post):
                 self.counters["posts_exported"] += 1
-        elif exclusion:
-            self.exclusions[exclusion] += 1
+            self._record_exclusion(post_id, None)
+        else:
+            self._record_exclusion(post_id, exclusion)
 
-        if post.timeline_item and not post.is_pinned:
+        if not post.is_pinned and post_id not in self._boundary_applied \
+                and self._boundary_ready(post):
+            self._boundary_applied.add(post_id)
             self._apply_stopping_boundary(post)
+
+    def _refresh_observation_counters(self) -> None:
+        """Derive observation counters from sets so that a post reclassified
+        by a later fragment is not counted under both classifications."""
+        self.counters["posts_observed"] = len(self._timeline_posts)
+        self.counters["non_timeline_post_candidates"] = len(
+            self._nontimeline_posts)
+        self.counters["pinned_posts_observed"] = len(self._pinned_posts)
+        self.counters["synthetic_post_ids"] = len(self._synthetic_posts)
+
+    def _record_exclusion(self, post_id: str, reason: Optional[str]) -> None:
+        """Track one current exclusion reason per post, so a post that later
+        qualifies stops being counted under its earlier reason."""
+        previous = self._exclusion_reason.get(post_id)
+        if previous == reason:
+            return
+        if previous:
+            self.exclusions[previous] -= 1
+            if self.exclusions[previous] <= 0:
+                del self.exclusions[previous]
+        if reason:
+            self._exclusion_reason[post_id] = reason
+            self.exclusions[reason] += 1
+        else:
+            self._exclusion_reason.pop(post_id, None)
+
+    def _boundary_ready(self, post: FacebookPost) -> bool:
+        """Whether this post can be judged against the stopping rule yet.
+
+        A post whose timestamp has not arrived tells us nothing about where we
+        are in the timeline, so it must neither advance nor reset the
+        consecutive counter. Leaving it unjudged keeps it eligible for a later
+        fragment that supplies the date.
+        """
+        if self.config.mode == "date_range":
+            return post.created_time is not None
+        if self.config.mode == "since_last":
+            return (post.created_time is not None
+                    or post.post_id == self.config.prior_newest_post_id)
+        return True
 
     def _select_post(self, post: FacebookPost) -> tuple[bool, Optional[str]]:
         mode = self.config.mode
@@ -1239,13 +1363,23 @@ class FacebookCaptureSession(RecordingSession):
         if mode == "latest_n":
             if post.is_pinned:
                 return True, None
-            if self._latest_regular < int(self.config.latest_n or 0):
-                self._latest_regular += 1
+            # Admission is recorded per post so re-assessing an already
+            # admitted post cannot consume a second slot.
+            if post.post_id in self._latest_admitted:
+                return True, None
+            if len(self._latest_admitted) < int(self.config.latest_n or 0):
+                self._latest_admitted.add(post.post_id)
                 return True, None
             return False, "beyond_latest_n"
         return True, None
 
     def _apply_stopping_boundary(self, post: FacebookPost) -> None:
+        """Advance the stopping rule for one non-pinned timeline post.
+
+        Called at most once per post, and only once _boundary_ready() says the
+        post carries enough information to be judged, so a post with no
+        timestamp neither advances nor resets the consecutive counter.
+        """
         mode = self.config.mode
         if mode == "date_range":
             if post.created_time and self.config.from_date \
@@ -1259,7 +1393,7 @@ class FacebookCaptureSession(RecordingSession):
                     f"{self.config.consecutive_older}_consecutive_non_pinned_"
                     "timeline_posts_older_than_from",
                 )
-        elif mode == "latest_n" and self._latest_regular >= int(
+        elif mode == "latest_n" and len(self._latest_admitted) >= int(
                 self.config.latest_n or 0):
             self._request_stop(
                 "latest_n_reached",
@@ -1449,15 +1583,43 @@ class FacebookCaptureSession(RecordingSession):
             return
 
         if self._stagnant_rounds >= self.config.end_stall_rounds:
-            self._request_stop(
-                "end_of_available_timeline",
-                f"no_new_posts_after_{self.config.end_stall_rounds}_scroll_attempts",
-            )
-            return
+            if self.config.mode == "until_stopped":
+                # The curator asked to run until they stop it. A stall can be
+                # temporary -- throttling, a slow network -- so report it and
+                # keep trying rather than deciding the run is over for them.
+                if not self._exhaustion_notified:
+                    self._exhaustion_notified = True
+                    self.phase_detail = (
+                        "Facebook has stopped returning new posts after "
+                        f"{self.config.end_stall_rounds} scroll attempts. "
+                        "Scrolling continues in case more appear -- use Stop "
+                        "and save when you have gone far enough."
+                    )
+                    self._state_dirty = True
+                    self.archive.event(
+                        "timeline_appears_exhausted",
+                        scroll_attempts=self._scrolls,
+                        posts_observed=self.counters.get("posts_observed", 0),
+                    )
+            else:
+                self._request_stop(
+                    "end_of_available_timeline",
+                    f"no_new_posts_after_{self.config.end_stall_rounds}_scroll_attempts",
+                )
+                return
+        elif self._exhaustion_notified:
+            # New posts arrived after all; withdraw the exhaustion notice.
+            self._exhaustion_notified = False
+            self.phase_detail = "Scrolling and collecting posts."
+            self._state_dirty = True
         try:
+            # 'auto' rather than 'smooth': smooth scrolling animates
+            # asynchronously, so the marker read at the start of the next
+            # cycle can land mid-animation and misreport both position and
+            # height, which is what the stagnation check depends on.
             page.evaluate("""
               () => window.scrollBy({top: Math.max(640, window.innerHeight * 0.86),
-                                     left: 0, behavior: 'smooth'})
+                                     left: 0, behavior: 'auto'})
             """)
         except Exception as exc:
             self.counters["scroll_failures"] += 1
@@ -1524,9 +1686,48 @@ class FacebookCaptureSession(RecordingSession):
         self._last_manual_position = current
 
     # -- reporting and durable checkpoints -------------------------------
+    def _coverage(self) -> dict:
+        """Date bounds actually achieved, and whether the request was met.
+
+        Bounds are reported for the exported dataset and, separately, for
+        everything observed while scrolling. In date_range mode the observed
+        span necessarily reaches past both ends of the request, so only the
+        exported span describes the dataset a reader is holding.
+
+        requested_range_satisfied is deliberately conservative: it is True only
+        when the run ended because its own stopping rule fired. A run that
+        ended because the curator stopped it, because the feed stalled, or
+        because Facebook interrupted it, reports False -- the requested range
+        may still be complete, but this capture cannot demonstrate it.
+        """
+        exported = [post.created_time for post in self.archive.posts.values()
+                    if post.created_time]
+        observed = [post.created_time for post in self.seen_this_run.values()
+                    if post.created_time]
+        mode = self.config.mode
+        if mode == "date_range":
+            satisfied = self.stop_reason == "date_range_boundary_reached"
+        elif mode == "since_last":
+            satisfied = self.stop_reason == "previous_capture_boundary_reached"
+        elif mode == "latest_n":
+            satisfied = len(self.archive.posts) >= int(self.config.latest_n or 0)
+        else:
+            # until_stopped and end_of_timeline make no range request, so there
+            # is nothing to satisfy.
+            satisfied = None
+        return {
+            "exported_newest_post": max(exported) if exported else None,
+            "exported_oldest_post": min(exported) if exported else None,
+            "observed_newest_post": max(observed) if observed else None,
+            "observed_oldest_post": min(observed) if observed else None,
+            "exported_posts_without_date": sum(
+                1 for post in self.archive.posts.values()
+                if not post.created_time),
+            "requested_range_satisfied": satisfied,
+        }
+
     def _progress_details(self) -> dict:
-        dated = [post.created_time for post in self.seen_this_run.values()
-                 if post.created_time]
+        coverage = self._coverage()
         return {
             "phase": (
                 "verification_required" if self.state == BLOCKED
@@ -1539,10 +1740,16 @@ class FacebookCaptureSession(RecordingSession):
             "posts_exported": self.counters.get("posts_exported", 0),
             "comments_exported": self.counters.get("comments_exported", 0),
             "pinned_posts": self.counters.get("pinned_posts_observed", 0),
-            "newest_post": max(dated) if dated else None,
-            "oldest_post": min(dated) if dated else None,
+            # Bounds of the exported dataset. Observed bounds are wider in
+            # date_range mode, because posts outside the range are still seen
+            # while scrolling past them; reporting those here would overstate
+            # what the exports actually contain.
+            "newest_post": coverage["exported_newest_post"],
+            "oldest_post": coverage["exported_oldest_post"],
+            "observed_newest_post": coverage["observed_newest_post"],
+            "observed_oldest_post": coverage["observed_oldest_post"],
+            "requested_range_satisfied": coverage["requested_range_satisfied"],
             "pagination_failures": self.counters.get("pagination_failures", 0),
-            "detected_gaps": self.counters.get("pagination_failures", 0),
             "scroll_attempts": self._scrolls,
             "consecutive_older_posts": self._old_consecutive,
             "stop_reason": self.stop_reason,
@@ -1626,10 +1833,21 @@ class FacebookCaptureSession(RecordingSession):
                 "normalised_comments": len(self.archive.comments),
                 "pagination_failures": self.counters.get(
                     "pagination_failures", 0),
-                "detected_gaps": self.counters.get("pagination_failures", 0),
             },
+            "coverage": self._coverage(),
             "completeness": {
                 "claim": "No claim of complete Facebook Page capture is made.",
+                "requested_range_satisfied_meaning": (
+                    "True only when this capture ended because its own "
+                    "stopping rule fired. A curator-stopped, stalled or "
+                    "interrupted run reports False even if the requested "
+                    "range happens to be complete."
+                ),
+                "known_gaps": (
+                    "pagination_failures counts GraphQL responses that could "
+                    "not be read. Gaps Facebook never disclosed cannot be "
+                    "detected and are not counted."
+                ),
                 "end_of_available_timeline_meaning": (
                     "Facebook stopped exposing additional posts to this "
                     "browser session after repeated scroll attempts; it does "
