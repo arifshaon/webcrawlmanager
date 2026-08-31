@@ -18,7 +18,8 @@ from pathlib import Path
 
 from webarc.config import BrowserConfig
 from webarc.facebook import (FacebookCaptureConfig, FacebookCaptureSession,
-                             FacebookPost, canonical_facebook_page_url,
+                             FacebookComment, FacebookPost,
+                             canonical_facebook_page_url,
                              decode_graphql_documents, extract_graphql_records,
                              _page_path_segment, _redact_post_data)
 
@@ -346,6 +347,63 @@ class SessionTargetTests(SessionTestCase):
                          "unsupported_personal_profile")
         # a rejected target must not also be reported as a crash
         self.assertIsNone(session.failure)
+
+
+class CommentAttributionTests(SessionTestCase):
+    """The per-post comment limit has to be per post.
+
+    When a comment's parent post cannot be identified, the fallback bucket is
+    derived from its position in the response. Truncating that path at the
+    first edge index put every post in a feed response into one bucket, so a
+    single popular post could exhaust the limit for all of them.
+    """
+
+    def comment(self, comment_id: str, path: str) -> FacebookComment:
+        return FacebookComment(comment_id=comment_id, text="hello",
+                               source_path=path)
+
+    def test_comments_on_different_feed_posts_get_their_own_budget(self):
+        session = make_session(self.tmp, include_comments=True,
+                               max_comments_per_post=2)
+        base = "data.node.timeline.feed_units.edges.{post}.node.comments.edges.{n}"
+        for post_index in (0, 1):
+            for n in range(3):
+                session._consider_comment(self.comment(
+                    f"c{post_index}-{n}",
+                    base.format(post=post_index, n=n)))
+
+        # two kept per post, the third of each refused -- not two in total
+        self.assertEqual(session.counters["comments_exported"], 4)
+        self.assertEqual(session.exclusions["comment_limit_reached"], 2)
+
+    def test_an_identified_parent_post_is_preferred(self):
+        session = make_session(self.tmp, include_comments=True,
+                               max_comments_per_post=1)
+        first = FacebookComment(comment_id="a", text="x", parent_post_id="900")
+        second = FacebookComment(comment_id="b", text="y", parent_post_id="901")
+        session._consider_comment(first)
+        session._consider_comment(second)
+
+        self.assertEqual(session.counters["comments_exported"], 2)
+        self.assertEqual(session.counters["comments_without_parent_post"], 0)
+
+    def test_replies_are_skipped_unless_requested(self):
+        session = make_session(self.tmp, include_comments=True)
+        session._consider_comment(
+            FacebookComment(comment_id="r", text="reply", depth=1))
+
+        self.assertEqual(session.counters["comments_exported"], 0)
+        self.assertEqual(session.exclusions["replies_not_requested"], 1)
+
+
+class ManifestHonestyTests(SessionTestCase):
+    def test_manifest_states_the_feed_cannot_be_replayed(self):
+        session = make_session(self.tmp)
+        raw = session._manifest_document(final=True)["layers"]["raw"]
+
+        self.assertIn("replayability", raw)
+        self.assertIn("cannot be re-driven", raw["replayability"])
+        self.assertIn("media", raw)
 
 
 class GraphQLDecodingTests(unittest.TestCase):

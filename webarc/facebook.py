@@ -1470,9 +1470,21 @@ class FacebookCaptureSession(RecordingSession):
         if comment.depth > 0 and not self.config.include_replies:
             self.exclusions["replies_not_requested"] += 1
             return
-        source_bucket = re.sub(
-            r"\.edges\.\d+.*$", ".edges", comment.source_path or "")
-        bucket = comment.parent_post_id or source_bucket or "unknown-parent"
+        bucket = comment.parent_post_id
+        if not bucket:
+            # Fall back to the comment's position in the response. Only the
+            # comment's own index is dropped: outer edge indices identify
+            # which post in a feed the comment hangs off, and truncating at
+            # the first index instead collapsed every post in the response
+            # into one bucket, so the per-post limit applied across all of
+            # them together.
+            path = comment.source_path or ""
+            last = None
+            for last in re.finditer(r"\.edges\.\d+", path):
+                pass
+            bucket = (path[:last.start()] + ".edges") if last else path
+            bucket = bucket or "unknown-parent"
+            self.counters["comments_without_parent_post"] += 1
         if self._comment_counts[bucket] >= self.config.max_comments_per_post:
             self.exclusions["comment_limit_reached"] += 1
             return
@@ -1856,6 +1868,24 @@ class FacebookCaptureSession(RecordingSession):
             "layers": {
                 "raw": {
                     "format": "WARC 1.1",
+                    "replayability": (
+                        "The WARC preserves the exchanges as served, but a "
+                        "Facebook feed cannot be re-driven in a replay "
+                        "browser. Timeline and comment pages are fetched by "
+                        "GraphQL POSTs whose bodies carry per-session and "
+                        "per-request-order values, and the reusable secrets "
+                        "among those are redacted before writing, so a replay "
+                        "client cannot reproduce the request that addressed a "
+                        "given response. Replay shows the page as first "
+                        "loaded; the normalised exports, not the replay, are "
+                        "the record of what was collected."
+                    ),
+                    "media": (
+                        "Media is captured as the browser loaded it while "
+                        "scrolling. Images Facebook never requested -- lazy "
+                        "loads that did not trigger -- are absent from the "
+                        "WARC even when their URLs appear in post records."
+                    ),
                     "policy": (
                         "Eligible network exchanges are retained even while "
                         "automatic scrolling is paused and when posts fall "
