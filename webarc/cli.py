@@ -476,11 +476,44 @@ def main(argv: list[str] | None = None) -> int:
 
         from .replay import ReplayServer, build_replay_site, collection_name
 
+        from .facebook_render import build_site, is_facebook_capture
+
         warc_dir = _P(args.warc_dir)
         warcs = sorted(warc_dir.glob("*.warc.gz")) + sorted(warc_dir.glob("*.warc"))
+
+        # A Facebook capture is read through its rendered pages: the feed
+        # cannot be re-driven in a replay browser, and the capture may have
+        # been run without a WARC at all.
+        facebook_site = None
+        if is_facebook_capture(warc_dir):
+            try:
+                facebook_site = build_site(warc_dir)
+                print(f"Facebook capture: built reader pages at "
+                      f"{facebook_site}")
+            except Exception as exc:
+                print(f"Could not build Facebook reader pages: {exc}",
+                      file=sys.stderr)
+
         if not warcs:
-            print(f"No WARC files found in {warc_dir}", file=sys.stderr)
-            return 1
+            if facebook_site is None:
+                print(f"No WARC files found in {warc_dir}", file=sys.stderr)
+                return 1
+            server = ReplayServer(facebook_site.parent, port=args.port,
+                                  host=args.host)
+            url = (f"http://{args.host}:{args.port}/"
+                   f"{facebook_site.name}/index.html")
+            print(f"\nNo WARC in this capture; serving its pages instead.")
+            print(f"  Open: {url}")
+            print("\nPress Ctrl+C to stop the server.")
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+            try:
+                server.serve_forever()
+            except KeyboardInterrupt:
+                print("\nStopped.")
+            return 0
         coll = args.collection or collection_name(warc_dir.resolve().name)
         replay_root = _P(args.replay_root)
         seed, reason = _resolve_cli_replay_url(warcs, args.url)
@@ -520,6 +553,11 @@ def main(argv: list[str] | None = None) -> int:
         url = server.replay_url(coll)
         print(f"\nReplaying {len(warcs)} WARC(s) as '{coll}' (ReplayWeb.page)")
         print(f"  Open: {url}")
+        if facebook_site is not None:
+            print("\nThis is a Facebook capture. Replay shows the Page as it "
+                  "first loaded; its captured posts, media and comments are "
+                  "in the reader pages:")
+            print(f"  file:///{facebook_site.as_posix()}/index.html")
         print("\nReplay runs in your browser — no pywb, any Python version.")
         print("Press Ctrl+C to stop the server.")
         try:

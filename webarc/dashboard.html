@@ -472,7 +472,11 @@
             <label class="field-label">Capture options</label>
             <label class="check-row">
               <input type="checkbox" id="fb-media" checked>
-              <span class="check-copy"><strong>Capture images and media</strong><span>Retain media requests loaded by the timeline.</span></span>
+              <span class="check-copy"><strong>Capture images and media</strong><span>Fetch the images and video referenced by captured posts, and keep them as files.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="fb-warc" checked>
+              <span class="check-copy"><strong>Write a WARC</strong><span>Preserves the raw exchanges. Replay of a Facebook feed only ever shows the Page as first loaded; the captured posts, media and comments are read through the pages SWM builds either way.</span></span>
             </label>
             <label class="check-row">
               <input type="checkbox" id="fb-comments">
@@ -853,6 +857,7 @@ async function startFacebook() {
     to_date: $("#fb-to").value || null,
     latest_n: Number($("#fb-latest-n").value || 100),
     capture_media: $("#fb-media").checked,
+    write_warc: $("#fb-warc").checked,
     include_comments: $("#fb-comments").checked,
     max_comments_per_post: Number($("#fb-comment-max").value || 25),
     include_replies: $("#fb-replies").checked,

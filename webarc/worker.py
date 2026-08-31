@@ -156,6 +156,25 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
     session.run()
 
 
+class _NullWarcSession:
+    """Stands in for the WARC writer when a capture opts out of writing one.
+
+    Accepts and discards exchanges, so every capture path stays identical
+    whether or not a WARC is being produced.
+    """
+
+    def __init__(self, out_dir, *_args, **_kwargs):
+        self.out_dir = Path(out_dir)
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.total_bytes = 0
+
+    def write_exchange(self, **_kwargs) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
 def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
     """Run a visible, curator-controlled Facebook Page capture."""
     import json
@@ -172,7 +191,11 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
     operator = str(fb_raw.get("operator") or "webarc")
     output_dir = Path(row["output_dir"])
 
-    warc = FacebookWarcSession(
+    # A Facebook capture can be run without a WARC: its records, media and
+    # rendered pages stand on their own, and replay of a Facebook feed is
+    # limited to the page as first loaded in any case.
+    warc_cls = FacebookWarcSession if fb_config.write_warc else _NullWarcSession
+    warc = warc_cls(
         output_dir, row["name"], fb_config.page_url, 1, operator,
         WarcConfig(),
         info_extra={

@@ -779,6 +779,7 @@ class FacebookCaptureConfig:
     latest_n: Optional[int] = None
     consecutive_older: int = 5
     capture_media: bool = True
+    write_warc: bool = True
     include_comments: bool = False
     max_comments_per_post: int = 25
     include_replies: bool = False
@@ -837,6 +838,7 @@ class FacebookCaptureConfig:
             latest_n=latest_n,
             consecutive_older=max(2, min(consecutive, 25)),
             capture_media=bool(raw.get("capture_media", True)),
+            write_warc=bool(raw.get("write_warc", True)),
             include_comments=bool(raw.get("include_comments", False)),
             max_comments_per_post=maximum,
             include_replies=bool(raw.get("include_replies", False)),
@@ -849,6 +851,24 @@ class FacebookCaptureConfig:
             continuation_of=raw.get("continuation_of"),
             root_capture_id=raw.get("root_capture_id"),
         )
+
+
+_MEDIA_SUFFIXES = {
+    "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+    "image/webp": ".webp", "video/mp4": ".mp4", "image/heic": ".heic",
+}
+
+
+def _media_suffix(url: str, content_type: str) -> str:
+    """A sensible file extension, preferring what the server said it sent."""
+    kind = (content_type or "").split(";")[0].strip().lower()
+    if kind in _MEDIA_SUFFIXES:
+        return _MEDIA_SUFFIXES[kind]
+    path = urlsplit(url).path
+    for suffix in (".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp4"):
+        if path.lower().endswith(suffix):
+            return ".jpg" if suffix == ".jpeg" else suffix
+    return ".bin"
 
 
 class FacebookArchive:
@@ -875,6 +895,11 @@ class FacebookArchive:
         self.checkpoint_path = out_dir / "facebook-checkpoint.json"
         self.posts: dict[str, FacebookPost] = {}
         self.comments: dict[str, FacebookComment] = {}
+        # Media is kept as files as well as in WARC, so the capture can be
+        # read without a replay browser.
+        self.media_dir = out_dir / "media"
+        self.media_path = out_dir / "facebook-media.json"
+        self.media_index: dict[str, str] = {}
 
     def event(self, event: str, **details: object) -> None:
         _append_jsonl(self.events_path, {
@@ -888,6 +913,31 @@ class FacebookArchive:
         self.posts[post.post_id] = post
         _append_jsonl(self.posts_path, asdict(post))
         return True
+
+    def save_media(self, url: str, body: bytes,
+                   content_type: str = "") -> Optional[str]:
+        """Store one media object under a content-addressed name.
+
+        Returns the file name, or None when there is nothing to store. Naming
+        by digest means the same image referenced by several posts is kept
+        once, and a repeated capture overwrites identical bytes harmlessly.
+        """
+        if not body:
+            return None
+        existing = self.media_index.get(url)
+        if existing:
+            return existing
+        digest = hashlib.sha1(body).hexdigest()
+        suffix = _media_suffix(url, content_type)
+        name = f"{digest}{suffix}"
+        self.media_dir.mkdir(parents=True, exist_ok=True)
+        target = self.media_dir / name
+        if not target.exists():
+            temporary = target.with_name(name + ".tmp")
+            temporary.write_bytes(body)
+            temporary.replace(target)
+        self.media_index[url] = name
+        return name
 
     def add_comment(self, comment: FacebookComment) -> bool:
         if comment.comment_id in self.comments:
@@ -921,6 +971,8 @@ class FacebookArchive:
                     handle.write("\n")
             temporary.replace(path)
 
+        if self.media_index:
+            _atomic_json(self.media_path, self.media_index)
         write_jsonl(
             self.posts_path, (asdict(post) for post in self.posts.values()))
         self._write_csv(
@@ -1130,6 +1182,7 @@ class FacebookCaptureSession(RecordingSession):
         # Media the browser already fetched, so an explicit fetch does not
         # duplicate it, plus the queue of media still to be collected.
         self._media_seen: set[str] = set()
+        self._media_wanted: set[str] = set()
         self._media_queue: deque[tuple[str, str]] = deque()
         # While harvesting one post's permalink, every comment found belongs
         # to that post; this both attributes them and keeps the per-post
@@ -1240,6 +1293,13 @@ class FacebookCaptureSession(RecordingSession):
                 self._media_seen.add(response.url)
                 if body:
                     self.counters["media_captured"] += 1
+                    if (self.config.capture_media
+                            and response.url in self._media_wanted):
+                        # The browser already produced these bytes; keep them
+                        # rather than spending a second request on the URL.
+                        self.archive.save_media(
+                            response.url, body,
+                            response.headers.get("content-type", ""))
         except Exception:
             pass
         if self._is_graphql_url(response.url):
@@ -1603,9 +1663,13 @@ class FacebookCaptureSession(RecordingSession):
         if not self.config.capture_media:
             return
         for url in post.media_urls:
-            if url and url not in self._media_seen:
-                self._media_seen.add(url)
-                self._media_queue.append((post.post_id, url))
+            if not url or url in self._media_wanted:
+                continue
+            self._media_wanted.add(url)
+            # Queued even when the browser has already requested the URL: that
+            # earlier response was discarded, because nothing yet said this
+            # media belonged to a captured post.
+            self._media_queue.append((post.post_id, url))
 
     def _process_media_queue(self, budget: int = 3) -> None:
         """Fetch a few queued media objects, without stalling the scroll loop."""
@@ -1613,6 +1677,8 @@ class FacebookCaptureSession(RecordingSession):
             return
         while self._media_queue and budget > 0:
             post_id, url = self._media_queue.popleft()
+            if url in self.archive.media_index:
+                continue          # the browser's own copy was kept
             budget -= 1
             fetched = None
             try:
@@ -1626,6 +1692,8 @@ class FacebookCaptureSession(RecordingSession):
                     status_text=fetched.status_text or "",
                     resp_headers=fetched.headers, body=body,
                 )
+                self.archive.save_media(
+                    url, body, fetched.headers.get("content-type", ""))
                 self.counters["media_captured"] += 1
                 self.counters["media_fetched_for_posts"] += 1
             except Exception as exc:
@@ -2059,6 +2127,7 @@ class FacebookCaptureSession(RecordingSession):
                     "latest_n": self.config.latest_n,
                     "consecutive_older_required": self.config.consecutive_older,
                     "capture_media": self.config.capture_media,
+                    "write_warc": self.config.write_warc,
                     "include_comments": self.config.include_comments,
                     "maximum_comments_per_post": self.config.max_comments_per_post,
                     "include_replies": self.config.include_replies,
@@ -2259,8 +2328,28 @@ class FacebookCaptureSession(RecordingSession):
                     self._checkpoint_document(),
                     self._manifest_document(final=True),
                 )
+                self._build_reader_pages()
             finally:
                 self.warc.close()
+
+    def _build_reader_pages(self) -> None:
+        """Render the captured records as browsable pages.
+
+        Built at the end of every capture, because the records are what a
+        Facebook capture can actually show: replay reaches only the page as
+        first loaded, and a capture written without a WARC has no replay at
+        all.
+        """
+        try:
+            from .facebook_render import build_site
+            build_site(self.output_dir)
+            self.archive.event("reader_pages_built",
+                               posts=len(self.archive.posts),
+                               comments=len(self.archive.comments))
+        except Exception as exc:
+            self.counters["reader_pages_failures"] += 1
+            self.archive.event("reader_pages_failed", error=str(exc))
+            log.warning("Could not build Facebook reader pages: %s", exc)
 
     def run_with_context(self, context, navigate: bool = True) -> dict:
         self._context = context

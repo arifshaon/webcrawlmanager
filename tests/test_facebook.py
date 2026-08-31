@@ -473,14 +473,48 @@ class MediaCaptureTests(SessionTestCase):
         self.assertEqual(session._context.request.requested, [])
         self.assertEqual(len(session.warc.writes), 0)
 
-    def test_media_the_browser_already_loaded_is_not_fetched_again(self):
+    def test_media_already_held_on_disk_is_not_fetched_again(self):
+        session = make_session(self.tmp, capture_media=True)
+        session._context = _FakeContext()
+        session.archive.media_index["https://scontent.example/a.jpg"] = "a.jpg"
+        self.with_media(session, ["https://scontent.example/a.jpg"])
+        session._process_media_queue()
+
+        self.assertEqual(session._context.request.requested, [])
+
+    def test_media_the_browser_loaded_before_it_was_wanted_is_fetched(self):
+        # The browser's own response was discarded, because nothing yet
+        # identified the URL as belonging to a captured post.
         session = make_session(self.tmp, capture_media=True)
         session._context = _FakeContext()
         session._media_seen.add("https://scontent.example/a.jpg")
         self.with_media(session, ["https://scontent.example/a.jpg"])
         session._process_media_queue()
 
-        self.assertEqual(session._context.request.requested, [])
+        self.assertEqual(session._context.request.requested,
+                         ["https://scontent.example/a.jpg"])
+
+    def test_fetched_media_is_written_to_disk(self):
+        session = make_session(self.tmp, capture_media=True)
+        session._context = _FakeContext()
+        self.with_media(session, ["https://scontent.example/a.jpg"])
+        session._process_media_queue()
+
+        name = session.archive.media_index["https://scontent.example/a.jpg"]
+        self.assertTrue(name.endswith(".jpg"))
+        self.assertEqual((session.archive.media_dir / name).read_bytes(),
+                         b"\xff\xd8jpeg")
+
+    def test_the_same_image_on_two_posts_is_stored_once(self):
+        session = make_session(self.tmp, capture_media=True)
+        first = session.archive.save_media("https://a/1.jpg", b"same",
+                                           "image/jpeg")
+        second = session.archive.save_media("https://b/2.jpg", b"same",
+                                            "image/jpeg")
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            len(list(session.archive.media_dir.glob("*.jpg"))), 1)
 
     def test_a_failed_fetch_is_counted_not_raised(self):
         session = make_session(self.tmp, capture_media=True)
