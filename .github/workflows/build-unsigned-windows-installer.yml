@@ -23,32 +23,40 @@ jobs:
         with:
           ref: feature/record-session
 
-      - name: Parse PowerShell bootstrap
+      - name: Validate installer architecture
         shell: powershell
         run: |
           $text = Get-Content .\install\install-windows.ps1 -Raw
           [void][scriptblock]::Create($text)
-          if ($text -match '"python"\s*,\s*"install"') {
-            throw 'Installer must not use uv python install; that path fails under Windows RedirectionGuard on affected systems.'
-          }
 
           $wrapperText = Get-Content .\install\run-bootstrap.ps1 -Raw
           [void][scriptblock]::Create($wrapperText)
-          Write-Host 'PowerShell bootstrap and wrapper syntax are valid; bootstrap contains no uv managed-Python install call.'
 
-      - name: Smoke test private-runtime bootstrap
+          if ($text -match 'RuntimeRoot\s*=\s*\(Join-Path\s+\$env:LOCALAPPDATA') {
+            throw 'Python runtime must not be stored in a separate LocalAppData runtime.'
+          }
+          if ($text -match '\.venv') {
+            throw 'Windows installer must use the local SWM Python directly, not a separate venv.'
+          }
+          if ($text -notmatch 'Join-Path\s+\$InstallDir\s+"\.runtime"') {
+            throw 'Installer does not derive .runtime from InstallDir.'
+          }
+          if ($text -notmatch '%~dp0\.runtime\\python\\python\.exe') {
+            throw 'Generated launchers do not explicitly reference the Python inside the install directory.'
+          }
+
+          Write-Host 'Installer architecture is self-contained under InstallDir.'
+
+      - name: Smoke test self-contained runtime bootstrap
         shell: powershell
         run: |
-          $testDir = Join-Path $env:RUNNER_TEMP 'swm-private-runtime-test'
-          $runtimeDir = Join-Path $env:RUNNER_TEMP 'swm-private-python-runtime'
+          $testDir = Join-Path $env:RUNNER_TEMP 'swm-self-contained-test'
           if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
-          if (Test-Path $runtimeDir) { Remove-Item $runtimeDir -Recurse -Force }
 
           $bootstrapArgs = @(
             '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', (Resolve-Path '.\install\install-windows.ps1').Path,
             '-InstallDir', $testDir,
-            '-RuntimeRoot', $runtimeDir,
             '-Branch', 'feature/record-session',
             '-DashboardPort', '18080',
             '-ReplayPort', '18091',
@@ -56,27 +64,16 @@ jobs:
           )
           & powershell.exe @bootstrapArgs
           $bootstrapExit = $LASTEXITCODE
-
-          $pythonRoot = Join-Path $runtimeDir 'python'
-          Write-Host "Bootstrap exit code: $bootstrapExit"
-          if (Test-Path $pythonRoot) {
-            Write-Host 'Extracted private Python tree (top level):'
-            Get-ChildItem -LiteralPath $pythonRoot -Force | Select-Object -First 30 | ForEach-Object { Write-Host $_.FullName }
-            $topPython = Join-Path $pythonRoot 'python.exe'
-            if (Test-Path $topPython) {
-              Write-Host "Testing top-level interpreter directly: $topPython"
-              & cmd.exe /d /c "`"$topPython`" --version 2>&1"
-              Write-Host "Direct python exit code: $LASTEXITCODE"
-            }
-          }
           if ($bootstrapExit -ne 0) {
-            throw "Bootstrap failed with exit code $bootstrapExit after diagnostics above."
+            throw "Bootstrap failed with exit code $bootstrapExit."
           }
 
+          $runtimeRoot = Join-Path $testDir '.runtime'
+          $pythonExe = Join-Path $runtimeRoot 'python\python.exe'
           $required = @(
-            (Join-Path $testDir '.runtime\uv\uv.exe'),
-            (Join-Path $testDir '.venv\Scripts\python.exe'),
-            (Join-Path $testDir '.venv\Scripts\swm.exe'),
+            $pythonExe,
+            (Join-Path $runtimeRoot 'uv\uv.exe'),
+            (Join-Path $runtimeRoot 'ms-playwright'),
             (Join-Path $testDir 'Start SWM Server.cmd'),
             (Join-Path $testDir 'swm.cmd'),
             (Join-Path $testDir 'server-port.txt')
@@ -85,23 +82,34 @@ jobs:
             if (-not (Test-Path $path)) { throw "Bootstrap did not create: $path" }
           }
 
-          $privatePythonExe = Join-Path $runtimeDir 'python\python.exe'
-          $privateVersion = & $privatePythonExe -c "import sys; print(sys.version.split()[0])"
-          if ($LASTEXITCODE -ne 0 -or $privateVersion -notmatch '^3\.13\.') {
-            throw "Unexpected private Python runtime: $privateVersion"
+          if (Test-Path (Join-Path $testDir '.venv')) {
+            throw 'Bootstrap unexpectedly created a .venv.'
           }
-          Write-Host "Private runtime Python: $privateVersion at $privatePythonExe"
+
+          $version = & $pythonExe -c "import sys; print(sys.version.split()[0])"
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^3\.13\.') {
+            throw "Unexpected local Python runtime: $version"
+          }
+          Write-Host "Local SWM Python: $version at $pythonExe"
+
+          $helpOutput = & $pythonExe -m webarc.cli --help
+          $helpExitCode = $LASTEXITCODE
+          $helpOutput | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
+          if ($helpExitCode -ne 0) { throw 'Local Python SWM CLI smoke test failed.' }
+
+          $serverLauncher = Get-Content (Join-Path $testDir 'Start SWM Server.cmd') -Raw
+          $cliLauncher = Get-Content (Join-Path $testDir 'swm.cmd') -Raw
+          foreach ($launcher in @($serverLauncher, $cliLauncher)) {
+            if ($launcher -notmatch '%~dp0\.runtime\\python\\python\.exe') {
+              throw 'A launcher does not reference the Python runtime relative to its own install directory.'
+            }
+            if ($launcher -match '\bpython(?:\.exe)?\b' -and $launcher -notmatch 'SWM_PYTHON') {
+              throw 'A launcher may invoke an unqualified Python executable.'
+            }
+          }
 
           $port = (Get-Content (Join-Path $testDir 'server-port.txt') -Raw).Trim()
           if ($port -ne '18080') { throw "Unexpected server port: $port" }
-
-          $venvVersion = & (Join-Path $testDir '.venv\Scripts\python.exe') -c "import sys; print(sys.version.split()[0])"
-          Write-Host "Venv Python: $venvVersion"
-
-          $helpOutput = & (Join-Path $testDir '.venv\Scripts\swm.exe') --help
-          $helpExitCode = $LASTEXITCODE
-          $helpOutput | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
-          if ($helpExitCode -ne 0) { throw 'Installed SWM CLI smoke test failed.' }
 
       - name: Install Inno Setup 6
         shell: powershell
