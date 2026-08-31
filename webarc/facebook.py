@@ -1127,6 +1127,15 @@ class FacebookCaptureSession(RecordingSession):
         self._profile_rejected = False
         self._exhaustion_notified = False
         self._page_segment = _page_path_segment(config.page_url)
+        # Media the browser already fetched, so an explicit fetch does not
+        # duplicate it, plus the queue of media still to be collected.
+        self._media_seen: set[str] = set()
+        self._media_queue: deque[tuple[str, str]] = deque()
+        # While harvesting one post's permalink, every comment found belongs
+        # to that post; this both attributes them and keeps the per-post
+        # comment budget separate from other posts' budgets.
+        self._permalink_post_id: Optional[str] = None
+        self._harvest_done = False
         self.archive.event(
             "capture_created", mode=config.mode, page_url=config.page_url,
             continuation_of=config.continuation_of,
@@ -1226,6 +1235,13 @@ class FacebookCaptureSession(RecordingSession):
                 self._last_cursor = cursor
 
     def _write_exchange(self, response, body: bytes) -> None:
+        try:
+            if response.request.resource_type in ("image", "media"):
+                self._media_seen.add(response.url)
+                if body:
+                    self.counters["media_captured"] += 1
+        except Exception:
+            pass
         if self._is_graphql_url(response.url):
             try:
                 self._consume_graphql(response, body)
@@ -1343,6 +1359,7 @@ class FacebookCaptureSession(RecordingSession):
         if should_export:
             if self.archive.add_post(post):
                 self.counters["posts_exported"] += 1
+            self._queue_media(post)
             self._record_exclusion(post_id, None)
         else:
             self._record_exclusion(post_id, exclusion)
@@ -1470,6 +1487,10 @@ class FacebookCaptureSession(RecordingSession):
         if comment.depth > 0 and not self.config.include_replies:
             self.exclusions["replies_not_requested"] += 1
             return
+        if self._permalink_post_id and not comment.parent_post_id:
+            # Found while that post's own permalink was open, so it is that
+            # post's comment even when the payload does not say so.
+            comment.parent_post_id = self._permalink_post_id
         bucket = comment.parent_post_id
         if not bucket:
             # Fall back to the comment's position in the response. Only the
@@ -1571,29 +1592,216 @@ class FacebookCaptureSession(RecordingSession):
             )
             self._consider_post(post)
 
-    def _expand_comments(self, page) -> None:
-        if not self.config.include_comments:
+    # -- requested media ---------------------------------------------------
+    def _queue_media(self, post: FacebookPost) -> None:
+        """Note a post's media for collection.
+
+        Facebook's CDN URLs are signed and time-limited, so media is collected
+        during the run rather than from the exported records afterwards, by
+        which time the URLs no longer resolve.
+        """
+        if not self.config.capture_media:
             return
+        for url in post.media_urls:
+            if url and url not in self._media_seen:
+                self._media_seen.add(url)
+                self._media_queue.append((post.post_id, url))
+
+    def _process_media_queue(self, budget: int = 3) -> None:
+        """Fetch a few queued media objects, without stalling the scroll loop."""
+        if not self._context:
+            return
+        while self._media_queue and budget > 0:
+            post_id, url = self._media_queue.popleft()
+            budget -= 1
+            fetched = None
+            try:
+                fetched = self._context.request.get(url, timeout=30_000)
+                if not fetched.ok:
+                    raise RuntimeError(f"HTTP {fetched.status}")
+                body = fetched.body()
+                self.warc.write_exchange(
+                    url=url, method="GET", req_headers={}, post_data=None,
+                    status=fetched.status,
+                    status_text=fetched.status_text or "",
+                    resp_headers=fetched.headers, body=body,
+                )
+                self.counters["media_captured"] += 1
+                self.counters["media_fetched_for_posts"] += 1
+            except Exception as exc:
+                self.counters["media_fetch_failures"] += 1
+                self.archive.event("media_fetch_failed", url=url,
+                                   post_id=post_id, error=str(exc))
+            finally:
+                if fetched is not None:
+                    try:
+                        fetched.dispose()
+                    except Exception:
+                        pass
+
+    # -- requested comments ------------------------------------------------
+    def _harvest_comments(self, context) -> None:
+        """Collect comments from each captured post's own permalink.
+
+        A Page feed never exposes a post's full comment thread, so honouring
+        "maximum comments per post" means opening each post where its comments
+        are actually paginated. Runs once the scrolling phase has finished, so
+        it does not disturb the feed's scroll position.
+        """
+        if self._harvest_done or not self.config.include_comments:
+            return
+        self._harvest_done = True
+        targets = [post for post in self.archive.posts.values()
+                   if post.permalink_url]
+        without = len(self.archive.posts) - len(targets)
+        if without:
+            self.counters["posts_without_permalink"] += without
+        if not targets:
+            return
+
+        self.archive.event("comment_harvest_started", posts=len(targets),
+                           maximum_per_post=self.config.max_comments_per_post,
+                           include_replies=self.config.include_replies)
+        page = None
+        try:
+            page = context.new_page()
+            for index, post in enumerate(targets, start=1):
+                if self._closed or self._stop_requested_during_harvest():
+                    self.archive.event(
+                        "comment_harvest_interrupted",
+                        posts_completed=index - 1, posts_total=len(targets))
+                    break
+                self.phase_detail = (
+                    f"Collecting comments: post {index} of {len(targets)}."
+                )
+                self._state_dirty = True
+                self._harvest_one_post(page, post)
+                self.counters["posts_comment_harvested"] += 1
+                self._report_facebook()
+                self._checkpoint()
+        except Exception as exc:
+            self.counters["comment_harvest_failures"] += 1
+            self.archive.event("comment_harvest_failed", error=str(exc))
+        finally:
+            self._permalink_post_id = None
+            if page is not None:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+            self.archive.event(
+                "comment_harvest_finished",
+                comments_exported=self.counters.get("comments_exported", 0))
+
+    def _drain_requested_work(self, context) -> None:
+        """Finish the collection the curator asked for before closing.
+
+        Media queued while scrolling is fetched first, because its signed URLs
+        expire; the per-post comment pass follows.
+        """
+        try:
+            while self._media_queue:
+                if self._closed or self._stop_requested_during_harvest():
+                    self.archive.event(
+                        "media_collection_interrupted",
+                        outstanding=len(self._media_queue))
+                    break
+                self.phase_detail = (
+                    f"Collecting media: {len(self._media_queue)} remaining."
+                )
+                self._state_dirty = True
+                self._process_media_queue(budget=5)
+                self._report_facebook()
+        except Exception as exc:
+            self.archive.event("media_collection_failed", error=str(exc))
+        try:
+            self._harvest_comments(context)
+        except Exception as exc:
+            self.counters["comment_harvest_failures"] += 1
+            self.archive.event("comment_harvest_failed", error=str(exc))
+
+    def _stop_requested_during_harvest(self) -> bool:
+        """A second stop, given while comments are being collected, ends it."""
+        try:
+            command = self.control_poll()
+        except Exception:
+            return False
+        if command == CMD_STOP:
+            return True
+        while self._commands:
+            widget_command, _page, _actor = self._commands.popleft()
+            if widget_command == CMD_STOP:
+                return True
+        return False
+
+    def _harvest_one_post(self, page, post: FacebookPost) -> None:
+        self._permalink_post_id = post.post_id
+        try:
+            page.goto(post.permalink_url, wait_until="domcontentloaded",
+                      timeout=int(self.page_timeout * 1000))
+        except Exception as exc:
+            self.counters["comment_page_failures"] += 1
+            self.archive.event("comment_page_failed",
+                               post_id=post.post_id, error=str(exc))
+            self._permalink_post_id = None
+            return
+        try:
+            page.wait_for_timeout(1500)
+            self._process_media_queue(budget=6)
+            wanted = self.config.max_comments_per_post
+            stalled = 0
+            for _ in range(40):
+                collected = self._comment_counts.get(post.post_id, 0)
+                if collected >= wanted or stalled >= 3:
+                    break
+                if self._closed or self._stop_requested_during_harvest():
+                    break
+                clicked = self._expand_comments(page)
+                page.wait_for_timeout(1200)
+                if self._comment_counts.get(post.post_id, 0) > collected:
+                    stalled = 0
+                else:
+                    stalled += 1
+                if not clicked:
+                    stalled += 1
+        except Exception as exc:
+            self.counters["comment_page_failures"] += 1
+            self.archive.event("comment_expansion_failed",
+                               post_id=post.post_id, error=str(exc))
+        finally:
+            self._permalink_post_id = None
+
+    def _expand_comments(self, page) -> int:
+        """Click whatever exposes more comments, returning how many controls
+        were clicked. Used both while scrolling the feed and, more
+        productively, on an individual post's permalink."""
+        if not self.config.include_comments:
+            return 0
         script = r"""
         ({maximum, includeReplies}) => {
           const top = Array.from(document.querySelectorAll('[role="article"]'))
             .filter(el => !el.parentElement || !el.parentElement.closest('[role="article"]'));
           let clicked = 0;
-          for (const post of top.slice(-30)) {
+          const budget = perPost ? 12 : 4;
+          const scope = perPost ? top : top.slice(-30);
+          for (const post of scope) {
             const comments = post.querySelectorAll('[role="article"] [role="article"]').length;
-            if (comments >= maximum) continue;
+            if (!perPost && comments >= maximum) continue;
             const controls = Array.from(post.querySelectorAll('button, [role="button"]'));
             for (const control of controls) {
-              if (clicked >= 4) break;
+              if (clicked >= budget) break;
+              if (control.dataset && control.dataset.swmClicked === '1') continue;
               const label = ((control.innerText || '') + ' ' +
                 (control.getAttribute('aria-label') || '')).trim();
-              const commentMore = /view (all|more|previous).*comments|more comments/i.test(label);
-              const replyMore = /view (all|more).*repl|more repl/i.test(label);
+              const commentMore = /view (all|more|previous).*comments|more comments|previous comments/i.test(label);
+              // "3 replies", "View 2 replies", "View more replies"
+              const replyMore = /view (all|more).*repl|more repl|^\d[\d,.]*\s+repl/i.test(label);
               if (commentMore || (includeReplies && replyMore)) {
+                try { control.dataset.swmClicked = '1'; } catch (_) {}
                 control.click(); clicked += 1;
               }
             }
-            if (clicked >= 4) break;
+            if (clicked >= budget) break;
           }
           return {clicked, posts_examined: top.length};
         }
@@ -1602,17 +1810,14 @@ class FacebookCaptureSession(RecordingSession):
             result = page.evaluate(script, {
                 "maximum": self.config.max_comments_per_post,
                 "includeReplies": self.config.include_replies,
+                "perPost": self._permalink_post_id is not None,
             })
         except Exception:
-            return
+            return 0
         clicked = int((result or {}).get("clicked") or 0)
         if clicked:
             self.counters["comment_expansion_clicks"] += clicked
-            self.archive.event(
-                "comment_pagination_requested", controls_clicked=clicked,
-                maximum_per_post=self.config.max_comments_per_post,
-                include_replies=self.config.include_replies,
-            )
+        return clicked
 
     def _page_marker(self, page) -> dict:
         try:
@@ -1696,6 +1901,7 @@ class FacebookCaptureSession(RecordingSession):
             return
         self._scrolls += 1
         self.counters["scroll_attempts"] = self._scrolls
+        self._process_media_queue()
         self._next_scroll_at = time.monotonic() + random.uniform(
             self.config.scroll_pause_min, self.config.scroll_pause_max)
         self._checkpoint()
@@ -1917,6 +2123,38 @@ class FacebookCaptureSession(RecordingSession):
                     "pagination_failures", 0),
             },
             "coverage": self._coverage(),
+            "requested_work": {
+                "comments": {
+                    "requested": self.config.include_comments,
+                    "replies_requested": self.config.include_replies,
+                    "maximum_per_post": self.config.max_comments_per_post,
+                    "posts_visited_for_comments": self.counters.get(
+                        "posts_comment_harvested", 0),
+                    "posts_without_permalink": self.counters.get(
+                        "posts_without_permalink", 0),
+                    "comments_exported": len(self.archive.comments),
+                    "note": (
+                        "Comments are collected from each post's own "
+                        "permalink after scrolling ends, because a Page feed "
+                        "never exposes a full comment thread. A post with no "
+                        "permalink in its record cannot be visited."
+                    ),
+                },
+                "media": {
+                    "requested": self.config.capture_media,
+                    "captured": self.counters.get("media_captured", 0),
+                    "fetched_for_posts": self.counters.get(
+                        "media_fetched_for_posts", 0),
+                    "fetch_failures": self.counters.get(
+                        "media_fetch_failures", 0),
+                    "outstanding_at_close": len(self._media_queue),
+                    "note": (
+                        "Media referenced by captured posts is fetched during "
+                        "the run, while its signed URLs still resolve, in "
+                        "addition to whatever the browser loaded by itself."
+                    ),
+                },
+            },
             "completeness": {
                 "claim": "No claim of complete Facebook Page capture is made.",
                 "requested_range_satisfied_meaning": (
@@ -2071,12 +2309,18 @@ class FacebookCaptureSession(RecordingSession):
                     self._pending_block_reason = None
                 if self._pending_stop:
                     self.stop_reason, self.stop_rule = self._pending_stop
-                    self.state = STOPPED
-                    self.phase_detail = "Capture stopped; finalising files."
                     self.archive.event(
                         "stopping_rule_fired", reason=self.stop_reason,
                         rule=self.stop_rule,
                     )
+                    # Scrolling is over, but the curator asked for comments and
+                    # media; deliver those before the session closes. Both
+                    # honour a further stop command, so this stays interruptible.
+                    if self.stop_reason not in ("unsupported_personal_profile",
+                                                "browser_closed"):
+                        self._drain_requested_work(context)
+                    self.state = STOPPED
+                    self.phase_detail = "Capture stopped; finalising files."
                     continue
 
                 active = self._active_page(context)

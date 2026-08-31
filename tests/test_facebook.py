@@ -406,6 +406,155 @@ class ManifestHonestyTests(SessionTestCase):
         self.assertIn("media", raw)
 
 
+class _FakeFetched:
+    def __init__(self, body: bytes, status: int = 200):
+        self.status = status
+        self.ok = 200 <= status < 300
+        self.status_text = "OK"
+        self.headers = {"content-type": "image/jpeg"}
+        self._body = body
+        self.disposed = False
+
+    def body(self):
+        return self._body
+
+    def dispose(self):
+        self.disposed = True
+
+
+class _FakeRequestContext:
+    def __init__(self, body=b"\xff\xd8jpeg", status=200):
+        self.requested: list[str] = []
+        self._body = body
+        self._status = status
+
+    def get(self, url, **_kwargs):
+        self.requested.append(url)
+        return _FakeFetched(self._body, self._status)
+
+
+class _FakeContext:
+    def __init__(self, **kwargs):
+        self.request = _FakeRequestContext(**kwargs)
+
+
+class MediaCaptureTests(SessionTestCase):
+    """Ticking "capture media" has to actually collect the media.
+
+    Facebook lazy-loads, so images for posts scrolled past quickly are never
+    requested by the browser; and the CDN URLs are signed, so they cannot be
+    fetched from the exported records later.
+    """
+
+    def with_media(self, session, urls):
+        item = post("1", date="2026-05-01T09:00:00Z")
+        item.media_urls = list(urls)
+        session._consider_post(item)
+        return item
+
+    def test_media_is_fetched_and_written_to_warc(self):
+        session = make_session(self.tmp, capture_media=True)
+        session._context = _FakeContext()
+        self.with_media(session, ["https://scontent.example/a.jpg"])
+        session._process_media_queue()
+
+        self.assertEqual(session._context.request.requested,
+                         ["https://scontent.example/a.jpg"])
+        self.assertEqual(len(session.warc.writes), 1)
+        self.assertEqual(session.warc.writes[0]["body"], b"\xff\xd8jpeg")
+        self.assertEqual(session.counters["media_fetched_for_posts"], 1)
+
+    def test_nothing_is_fetched_when_media_was_not_requested(self):
+        session = make_session(self.tmp, capture_media=False)
+        session._context = _FakeContext()
+        self.with_media(session, ["https://scontent.example/a.jpg"])
+        session._process_media_queue()
+
+        self.assertEqual(session._context.request.requested, [])
+        self.assertEqual(len(session.warc.writes), 0)
+
+    def test_media_the_browser_already_loaded_is_not_fetched_again(self):
+        session = make_session(self.tmp, capture_media=True)
+        session._context = _FakeContext()
+        session._media_seen.add("https://scontent.example/a.jpg")
+        self.with_media(session, ["https://scontent.example/a.jpg"])
+        session._process_media_queue()
+
+        self.assertEqual(session._context.request.requested, [])
+
+    def test_a_failed_fetch_is_counted_not_raised(self):
+        session = make_session(self.tmp, capture_media=True)
+        session._context = _FakeContext(status=403)
+        self.with_media(session, ["https://scontent.example/gone.jpg"])
+        session._process_media_queue()
+
+        self.assertEqual(session.counters["media_fetch_failures"], 1)
+        self.assertEqual(len(session.warc.writes), 0)
+
+    def test_each_url_is_queued_once(self):
+        session = make_session(self.tmp, capture_media=True)
+        session._context = _FakeContext()
+        urls = ["https://scontent.example/a.jpg"] * 3
+        self.with_media(session, urls)
+        session._process_media_queue(budget=10)
+
+        self.assertEqual(len(session._context.request.requested), 1)
+
+
+class CommentHarvestTests(SessionTestCase):
+    def test_comments_found_on_a_permalink_belong_to_that_post(self):
+        session = make_session(self.tmp, include_comments=True)
+        session._permalink_post_id = "555"
+        session._consider_comment(
+            FacebookComment(comment_id="c1", text="hello"))
+
+        self.assertEqual(
+            session.archive.comments["c1"].parent_post_id, "555")
+
+    def test_each_permalink_post_gets_its_own_budget(self):
+        session = make_session(self.tmp, include_comments=True,
+                               max_comments_per_post=1)
+        for post_id in ("555", "556"):
+            session._permalink_post_id = post_id
+            for n in range(2):
+                session._consider_comment(
+                    FacebookComment(comment_id=f"{post_id}-{n}", text="hi"))
+
+        self.assertEqual(session.counters["comments_exported"], 2)
+        self.assertEqual(session.exclusions["comment_limit_reached"], 2)
+
+    def test_harvest_is_skipped_when_comments_were_not_requested(self):
+        session = make_session(self.tmp, include_comments=False)
+        session._harvest_comments(_FakeContext())
+
+        self.assertFalse(session._harvest_done)
+        self.assertEqual(session.counters["posts_comment_harvested"], 0)
+
+    def test_posts_without_a_permalink_are_reported(self):
+        session = make_session(self.tmp, include_comments=True)
+        session._consider_post(post("1", date="2026-05-01T09:00:00Z"))
+
+        class _NoPages:
+            def new_page(self):
+                raise AssertionError("no post has a permalink to visit")
+
+        session._harvest_comments(_NoPages())
+
+        self.assertEqual(session.counters["posts_without_permalink"], 1)
+
+    def test_manifest_reports_what_was_requested_and_delivered(self):
+        session = make_session(self.tmp, include_comments=True,
+                               include_replies=True, capture_media=True,
+                               max_comments_per_post=25)
+        work = session._manifest_document(final=True)["requested_work"]
+
+        self.assertTrue(work["comments"]["requested"])
+        self.assertTrue(work["comments"]["replies_requested"])
+        self.assertEqual(work["comments"]["maximum_per_post"], 25)
+        self.assertTrue(work["media"]["requested"])
+        self.assertEqual(work["media"]["outstanding_at_close"], 0)
+
+
 class GraphQLDecodingTests(unittest.TestCase):
     def test_anti_json_prefix_is_stripped(self):
         self.assertEqual(decode_graphql_documents(b'for (;;);{"a":1}'),
