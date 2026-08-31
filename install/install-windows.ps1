@@ -79,11 +79,8 @@ function Invoke-External {
     )
 
     Write-Info $Description
-    $output = & $Exe @ArgumentList 2>&1
+    & $Exe @ArgumentList
     $exitCode = $LASTEXITCODE
-    foreach ($line in @($output)) {
-        Write-Host $line
-    }
     if ($exitCode -ne 0) {
         throw "$Description failed with exit code $exitCode."
     }
@@ -122,8 +119,6 @@ function Download-SourceZip([string]$TargetDir, [string]$BranchName) {
         }
 
         foreach ($item in Get-ChildItem -LiteralPath $sourceRoot.FullName -Force) {
-            # Runtime files are generated locally and are never supplied by the
-            # source archive, but explicitly protect them if that ever changes.
             if ($item.Name -in @('.runtime', 'install.log', 'server-port.txt')) {
                 continue
             }
@@ -296,13 +291,12 @@ function Install-SwmIntoLocalPython([string]$TargetDir) {
     $env:UV_CACHE_DIR = $UvCacheDir
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
 
-    # --system means "install into the interpreter supplied by --python".
-    # That interpreter is SWM's private <InstallDir>\.runtime\python\python.exe;
-    # no Windows/system Python is touched.
+    # --python points uv at SWM's exact private interpreter. uv supports
+    # installing directly into arbitrary non-virtual Python environments when
+    # an executable path is supplied, so no venv or system Python is involved.
     Invoke-External -Exe $UvExe -ArgumentList @(
         "pip", "install",
         "--python", $PythonExe,
-        "--system",
         "--reinstall",
         "-e", "$TargetDir[dashboard]"
     ) -Description "Installing SWM packages into the local SWM Python"
