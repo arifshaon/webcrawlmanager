@@ -657,6 +657,30 @@ def _metric(obj: dict, metric: str) -> Optional[int]:
     return None
 
 
+_PFBID_RE = re.compile(r"\b(pfbid[0-9A-Za-z]+)")
+
+
+def _post_aliases(obj: dict, permalink: Optional[str]) -> list[str]:
+    """Every identifier this record is known by, most specific first."""
+    found: list[str] = []
+    for key in _POST_ID_KEYS:
+        value = _lookup(obj, (key,))
+        if isinstance(value, (str, int)):
+            text = str(value).strip()
+            if text and text not in found:
+                found.append(text)
+    for source in (permalink, _lookup(obj, ("url", "wwwURL"))):
+        if isinstance(source, str):
+            match = _PFBID_RE.search(source)
+            if match and match.group(1) not in found:
+                found.append(match.group(1))
+            for segment in urlsplit(source).path.split("/"):
+                if segment.isdigit() and len(segment) >= 8 \
+                        and segment not in found:
+                    found.append(segment)
+    return found
+
+
 def _timeline_item(path: tuple[str, ...], obj: dict) -> bool:
     joined = ".".join(path).lower()
     has_feed_path = any(marker in joined for marker in (
@@ -685,6 +709,11 @@ class FacebookPost:
     source: str = "graphql"
     source_path: Optional[str] = None
     synthetic_id: bool = False
+    # Facebook names one post several ways: a numeric id in payloads, a pfbid
+    # in URLs, a story id elsewhere. Fragments arriving under different names
+    # are the same post and have to be merged, or its text, date, permalink
+    # and media end up split across records that each look half-empty.
+    aliases: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -712,6 +741,8 @@ def _merge_post(existing: FacebookPost, incoming: FacebookPost) -> FacebookPost:
     existing.synthetic_id = existing.synthetic_id and incoming.synthetic_id
     existing.media_urls = list(dict.fromkeys(
         [*existing.media_urls, *incoming.media_urls]))[:50]
+    existing.aliases = list(dict.fromkeys(
+        [*existing.aliases, *incoming.aliases, incoming.post_id]))
     return existing
 
 
@@ -809,7 +840,7 @@ def extract_graphql_records(
             text = _message_text(obj)
             permalink = _permalink(obj)
             post_signal = (
-                any(key in obj for key in _POST_ID_KEYS[:-1])
+                _has_key(obj, _POST_ID_KEYS[:-1])
                 or "story" in typename or "post" in typename
             )
             if not post_id or not post_signal or not (created or text or permalink):
@@ -829,6 +860,7 @@ def extract_graphql_records(
                 shares_count=_metric(obj, "shares"),
                 media_urls=_media_urls(obj),
                 source_path=".".join(path),
+                aliases=_post_aliases(obj, permalink),
             )
             if post_id in posts:
                 _merge_post(posts[post_id], candidate)
@@ -1313,6 +1345,7 @@ class FacebookCaptureSession(RecordingSession):
         self._profile_rejected = False
         self._exhaustion_notified = False
         self._single_post_done = False
+        self._post_identity: dict[str, str] = {}
         self._page_segment = _page_path_segment(config.page_url)
         # Media the browser already fetched, so an explicit fetch does not
         # duplicate it, plus the queue of media still to be collected.
@@ -1510,14 +1543,37 @@ class FacebookCaptureSession(RecordingSession):
         lacked. Assessment therefore runs on every observation against the
         merged record, and each side effect is guarded so it happens once.
         """
-        existing = self.seen_this_run.get(post.post_id)
+        canonical = self._resolve_post_identity(post)
+        existing = self.seen_this_run.get(canonical)
         if existing is not None:
             record = _merge_post(existing, post)
             self.counters["duplicate_post_observations"] += 1
+            if canonical != post.post_id:
+                self.counters["posts_merged_by_alias"] += 1
         else:
             self.seen_this_run[post.post_id] = post
             record = post
+        self._remember_post_identity(record)
         self._assess_post(record)
+
+    def _resolve_post_identity(self, post: FacebookPost) -> str:
+        """The id this post is already held under, if it is known by another.
+
+        Facebook names one post several ways -- a numeric id in payloads, a
+        pfbid in URLs -- so fragments of the same post arrive under different
+        names. Left unresolved they become separate half-empty records: the
+        text on one, the date and media on another, the permalink on a third.
+        """
+        for name in (post.post_id, *post.aliases):
+            held = self._post_identity.get(name)
+            if held and held in self.seen_this_run:
+                return held
+        return post.post_id
+
+    def _remember_post_identity(self, post: FacebookPost) -> None:
+        for name in (post.post_id, *post.aliases):
+            if name:
+                self._post_identity.setdefault(name, post.post_id)
 
     def _assess_post(self, post: FacebookPost) -> None:
         """Idempotent per post; safe to re-run as later fragments enrich it."""
@@ -1809,6 +1865,7 @@ class FacebookCaptureSession(RecordingSession):
                 source="dom",
                 source_path="visible_top_level_article",
                 synthetic_id=synthetic,
+                aliases=_post_aliases({}, permalink),
             )
             self._consider_post(post)
 

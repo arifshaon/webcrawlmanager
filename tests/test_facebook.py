@@ -1003,6 +1003,101 @@ class SinglePostTargetTests(SessionTestCase):
         self.assertIn("this post and its comments", session.phase_detail)
 
 
+PFBID = "pfbid02oJRyAvFKc9Jt2x98L7wrYAuGCFDgc8Lj9Cv3v9xMgUcXDrwtia5XuXsy6TSJP3"
+
+
+class PostIdentityTests(SessionTestCase):
+    """One post, several names.
+
+    Facebook names a post with a numeric id in payloads and a pfbid in URLs.
+    Treated as separate posts, one capture produced two half-empty records for
+    the same post -- the text on one, the date and media on the other, the
+    permalink on neither -- and the comment pass skipped the record that had
+    no permalink to open.
+    """
+
+    LINK = f"https://www.facebook.com/Yusuffali.MA/posts/{PFBID}"
+
+    def session(self):
+        return make_session(self.tmp, mode="until_stopped", from_date=None,
+                            page_url="https://www.facebook.com/Yusuffali.MA")
+
+    def test_fragments_under_different_names_become_one_post(self):
+        session = self.session()
+        session._consider_post(FacebookPost(
+            post_id="1593564465471991", created_time="2026-07-17T15:36:40Z",
+            timeline_item=True, media_urls=["https://scontent/photo.jpg"],
+            aliases=["1593564465471991"]))
+        session._consider_post(FacebookPost(
+            post_id=PFBID, permalink_url=self.LINK, timeline_item=True,
+            text="I am thankful", source="dom",
+            aliases=[PFBID, "1593564465471991"]))
+
+        self.assertEqual(len(session.archive.posts), 1)
+        merged = next(iter(session.archive.posts.values()))
+        self.assertEqual(merged.text, "I am thankful")
+        self.assertEqual(merged.permalink_url, self.LINK)
+        self.assertEqual(merged.created_time, "2026-07-17T15:36:40Z")
+        self.assertEqual(merged.media_urls, ["https://scontent/photo.jpg"])
+        self.assertEqual(session.counters["posts_merged_by_alias"], 1)
+
+    def test_the_merged_post_has_a_permalink_to_harvest(self):
+        session = self.session()
+        session._consider_post(FacebookPost(
+            post_id="1593564465471991", created_time="2026-07-17T15:36:40Z",
+            timeline_item=True, aliases=["1593564465471991"]))
+        session._consider_post(FacebookPost(
+            post_id=PFBID, permalink_url=self.LINK, timeline_item=True,
+            text="x", aliases=[PFBID, "1593564465471991"]))
+
+        harvestable = [p for p in session.archive.posts.values()
+                       if p.permalink_url]
+        self.assertEqual(len(harvestable), 1)
+
+    def test_genuinely_different_posts_stay_separate(self):
+        session = self.session()
+        session._consider_post(FacebookPost(
+            post_id="111", timeline_item=True, text="one", aliases=["111"]))
+        session._consider_post(FacebookPost(
+            post_id="222", timeline_item=True, text="two", aliases=["222"]))
+
+        self.assertEqual(len(session.archive.posts), 2)
+        self.assertEqual(session.counters.get("posts_merged_by_alias", 0), 0)
+
+    def test_aliases_are_read_from_a_permalink(self):
+        from webarc.facebook import _post_aliases
+        aliases = _post_aliases({"post_id": "1593564465471991"}, self.LINK)
+
+        self.assertIn("1593564465471991", aliases)
+        self.assertIn(PFBID, aliases)
+
+
+class MediaShapeTests(unittest.TestCase):
+    """Media has to be found in the shapes Facebook actually serves."""
+
+    def urls(self, obj):
+        from webarc.facebook import _media_urls
+        return _media_urls(obj)
+
+    def test_a_photo_attachment_is_found(self):
+        self.assertEqual(self.urls({"attachments": [{"media": {
+            "__typename": "Photo",
+            "image": {"uri": "https://scontent/a.jpg"}}}]}),
+            ["https://scontent/a.jpg"])
+
+    def test_every_photo_in_an_album_is_found(self):
+        found = self.urls({"attachments": [{"subattachments": {"nodes": [
+            {"media": {"image": {"uri": "https://scontent/d1.jpg"}}},
+            {"media": {"image": {"uri": "https://scontent/d2.jpg"}}}]}}]})
+        self.assertEqual(len(found), 2)
+
+    def test_a_video_is_found(self):
+        self.assertEqual(self.urls({"attachments": [{"media": {
+            "__typename": "Video",
+            "playable_url": "https://video/e.mp4"}}]}),
+            ["https://video/e.mp4"])
+
+
 class GraphQLDecodingTests(unittest.TestCase):
     def test_anti_json_prefix_is_stripped(self):
         self.assertEqual(decode_graphql_documents(b'for (;;);{"a":1}'),
