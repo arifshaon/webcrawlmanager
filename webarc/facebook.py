@@ -1047,6 +1047,11 @@ class FacebookCaptureConfig:
     auto_start: bool = True
     target_kind: str = "page"
     target_post_id: Optional[str] = None
+    # A post permalink has nothing to page through, so `mode` is forced to
+    # single_post. The curator's own choice is kept: "until I stop" is an
+    # instruction about when the session ends, and one post's thread does not
+    # revoke it.
+    requested_mode: Optional[str] = None
     include_comments: bool = False
     max_comments_per_post: int = 25
     include_replies: bool = False
@@ -1078,6 +1083,7 @@ class FacebookCaptureConfig:
             if not 1 <= latest_n <= 100_000:
                 raise ValueError("Latest N must be between 1 and 100,000.")
         target_kind = facebook_target_kind(page_url)
+        requested_mode = mode
         if target_kind == "post":
             # One post has nothing to page through, so the stopping modes do
             # not apply: the capture is that post and its comments.
@@ -1114,6 +1120,7 @@ class FacebookCaptureConfig:
             auto_start=bool(raw.get("auto_start", True)),
             target_kind=target_kind,
             target_post_id=facebook_post_id_from_url(page_url),
+            requested_mode=requested_mode,
             include_comments=bool(raw.get("include_comments", False)),
             max_comments_per_post=maximum,
             include_replies=bool(raw.get("include_replies", False)),
@@ -1460,6 +1467,10 @@ class FacebookCaptureSession(RecordingSession):
         self._single_post_done = False
         self._expansion_failure_reported = False
         self._expansion_survey_reported = False
+        # A block the curator has to lift. Auto-start clears the blocks it can
+        # detect on the page; this one it cannot see, so without the flag it
+        # would resume, fail, block and resume again without end.
+        self._awaiting_curator_decision = False
         self._post_identity: dict[str, str] = {}
         self._page_segment = _page_path_segment(config.page_url)
         # Media the browser already fetched, so an explicit fetch does not
@@ -1503,6 +1514,7 @@ class FacebookCaptureSession(RecordingSession):
             self.started_scrolling = True
             self.phase_detail = "Automatic scrolling and capture are active."
             self._pending_block_reason = None
+            self._awaiting_curator_decision = False
             self._next_scroll_at = 0.0
             self._state_dirty = True
             self.archive.event(
@@ -2294,11 +2306,16 @@ class FacebookCaptureSession(RecordingSession):
                 stalled += 1
 
     def _capture_single_post(self, page) -> None:
-        """Read the one post this capture was given, then finish.
+        """Read the one post this capture was given, then decide what to do.
 
         The browser is already showing it, so there is no timeline to scroll:
         scrolling a post permalink only pulls in the Page's other posts and
         their comments, which is not what was asked for.
+
+        What happens after the read is the curator's to decide, not this
+        method's. A read that failed is not a capture that succeeded, and a
+        curator who asked to run until they stop has said when the session
+        ends; neither is grounds for closing the browser on them.
         """
         if self._single_post_done:
             return
@@ -2306,6 +2323,7 @@ class FacebookCaptureSession(RecordingSession):
         self._permalink_post_id = self.config.target_post_id
         self.phase_detail = "Reading this post and expanding its comments."
         self._state_dirty = True
+        failure = None
         try:
             if self.config.include_comments:
                 self._read_comment_thread(
@@ -2314,12 +2332,97 @@ class FacebookCaptureSession(RecordingSession):
                 page.wait_for_timeout(2500)
                 self._process_media_queue(budget=6)
         except Exception as exc:
+            failure = exc
             self.counters["comment_page_failures"] += 1
             self.archive.event("single_post_read_failed", error=str(exc))
+            log.warning("Facebook single-post read failed: %s", exc)
         finally:
             self._permalink_post_id = None
+
+        if failure is not None:
+            # Stopping here would close the browser and file a manifest
+            # claiming the post and its comments had been read. Hand it back
+            # instead, with the reason, and let the curator retry or save.
+            self._single_post_done = False
+            self._awaiting_curator_decision = True
+            self._enter_blocked(
+                "Reading this post did not finish: "
+                f"{failure}. {self._comment_progress()} Select "
+                "\u201cI have resolved it \u2014 continue\u201d to try "
+                "again, or \u201cStop and save\u201d to keep what was "
+                "collected."
+            )
+            return
+
+        if self.config.requested_mode == "until_stopped":
+            # An explicit instruction about when the session ends. One post's
+            # thread being read is not the curator changing their mind.
+            self._hold_for_curator(
+                "single_post_read_holding",
+                "Scrolling is idle because this capture is one post.",
+                reason="curator_asked_to_run_until_stopped")
+            return
+
+        missing = self._comments_not_collected()
+        if missing:
+            # Facebook says the thread is longer than what arrived. Closing
+            # here would file a manifest saying the post and its comments had
+            # been read, which is the one thing this capture cannot claim.
+            self._hold_for_curator(
+                "comment_thread_incomplete",
+                "Facebook stopped returning comments before the thread ran "
+                "out. Scroll or expand the thread in the browser yourself if "
+                "you want more.",
+                collected=len(self.archive.comments), still_expected=missing)
+            return
+
         self._request_stop("single_post_captured",
                            "requested_post_and_comments_read")
+
+    def _comments_not_collected(self) -> int:
+        """How many of the post's own comments never arrived.
+
+        Facebook states the thread's length on the post itself, so a shortfall
+        is a fact the capture holds rather than a suspicion: 19 collected of a
+        thread of 455 is not a finished read of that post.
+        """
+        if not self.config.include_comments:
+            return 0
+        stated = None
+        for post in self.archive.posts.values():
+            if isinstance(post.comments_count, int):
+                stated = max(stated or 0, post.comments_count)
+        reachable = self.config.max_comments_per_post
+        if stated is not None:
+            reachable = min(reachable, stated)
+        return max(0, reachable - len(self.archive.comments))
+
+    def _hold_for_curator(self, event: str, explanation: str,
+                          **details: object) -> None:
+        """Stop working, keep everything open, and say what was collected.
+
+        Closing the browser takes the decision away: the session ends, the
+        manifest is final, and whatever the curator could still have reached
+        by hand is gone.
+        """
+        self.state = PAUSED
+        self.phase_detail = (
+            f"{self._comment_progress()} {explanation} Select "
+            "\u201cStop and save\u201d when you have what you need "
+            "\u2014 everything you open in the browser is still being "
+            "preserved."
+        )
+        self._state_dirty = True
+        self.archive.event(event, comments=len(self.archive.comments),
+                           **details)
+
+    def _comment_progress(self) -> str:
+        """What the thread yielded, said plainly enough to decide on."""
+        if not self.config.include_comments:
+            return "The post was requested without comments."
+        collected = len(self.archive.comments)
+        return (f"{collected} of up to {self.config.max_comments_per_post} "
+                "requested comments were collected.")
 
     def _expand_comments(self, page) -> int:
         """Click whatever exposes more comments, returning how many controls
@@ -2537,6 +2640,8 @@ class FacebookCaptureSession(RecordingSession):
         reported instead, and scrolling starts by itself once that clears.
         """
         if not self.config.auto_start or self._pending_stop:
+            return
+        if self._awaiting_curator_decision:
             return
         if self.state == PAUSED and self.started_scrolling:
             # A pause the curator asked for stays until they lift it.
@@ -2883,6 +2988,14 @@ class FacebookCaptureSession(RecordingSession):
                     "posts_without_permalink": self.counters.get(
                         "posts_without_permalink", 0),
                     "comments_exported": len(self.archive.comments),
+                    # Facebook states each thread's length on the post, so a
+                    # shortfall is recorded as a fact rather than left to be
+                    # inferred from the export's size.
+                    "comments_stated_on_posts": sum(
+                        post.comments_count for post in
+                        self.archive.posts.values()
+                        if isinstance(post.comments_count, int)),
+                    "comments_not_collected": self._comments_not_collected(),
                     "note": (
                         "Comments are read from the page as rendered and "
                         "from the GraphQL traffic that follows, then from "

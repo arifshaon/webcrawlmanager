@@ -1446,6 +1446,126 @@ class ExpansionSurveyTests(SessionTestCase):
         self.assertIn('[role="dialog"]', seen["script"])
 
 
+class CuratorDecisionTests(SessionTestCase):
+    """Closing the browser takes the decision away from the curator.
+
+    The session ends, the manifest is final, and whatever they could still
+    have reached by hand is gone. A read that failed, and a thread Facebook
+    itself says is longer than what arrived, are both cases where the person
+    watching should choose what happens next.
+    """
+
+    def make(self, **kwargs):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True, **kwargs)
+        session.started_scrolling = True
+        session.state = RECORDING
+        return session
+
+    def test_a_failed_read_is_handed_back_not_declared_finished(self):
+        session = self.make()
+
+        class _Throws:
+            def wait_for_timeout(self, _ms):
+                raise RuntimeError("Target page crashed")
+
+        session._read_comment_thread = lambda *a: (_ for _ in ()).throw(
+            RuntimeError("Target page crashed"))
+        session._capture_single_post(_Throws())
+
+        self.assertEqual(session.state, BLOCKED)
+        self.assertIsNone(session._pending_stop)
+        self.assertIn("Target page crashed", session.phase_detail)
+
+    def test_a_failed_read_can_be_retried(self):
+        session = self.make()
+        session._read_comment_thread = lambda *a: (_ for _ in ()).throw(
+            RuntimeError("boom"))
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertFalse(session._single_post_done)
+
+    def test_a_failed_read_does_not_restart_itself_for_ever(self):
+        session = self.make()
+        session._read_comment_thread = lambda *a: (_ for _ in ()).throw(
+            RuntimeError("boom"))
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        session._maybe_auto_start(_FakePage(url=POST_URL))
+
+        self.assertEqual(session.state, BLOCKED)
+
+    def test_the_curator_lifting_the_block_clears_the_hold(self):
+        session = self.make()
+        session._read_comment_thread = lambda *a: (_ for _ in ()).throw(
+            RuntimeError("boom"))
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        session.apply("resume", actor="dashboard")
+
+        self.assertEqual(session.state, RECORDING)
+        self.assertFalse(session._awaiting_curator_decision)
+
+    def test_until_i_stop_is_not_overridden_by_one_post(self):
+        """Even a thread read out in full: they said when the session ends."""
+        session = self.make()
+        session.config.requested_mode = "until_stopped"
+        session.archive.add_post(post("1593564465471991",
+                                      date="2026-07-17T15:16:35Z"))
+        session.archive.posts["1593564465471991"].comments_count = 2
+        for n in range(2):
+            session.archive.add_comment(FacebookComment(comment_id=str(n)))
+        session._read_comment_thread = lambda *a: None
+        self.assertEqual(session._comments_not_collected(), 0)
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertIsNone(session._pending_stop)
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("Stop and save", session.phase_detail)
+
+    def test_a_thread_facebook_says_is_longer_holds_for_a_decision(self):
+        session = self.make(max_comments_per_post=500)
+        session.archive.add_post(post("1593564465471991",
+                                      date="2026-07-17T15:16:35Z"))
+        session.archive.posts["1593564465471991"].comments_count = 455
+        for n in range(19):
+            session.archive.add_comment(FacebookComment(comment_id=str(n)))
+        session._read_comment_thread = lambda *a: None
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertIsNone(session._pending_stop)
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("19 of up to 500", session.phase_detail)
+
+    def test_a_thread_that_was_read_out_finishes(self):
+        session = self.make(max_comments_per_post=500)
+        session.archive.add_post(post("1593564465471991",
+                                      date="2026-07-17T15:16:35Z"))
+        session.archive.posts["1593564465471991"].comments_count = 3
+        for n in range(3):
+            session.archive.add_comment(FacebookComment(comment_id=str(n)))
+        session._read_comment_thread = lambda *a: None
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertEqual(session._pending_stop[0], "single_post_captured")
+
+    def test_the_shortfall_is_recorded_in_the_manifest(self):
+        session = self.make(max_comments_per_post=500)
+        session.archive.add_post(post("1593564465471991",
+                                      date="2026-07-17T15:16:35Z"))
+        session.archive.posts["1593564465471991"].comments_count = 455
+        for n in range(19):
+            session.archive.add_comment(FacebookComment(comment_id=str(n)))
+
+        comments = session._manifest_document()["requested_work"]["comments"]
+
+        self.assertEqual(comments["comments_stated_on_posts"], 455)
+        self.assertEqual(comments["comments_not_collected"], 436)
+
+
 class GraphQLDecodingTests(unittest.TestCase):
     def test_anti_json_prefix_is_stripped(self):
         self.assertEqual(decode_graphql_documents(b'for (;;);{"a":1}'),
