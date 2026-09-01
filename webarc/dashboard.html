@@ -422,6 +422,18 @@
                 <input type="checkbox" id="f-detect-blocks" checked>
                 <span class="check-copy"><strong>Detect blocking pages</strong><span>Back off and stop after repeated WAF blocks.</span></span>
               </label>
+              <label class="check-row">
+                <input type="checkbox" id="f-consent" checked>
+                <span class="check-copy"><strong>Dismiss cookie banners</strong><span>Clear consent overlays so the page underneath is captured.</span></span>
+              </label>
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-consent-preference">Consent choice</label>
+              <select id="f-consent-preference">
+                <option value="decline">Decline where offered — keeps trackers out of the archive</option>
+                <option value="accept">Accept — may pull advertising and analytics into the WARC</option>
+              </select>
+              <span class="help">Recorded with the crawl either way: what is clicked changes what is archived.</span>
             </div>
           </div>
         </div>
@@ -693,6 +705,8 @@ const EXAMPLE_CONFIG = {
       scroll: true,
       scroll_pause: [0.4, 1.2],
       mouse_jitter: true,
+      dismiss_consent: true,
+      consent_preference: "decline",
       detect_blocks: true,
       block_backoff_factor: 3.0,
       block_cooldown: 30,
@@ -785,6 +799,8 @@ function buildFormConfig() {
   behavior.scroll = $("#f-scroll").checked;
   behavior.scroll_pause = Array.isArray(behavior.scroll_pause) ? behavior.scroll_pause : [0.4, 1.2];
   behavior.mouse_jitter = behavior.mouse_jitter !== false;
+  behavior.dismiss_consent = $("#f-consent").checked;
+  behavior.consent_preference = $("#f-consent-preference").value;
   behavior.detect_blocks = $("#f-detect-blocks").checked;
   if (behavior.block_backoff_factor == null) behavior.block_backoff_factor = 3.0;
   if (behavior.block_cooldown == null) behavior.block_cooldown = 30;
@@ -825,6 +841,8 @@ function populateForm(config) {
   $("#f-obey-robots").checked = Boolean(sectionValue(config, "behavior", "obey_robots", true));
   $("#f-scroll").checked = Boolean(sectionValue(config, "behavior", "scroll", true));
   $("#f-detect-blocks").checked = Boolean(sectionValue(config, "behavior", "detect_blocks", true));
+  $("#f-consent").checked = Boolean(sectionValue(config, "behavior", "dismiss_consent", true));
+  $("#f-consent-preference").value = sectionValue(config, "behavior", "consent_preference", "decline");
   $("#f-warc-size").value = sectionValue(config, "warc", "max_size_mb", 900);
   $("#f-dedup").checked = Boolean(sectionValue(config, "warc", "dedup", true));
   $("#seed-list").innerHTML = "";

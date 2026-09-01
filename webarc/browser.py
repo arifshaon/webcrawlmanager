@@ -22,6 +22,7 @@ from typing import Callable
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
 
 from .config import BehaviorConfig, BrowserConfig
+from .consent import dismiss_consent
 from .detect import is_waf_challenge
 
 log = logging.getLogger(__name__)
@@ -226,6 +227,13 @@ class BrowserDriver:
             return None
 
         self._wait_out_challenge(page, resp)
+
+        # Before the scroll, not after: scrolling and lazy-loading behind a
+        # modal is wasted work, and what reaches the archive describes the
+        # banner rather than the page it covers.
+        self.last_consent = None
+        if b.dismiss_consent:
+            self.last_consent = dismiss_consent(page, b.consent_preference)
 
         if b.mouse_jitter:
             for _ in range(random.randint(1, 3)):

@@ -56,6 +56,13 @@ class BehaviorConfig:
     # crawler proceeds. 0 disables the wait.
     challenge_grace: float = 20.0
     mouse_jitter: bool = True
+    # Consent overlays. What is clicked is a curatorial act: accepting
+    # everything fires the advertising and analytics the banner was gating,
+    # and those requests are archived as part of the record. "decline" takes
+    # the banner's own refusal where it offers one, so the page is reachable
+    # without pulling third-party tracking into the WARC.
+    dismiss_consent: bool = True
+    consent_preference: str = "decline"     # "decline" or "accept"
     # WAF / bot-block handling
     detect_blocks: bool = True
     block_backoff_factor: float = 3.0   # multiply inter-page delay per block

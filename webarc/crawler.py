@@ -263,7 +263,9 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
     warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
                        seed_idx, crawl.operator, seed.warc)
     stats = {"visited": 0, "skipped_robots": 0, "failed": 0, "blocked": 0,
-             "dynamic_incomplete": 0}
+             "dynamic_incomplete": 0, "consent_dismissed": 0,
+             "consent_unresolved": 0}
+    consent_labels_logged = False
     controller.seed_status(seed_idx, RUNNING)
     blocks = BlockController(seed.behavior)
     stopped = False
@@ -297,6 +299,28 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
                 controller.report(seed_idx, current_url=url, queued=len(frontier))
                 resp = driver.visit(page, url)
                 frontier.mark_done()
+                consent = getattr(driver, "last_consent", None)
+                if consent and consent.get("clicked"):
+                    if consent.get("dismissed"):
+                        stats["consent_dismissed"] += 1
+                        log.info("Dismissed a consent overlay on %s "
+                                 "(%s: %r)", url, consent.get("kind"),
+                                 consent.get("label"))
+                    else:
+                        stats["consent_unresolved"] += 1
+                        log.warning(
+                            "Clicked %r on %s but the consent overlay is "
+                            "still there; the page may be archived behind it",
+                            consent.get("label"), url)
+                elif consent and consent.get("labels") \
+                        and not consent_labels_logged:
+                    # Recorded once per seed. A crawl that dismissed nothing
+                    # should say what was on offer rather than leave it to be
+                    # guessed at from the archive afterwards.
+                    consent_labels_logged = True
+                    log.info("No consent control matched on %s; controls "
+                             "seen: %s", url,
+                             ", ".join(repr(l) for l in consent["labels"][:12]))
                 # dynamic-content health for the page just visited (counters
                 # reset here so problems attribute to the right page)
                 dyn = capture.take_page_report()

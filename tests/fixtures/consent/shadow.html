@@ -1,0 +1,10 @@
+<!doctype html><title>Shadow root</title>
+<h1>Archive</h1><div id="host"></div>
+<script>
+const root = document.getElementById("host").attachShadow({mode:"open"});
+root.innerHTML = `<style>.wrap{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.5)}
+  button{padding:10px}</style>
+  <div class="wrap"><button id="no">Only necessary</button><button id="yes">Accept</button></div>`;
+root.querySelectorAll("button").forEach(b => b.onclick = () =>
+  root.querySelector(".wrap").remove());
+</script>
