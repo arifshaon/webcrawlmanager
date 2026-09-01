@@ -13,6 +13,7 @@ Everything here runs without a browser or any Facebook access.
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -1250,6 +1251,85 @@ class CommentShapeTests(unittest.TestCase):
         self.assertEqual(_relay_global_id("ZmVlZGJhY2s6MTU5MzU2NDQ2NTQ3MTk5MQ=="), ("post", "1593564465471991"))
         self.assertIsNone(_relay_global_id("1727562635162792"))
         self.assertIsNone(_relay_global_id(None))
+
+
+class CommentExpansionTests(SessionTestCase):
+    """The expansion is one page script, so one fault in it costs every click.
+
+    A stray identifier in it threw on the first line, `page.evaluate` raised,
+    the caller returned zero, and the capture finished reporting whatever
+    handful of comments the page had already loaded as though that were the
+    thread.
+    """
+
+    def script_of(self, session):
+        import inspect
+        return inspect.getsource(type(session)._expand_comments)
+
+    def test_the_script_declares_every_value_it_is_given(self):
+        session = make_session(self.tmp, include_comments=True)
+        source = self.script_of(session)
+        declared = set(re.findall(r"\(\{([^}]*)\}\) => \{", source)[0]
+                       .replace(" ", "").split(","))
+        passed = set(re.findall(r'"(\w+)":', source))
+
+        self.assertTrue(passed, "no arguments found to check")
+        self.assertEqual(passed - declared, set())
+
+    def test_a_failing_expansion_is_reported_not_swallowed(self):
+        session = make_session(self.tmp, include_comments=True)
+
+        class _Throws:
+            def evaluate(self, *_args, **_kwargs):
+                raise RuntimeError("perPost is not defined")
+
+        self.assertEqual(session._expand_comments(_Throws()), 0)
+        self.assertEqual(session.counters["comment_expansion_failures"], 1)
+        self.assertIn("comment_expansion_failed",
+                      session.archive.events_path.read_text())
+
+    def test_the_failure_is_reported_once_not_per_click(self):
+        session = make_session(self.tmp, include_comments=True)
+
+        class _Throws:
+            def evaluate(self, *_args, **_kwargs):
+                raise RuntimeError("boom")
+
+        for _ in range(4):
+            session._expand_comments(_Throws())
+
+        self.assertEqual(session.counters["comment_expansion_failures"], 4)
+        self.assertEqual(
+            session.archive.events_path.read_text().count(
+                "comment_expansion_failed"), 1)
+
+    def test_a_long_thread_gets_more_rounds_than_a_short_one(self):
+        """One round clicks a bounded number of controls, so a thread of
+        hundreds cannot be reached in the number of rounds a thread of ten
+        needs."""
+        def rounds_for(wanted):
+            session = make_session(self.tmp, include_comments=True,
+                                   max_comments_per_post=wanted)
+            counted = {"n": 0}
+
+            def expand(_page):
+                # Always productive, so the stall rule never ends the loop
+                # and what is measured is the ceiling itself.
+                counted["n"] += 1
+                session.archive.comments[str(counted["n"])] = object()
+                return 1
+
+            session._expand_comments = expand
+            session._show_all_comments = lambda _p: None
+            session._process_media_queue = lambda budget=0: None
+            page = type("p", (), {
+                "evaluate": lambda self, *a, **k: None,
+                "wait_for_timeout": lambda self, ms: None})()
+            session._read_comment_thread(page, "post")
+            return counted["n"]
+
+        self.assertEqual(rounds_for(25), 60)
+        self.assertEqual(rounds_for(500), 250)
 
 
 class GraphQLDecodingTests(unittest.TestCase):

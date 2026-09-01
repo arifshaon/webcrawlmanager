@@ -1458,6 +1458,7 @@ class FacebookCaptureSession(RecordingSession):
         self._profile_rejected = False
         self._exhaustion_notified = False
         self._single_post_done = False
+        self._expansion_failure_reported = False
         self._post_identity: dict[str, str] = {}
         self._page_segment = _page_path_segment(config.page_url)
         # Media the browser already fetched, so an explicit fetch does not
@@ -2269,8 +2270,12 @@ class FacebookCaptureSession(RecordingSession):
         self._process_media_queue(budget=6)
         self._show_all_comments(page)
         wanted = self.config.max_comments_per_post
+        # Each round clicks a bounded number of controls, so a thread of
+        # hundreds needs proportionally more rounds than a thread of ten.
+        # The stall rule, not this ceiling, is what normally ends a harvest.
+        rounds = min(600, max(60, wanted // 2))
         stalled = 0
-        for _ in range(60):
+        for _ in range(rounds):
             collected = len(self.archive.comments)
             if (self._comment_counts.get(post_id, 0) >= wanted
                     or stalled >= 5):
@@ -2327,7 +2332,7 @@ class FacebookCaptureSession(RecordingSession):
         if not self.config.include_comments:
             return 0
         script = r"""
-        ({maximum, includeReplies}) => {
+        ({maximum, includeReplies, perPost}) => {
           const top = Array.from(document.querySelectorAll('[role="article"]'))
             .filter(el => !el.parentElement || !el.parentElement.closest('[role="article"]'));
           let clicked = 0;
@@ -2361,7 +2366,16 @@ class FacebookCaptureSession(RecordingSession):
                 "includeReplies": self.config.include_replies,
                 "perPost": self._permalink_post_id is not None,
             })
-        except Exception:
+        except Exception as exc:
+            # Silence here is expensive: the whole expansion is one page
+            # script, so a single fault in it costs every click, and the
+            # capture still finishes reporting a well-formed handful of
+            # comments as though that were the thread.
+            self.counters["comment_expansion_failures"] += 1
+            if not self._expansion_failure_reported:
+                self._expansion_failure_reported = True
+                self.archive.event("comment_expansion_failed", error=str(exc))
+                log.warning("Facebook comment expansion failed: %s", exc)
             return 0
         clicked = int((result or {}).get("clicked") or 0)
         if clicked:
