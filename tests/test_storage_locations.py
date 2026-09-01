@@ -230,6 +230,105 @@ class ReadingBackTests(StorageTestCase):
         self.assertTrue(decoy.exists())
 
 
+class BrowsingTests(StorageTestCase):
+    """A browser cannot hand back a filesystem path.
+
+    A native picker gives a handle or a relative name, neither of which the
+    worker could write to, and captures are written by the server anyway --
+    so the directories worth choosing among are the server's own.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tree = self.tmp / "collections"
+        (self.tree / "qnl-2026").mkdir(parents=True)
+        (self.tree / "manara").mkdir()
+        (self.tree / ".hidden").mkdir()
+        (self.tree / "notes.txt").write_text("not a directory")
+
+    def browse(self, path=None, **params):
+        query = dict(params)
+        if path is not None:
+            query["path"] = str(path)
+        response = self.client.get("/api/browse", params=query)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_it_lists_the_directories_inside_one(self):
+        listing = self.browse(self.tree)
+
+        self.assertEqual([e["name"] for e in listing["entries"]],
+                         ["manara", "qnl-2026"])
+
+    def test_it_does_not_list_files(self):
+        names = [e["name"] for e in self.browse(self.tree)["entries"]]
+
+        self.assertNotIn("notes.txt", names)
+
+    def test_hidden_directories_are_out_of_the_way_but_reachable(self):
+        self.assertNotIn(
+            ".hidden", [e["name"] for e in self.browse(self.tree)["entries"]])
+        self.assertIn(
+            ".hidden", [e["name"] for e in
+                        self.browse(self.tree, show_hidden="true")["entries"]])
+
+    def test_each_entry_carries_the_path_to_use(self):
+        entry = self.browse(self.tree)["entries"][0]
+
+        self.assertEqual(Path(entry["path"]), self.tree / "manara")
+
+    def test_it_offers_the_way_back_up(self):
+        listing = self.browse(self.tree / "qnl-2026")
+
+        self.assertEqual(Path(listing["parent"]), self.tree)
+
+    def test_the_top_of_the_tree_has_no_parent(self):
+        self.assertIsNone(self.browse("/")["parent"])
+
+    def test_it_says_whether_the_folder_can_be_written_to(self):
+        self.assertTrue(self.browse(self.tree)["writable"])
+
+    def test_it_offers_somewhere_to_start(self):
+        places = self.browse(self.tree)["places"]
+
+        self.assertTrue(places)
+        self.assertIn(str(self.root), [p["path"] for p in places])
+
+    def test_a_file_is_not_a_place_to_look(self):
+        response = self.client.get(
+            "/api/browse", params={"path": str(self.tree / "notes.txt")})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("not a directory", response.text)
+
+    def test_somewhere_that_is_not_there_is_refused(self):
+        response = self.client.get(
+            "/api/browse", params={"path": str(self.tmp / "no-such-place")})
+
+        self.assertEqual(response.status_code, 400)
+
+    @unittest.skipIf(os.geteuid() == 0, "root can read any directory")
+    def test_an_unreadable_folder_reports_rather_than_fails(self):
+        """The curator can still go back up or type a path."""
+        locked = self.tmp / "locked"
+        locked.mkdir()
+        locked.chmod(0o000)
+        self.addCleanup(locked.chmod, 0o700)
+
+        listing = self.browse(locked)
+
+        self.assertEqual(listing["entries"], [])
+        self.assertIn("cannot be read", listing["unreadable"])
+
+    def test_a_chosen_folder_is_one_a_capture_can_use(self):
+        chosen = self.browse(self.tree)["entries"][0]["path"]
+
+        made = self.crawl(storage_dir=chosen)
+
+        self.assertEqual(Path(self.row(made["id"])["output_dir"]),
+                         Path(chosen) / str(made["id"]))
+
+
 class RemoteBindingTests(StorageTestCase):
     """Naming a path is the authority of the person at the machine.
 
@@ -272,6 +371,12 @@ class RemoteBindingTests(StorageTestCase):
 
         self.assertFalse(capabilities["storage"]["available"])
         self.assertIn("loopback", capabilities["storage"]["reason"])
+
+    def test_it_will_not_list_the_servers_directories(self):
+        """Listing them is the same authority as writing to them."""
+        response = self.client.get("/api/browse", params={"path": "/"})
+
+        self.assertEqual(response.status_code, 403)
 
     def test_the_override_restores_it(self):
         srv._ALLOW_REMOTE_RECORDING = True

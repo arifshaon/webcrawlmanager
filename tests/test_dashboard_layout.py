@@ -119,6 +119,29 @@ class StorageFieldTests(DashboardTestCase):
         self.assertEqual(sorted(fields), ["f-storage", "fb-storage",
                                           "r-storage"])
 
+    def test_every_storage_field_has_a_browse_button(self):
+        """A path typed from memory is a path typed wrong."""
+        fields = set(re.findall(r'id="([a-z-]+)" class="storage-dir"',
+                                self.markup))
+        fields.add("storage-root")
+        browsed = set(re.findall(r'class="secondary browse-btn" data-target="([^"]+)"',
+                                 self.markup))
+
+        self.assertEqual(fields - browsed, set())
+
+    def test_every_browse_button_points_at_a_real_field(self):
+        browsed = set(re.findall(r'browse-btn" data-target="([^"]+)"',
+                                 self.markup))
+
+        self.assertTrue(browsed)
+        self.assertEqual(browsed - self.ids, set())
+
+    def test_choosing_a_folder_counts_as_editing_the_field(self):
+        """The settings field is redrawn every two seconds; a path chosen
+        with the mouse leaves it unfocused and was wiped before Save."""
+        self.assertIn('dispatchEvent(new Event("input"', self.script)
+        self.assertIn("if (!storageRootEdited)", self.script)
+
     def test_each_one_is_sent_when_it_is_filled_in(self):
         for field in ("f-storage", "fb-storage", "r-storage"):
             with self.subTest(field=field):

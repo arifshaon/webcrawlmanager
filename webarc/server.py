@@ -151,6 +151,23 @@ def _storage_root_for(requested: object) -> Path:
     return _usable_directory(Path(text), "That storage location")
 
 
+def _places() -> list[dict]:
+    """A few directories worth starting from, without hunting for them."""
+    seen: dict[str, dict] = {}
+    for label, path in (
+        ("Home", Path.home()),
+        ("Working directory", Path.cwd()),
+        ("SWM storage", _WARC_ROOT),
+        ("Current default", _default_storage_root()),
+    ):
+        try:
+            resolved = str(path.expanduser().resolve())
+        except OSError:
+            continue
+        seen.setdefault(resolved, {"label": label, "path": resolved})
+    return list(seen.values())
+
+
 def _crawl_dir(row: dict) -> Path:
     """Where this crawl's files actually are.
 
@@ -687,6 +704,52 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     def row_seed_url(crawl_id: int) -> str | None:
         prog = _store().get_progress(crawl_id)
         return prog[0]["seed_url"] if prog else None
+
+    @app.get("/api/browse")
+    def browse(path: str | None = None, show_hidden: bool = False):
+        """List the directories inside one directory, for choosing a location.
+
+        A browser cannot hand back a filesystem path -- a native picker gives
+        a handle or a relative name, neither of which the worker could write
+        to -- and captures are written by the server anyway, so the
+        directories that matter are the server's own. Only directory names are
+        returned: never a file listing, never a file's contents. The same rule
+        that governs naming a path governs seeing one.
+        """
+        choosable = _storage_is_curator_choosable()
+        if not choosable["available"]:
+            raise HTTPException(403, choosable["reason"])
+        raw = str(path or "").strip()
+        try:
+            target = (Path(raw).expanduser() if raw else Path.home()).resolve()
+        except OSError as exc:
+            raise HTTPException(400, f"That location cannot be opened: {exc}")
+        if not target.is_dir():
+            raise HTTPException(400, f"{target} is not a directory.")
+        entries: list[dict] = []
+        unreadable = None
+        try:
+            for child in sorted(target.iterdir(),
+                                key=lambda c: c.name.lower()):
+                if not show_hidden and child.name.startswith("."):
+                    continue
+                try:
+                    if child.is_dir():
+                        entries.append({"name": child.name, "path": str(child)})
+                except OSError:
+                    continue      # a broken link, or a mount that will not stat
+        except (PermissionError, OSError) as exc:
+            # Say so in the listing rather than failing the request: the
+            # curator can still go back up or type a path.
+            unreadable = f"{target} cannot be read: {exc.strerror or exc}"
+        return {
+            "path": str(target),
+            "parent": None if target.parent == target else str(target.parent),
+            "entries": entries,
+            "writable": os.access(target, os.W_OK),
+            "unreadable": unreadable,
+            "places": _places(),
+        }
 
     @app.get("/api/settings")
     def read_settings():

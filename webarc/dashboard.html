@@ -119,6 +119,34 @@
   @keyframes busy-turn { to { transform: rotate(360deg) } }
   @media (prefers-reduced-motion: reduce) { .busy-spin { animation: none } }
   .busy-text { font-size: 13px; line-height: 1.5; }
+  #browse-overlay { display: none; position: fixed; inset: 0; z-index: 998;
+    background: rgba(27,30,35,.35); align-items: center; justify-content: center;
+    padding: 24px; }
+  #browse-overlay.open { display: flex; }
+  .browse-card { background: var(--paper); border: 1px solid var(--rule);
+    border-radius: 10px; width: min(680px, 100%); max-height: 100%;
+    display: flex; flex-direction: column; overflow: hidden; }
+  .browse-head { padding: 14px 16px; border-bottom: 1px solid var(--rule); }
+  .browse-head h2 { margin: 0 0 8px; font-size: 15px; }
+  .browse-path { width: 100%; font-family: var(--mono); font-size: 12px; }
+  .browse-places { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .browse-place { font: inherit; font-size: 12px; color: var(--muted);
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 999px; padding: 2px 10px; cursor: pointer; }
+  .browse-place:hover { color: var(--ink); }
+  .browse-list { overflow-y: auto; flex: 1 1 auto; min-height: 160px; }
+  .browse-row { display: flex; align-items: center; gap: 8px; width: 100%;
+    text-align: left; font: inherit; font-size: 13px; background: none;
+    border: 0; border-bottom: 1px solid var(--rule); padding: 9px 16px;
+    cursor: pointer; }
+  .browse-row:hover { background: var(--surface); }
+  .browse-row .dir-mark { color: var(--faint); font-family: var(--mono); }
+  .browse-empty { padding: 18px 16px; color: var(--muted); font-size: 13px; }
+  .browse-foot { display: flex; align-items: center; gap: 8px; padding: 12px 16px;
+    border-top: 1px solid var(--rule); flex-wrap: wrap; }
+  .browse-foot .spacer { flex: 1 1 auto; }
+  .storage-row { display: flex; gap: 8px; align-items: center; }
+  .storage-row input { flex: 1 1 auto; min-width: 0; }
   button { font-family: var(--ui); border-radius: 6px; cursor: pointer; }
   button.act, button.secondary {
     font-size: 12px; border: 1px solid var(--rule);
@@ -258,6 +286,7 @@
       <label class="field-label" for="storage-root">Default storage location</label>
       <div class="storage-default-row">
         <input type="text" id="storage-root" placeholder="the server's own storage directory">
+        <button type="button" class="secondary browse-btn" data-target="storage-root">Browse…</button>
         <button type="button" class="secondary" id="storage-save">Save</button>
         <span class="msg" id="storage-msg"></span>
       </div>
@@ -415,7 +444,10 @@
             </div>
             <div class="field wide">
               <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+              <div class="storage-row">
               <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <button type="button" class="secondary browse-btn" data-target="f-storage">Browse…</button>
+            </div>
             </div>
           </div>
         </div>
@@ -464,7 +496,10 @@
           </div>
           <div class="field wide">
             <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
-            <input type="text" id="r-storage" class="storage-dir" placeholder="leave empty for the default location">
+            <div class="storage-row">
+              <input type="text" id="r-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <button type="button" class="secondary browse-btn" data-target="r-storage">Browse…</button>
+            </div>
           </div>
           <div class="field wide">
             <div class="rec-warning">
@@ -517,7 +552,10 @@
           </div>
           <div class="field wide">
             <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
-            <input type="text" id="fb-storage" class="storage-dir" placeholder="leave empty for the default location">
+            <div class="storage-row">
+              <input type="text" id="fb-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <button type="button" class="secondary browse-btn" data-target="fb-storage">Browse…</button>
+            </div>
           </div>
           <div class="field">
             <label class="field-label" for="fb-mode">Capture mode</label>
@@ -600,6 +638,27 @@
   </section>
 </main>
 </div>
+<div id="browse-overlay" role="dialog" aria-modal="true" aria-labelledby="browse-title">
+  <div class="browse-card">
+    <div class="browse-head">
+      <h2 id="browse-title">Choose a storage location</h2>
+      <input type="text" class="browse-path" id="browse-path" spellcheck="false"
+        aria-label="Current directory">
+      <div class="browse-places" id="browse-places"></div>
+    </div>
+    <div class="browse-list" id="browse-list"></div>
+    <div class="browse-foot">
+      <label class="check-row" style="gap:6px">
+        <input type="checkbox" id="browse-hidden">
+        <span class="check-copy"><span>Show hidden</span></span>
+      </label>
+      <span class="msg" id="browse-msg"></span>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" id="browse-cancel">Cancel</button>
+      <button type="button" class="primary" id="browse-choose">Use this folder</button>
+    </div>
+  </div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -665,7 +724,7 @@ function addSeed(url="") {
   const row = document.createElement("div");
   row.className = "seed-editor-row";
   row.innerHTML = `
-    <input type="url" class="seed-url" placeholder="https://example.com/" value="${escapeAttr(url)}" required>
+    <input type="url" class="seed-url" placeholder="https://example.com/" value="${escapeHtml(url)}" required>
     <button type="button" class="secondary remove-seed">Remove</button>`;
   row.querySelector(".remove-seed").addEventListener("click", () => {
     if ($$(".seed-editor-row").length === 1) {
@@ -676,7 +735,7 @@ function addSeed(url="") {
   });
   $("#seed-list").appendChild(row);
 }
-function escapeAttr(value) {
+function escapeHtml(value) {
   return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 function numberValue(id, fallback) {
@@ -1116,6 +1175,91 @@ async function refresh() {
     $("#manifest").innerHTML = `<div class="empty">Server unreachable — ${e.message}</div>`;
   }
 }
+let browseTarget = null;
+
+async function openBrowser(targetId) {
+  browseTarget = targetId;
+  const start = $(`#${targetId}`).value.trim();
+  $("#browse-overlay").classList.add("open");
+  await loadDirectory(start);
+  $("#browse-path").focus();
+}
+
+function closeBrowser() {
+  $("#browse-overlay").classList.remove("open");
+  if (browseTarget) $(`#${browseTarget}`).focus();
+  browseTarget = null;
+}
+
+async function loadDirectory(path) {
+  const list = $("#browse-list");
+  const msg = $("#browse-msg");
+  msg.textContent = "";
+  msg.className = "msg";
+  const query = new URLSearchParams();
+  if (path) query.set("path", path);
+  if ($("#browse-hidden").checked) query.set("show_hidden", "true");
+  try {
+    const here = await api(`/api/browse?${query.toString()}`);
+    $("#browse-path").value = here.path;
+    $("#browse-places").innerHTML = here.places.map(place =>
+      `<button type="button" class="browse-place" data-path="${escapeHtml(place.path)}">${escapeHtml(place.label)}</button>`
+    ).join("");
+    const rows = [];
+    if (here.parent) {
+      rows.push(`<button type="button" class="browse-row" data-path="${escapeHtml(here.parent)}"><span class="dir-mark">..</span> Parent directory</button>`);
+    }
+    here.entries.forEach(entry => {
+      rows.push(`<button type="button" class="browse-row" data-path="${escapeHtml(entry.path)}"><span class="dir-mark">/</span> ${escapeHtml(entry.name)}</button>`);
+    });
+    list.innerHTML = rows.length ? rows.join("")
+      : `<div class="browse-empty">No sub-folders here. It can still be used.</div>`;
+    if (here.unreadable) {
+      msg.textContent = here.unreadable;
+      msg.className = "msg err";
+    } else if (!here.writable) {
+      msg.textContent = "This folder is not writable.";
+      msg.className = "msg err";
+    }
+    list.scrollTop = 0;
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg err";
+  }
+}
+
+$("#browse-list").addEventListener("click", event => {
+  const row = event.target.closest(".browse-row");
+  if (row) loadDirectory(row.dataset.path);
+});
+$("#browse-places").addEventListener("click", event => {
+  const place = event.target.closest(".browse-place");
+  if (place) loadDirectory(place.dataset.path);
+});
+$("#browse-hidden").addEventListener("change",
+  () => loadDirectory($("#browse-path").value.trim()));
+$("#browse-path").addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); loadDirectory($("#browse-path").value.trim()); }
+});
+$("#browse-cancel").addEventListener("click", closeBrowser);
+$("#browse-choose").addEventListener("click", () => {
+  if (browseTarget) {
+    const field = $(`#${browseTarget}`);
+    field.value = $("#browse-path").value.trim();
+    // Chosen, not typed, so tell the field's own code it has been edited.
+    field.dispatchEvent(new Event("input", {bubbles: true}));
+  }
+  closeBrowser();
+});
+$("#browse-overlay").addEventListener("click", event => {
+  if (event.target.id === "browse-overlay") closeBrowser();
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && browseTarget) closeBrowser();
+});
+$$(".browse-btn").forEach(button =>
+  button.addEventListener("click", () => openBrowser(button.dataset.target)));
+
 const VIEWS = ["jobs", "new", "settings"];
 
 function showView(name) {
@@ -1135,10 +1279,14 @@ $$(".nav-item").forEach(item =>
   item.addEventListener("click", () => showView(item.dataset.view)));
 window.addEventListener("hashchange", () => showView(viewFromHash()));
 
+let storageRootEdited = false;
+
 function renderStorageDefault(settings) {
   const box = $("#storage-root");
-  // Only overwrite while the curator is not part-way through typing a path.
-  if (document.activeElement !== box) box.value = settings.storage_root || "";
+  // The list refreshes every two seconds, and this field is redrawn with it.
+  // Focus is not enough to protect an edit: a path chosen with the mouse
+  // leaves the field unfocused, and was wiped before Save could be reached.
+  if (!storageRootEdited) box.value = settings.storage_root || "";
   const choosable = (settings.storage || {}).available !== false;
   box.disabled = !choosable;
   $("#storage-save").disabled = !choosable;
@@ -1161,6 +1309,7 @@ async function saveStorageDefault() {
       method: "PUT", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({storage_root: $("#storage-root").value.trim()}),
     });
+    storageRootEdited = false;
     renderStorageDefault(settings);
     msg.textContent = "Saved.";
     msg.className = "msg ok";
@@ -1170,6 +1319,7 @@ async function saveStorageDefault() {
   }
 }
 
+$("#storage-root").addEventListener("input", () => storageRootEdited = true);
 $("#storage-save").addEventListener("click", saveStorageDefault);
 $("#add-seed-btn").addEventListener("click", () => addSeed(""));
 $("#start-btn").addEventListener("click", start);
