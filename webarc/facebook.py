@@ -1471,6 +1471,10 @@ class FacebookCaptureSession(RecordingSession):
         # detect on the page; this one it cannot see, so without the flag it
         # would resume, fail, block and resume again without end.
         self._awaiting_curator_decision = False
+        # None until the cookie jar has been read; a signed-out capture is
+        # bounded by Facebook rather than by anything this capture does.
+        self._viewer_signed_in: Optional[bool] = None
+        self._signed_out_acknowledged = False
         self._post_identity: dict[str, str] = {}
         self._page_segment = _page_path_segment(config.page_url)
         # Media the browser already fetched, so an explicit fetch does not
@@ -1515,6 +1519,9 @@ class FacebookCaptureSession(RecordingSession):
             self.phase_detail = "Automatic scrolling and capture are active."
             self._pending_block_reason = None
             self._awaiting_curator_decision = False
+            if actor != "automatic":
+                # They have seen the sign-in warning and chosen to go on.
+                self._signed_out_acknowledged = True
             self._next_scroll_at = 0.0
             self._state_dirty = True
             self.archive.event(
@@ -2370,6 +2377,11 @@ class FacebookCaptureSession(RecordingSession):
             # been read, which is the one thing this capture cannot claim.
             self._hold_for_curator(
                 "comment_thread_incomplete",
+                "This browser is not signed in to Facebook, which is what "
+                "limits the thread: signed out it serves ten comments at a "
+                "time and offers no control to load more. Sign in and run the "
+                "capture again for the rest."
+                if self._viewer_signed_in is False else
                 "Facebook stopped returning comments before the thread ran "
                 "out. Scroll or expand the thread in the browser yourself if "
                 "you want more.",
@@ -2631,6 +2643,46 @@ class FacebookCaptureSession(RecordingSession):
             self.config.scroll_pause_min, self.config.scroll_pause_max)
         self._checkpoint()
 
+    def _viewer_is_signed_in(self) -> Optional[bool]:
+        """Whether the capture browser is signed in to Facebook.
+
+        Signed out, Facebook serves ten comments of a thread at a time and
+        offers no way to ask for the next page, so such a capture is bounded
+        by Facebook and not by anything the capture does. Reported as unknown
+        rather than guessed when the cookie jar cannot be read.
+        """
+        if not self._context:
+            return None
+        try:
+            cookies = self._context.cookies("https://www.facebook.com/")
+        except Exception:
+            return None
+        for cookie in cookies:
+            if cookie.get("name") == "c_user" and cookie.get("value"):
+                return True
+        return False
+
+    def _signed_out_blocks_start(self) -> bool:
+        """Say so before the run, not in the manifest afterwards."""
+        self._viewer_signed_in = self._viewer_is_signed_in()
+        if self._viewer_signed_in is not False:
+            return False
+        if self._signed_out_acknowledged:
+            return False
+        self._awaiting_curator_decision = True
+        self._enter_blocked(
+            "This browser is not signed in to Facebook. Signed out, Facebook "
+            "serves ten comments of a thread and offers no way to ask for the "
+            "rest, so a capture stops at around twenty however long the "
+            "thread is and however long it runs. Sign in in the capture "
+            "browser and select \u201cI have resolved it \u2014 "
+            "continue\u201d, or select it now to capture the signed-out view "
+            "as it stands."
+        )
+        self.archive.event("viewer_not_signed_in",
+                           page_url=self.config.page_url)
+        return True
+
     def _maybe_auto_start(self, page) -> None:
         """Begin the chosen mode as soon as the Page is genuinely on screen.
 
@@ -2663,6 +2715,8 @@ class FacebookCaptureSession(RecordingSession):
             if self.phase_detail != waiting:
                 self.phase_detail = waiting
                 self._state_dirty = True
+            return
+        if self._signed_out_blocks_start():
             return
         self.archive.event(
             "auto_start" if not self.started_scrolling else "auto_resumed",
@@ -2996,6 +3050,8 @@ class FacebookCaptureSession(RecordingSession):
                         self.archive.posts.values()
                         if isinstance(post.comments_count, int)),
                     "comments_not_collected": self._comments_not_collected(),
+                    "viewer": {True: "signed_in", False: "signed_out"}.get(
+                        self._viewer_signed_in, "unknown"),
                     "note": (
                         "Comments are read from the page as rendered and "
                         "from the GraphQL traffic that follows, then from "
@@ -3041,6 +3097,12 @@ class FacebookCaptureSession(RecordingSession):
                 ),
                 "comment_limit_is_best_effort": bool(
                     self.config.include_comments),
+                "signed_out_capture_meaning": (
+                    "Signed out, Facebook serves ten comments of a thread at "
+                    "a time and offers no control to load the next page. A "
+                    "capture made signed out is bounded by what Facebook "
+                    "shows a visitor, not by the requested maximum."
+                ) if self._viewer_signed_in is False else None,
             },
             "files": {
                 "warc": "*.warc.gz",

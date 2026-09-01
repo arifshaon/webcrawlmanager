@@ -1566,6 +1566,115 @@ class CuratorDecisionTests(SessionTestCase):
         self.assertEqual(comments["comments_not_collected"], 436)
 
 
+class SignedOutCaptureTests(SessionTestCase):
+    """Signed out, Facebook decides how much of a thread exists.
+
+    It serves ten comments a page and offers no control to ask for the next,
+    so a capture stops at around twenty however long the thread is, however
+    long it runs and whatever maximum was requested. Captures 27 and 30 were
+    both made signed out -- every request in them carries __user=0 -- and both
+    stopped at 19 of a thread of 455.
+    """
+
+    class _Context:
+        def __init__(self, cookies):
+            self._cookies = cookies
+
+        def cookies(self, _url=None):
+            if self._cookies is None:
+                raise RuntimeError("context closed")
+            return self._cookies
+
+    def session_with(self, cookies):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True)
+        session._context = self._Context(cookies)
+        session.started_scrolling = False
+        return session
+
+    def test_a_signed_in_browser_is_recognised(self):
+        session = self.session_with([{"name": "c_user", "value": "100044"}])
+
+        self.assertTrue(session._viewer_is_signed_in())
+
+    def test_a_signed_out_browser_is_recognised(self):
+        session = self.session_with([{"name": "datr", "value": "x"}])
+
+        self.assertFalse(session._viewer_is_signed_in())
+
+    def test_an_empty_cookie_value_is_not_signed_in(self):
+        session = self.session_with([{"name": "c_user", "value": ""}])
+
+        self.assertFalse(session._viewer_is_signed_in())
+
+    def test_an_unreadable_cookie_jar_is_unknown_not_signed_out(self):
+        session = self.session_with(None)
+
+        self.assertIsNone(session._viewer_is_signed_in())
+        self.assertFalse(session._signed_out_blocks_start())
+
+    def test_the_capture_says_so_before_it_starts(self):
+        session = self.session_with([])
+
+        self.assertTrue(session._signed_out_blocks_start())
+        self.assertEqual(session.state, BLOCKED)
+        self.assertIn("not signed in", session.phase_detail)
+        self.assertIn("viewer_not_signed_in",
+                      session.archive.events_path.read_text())
+
+    def test_auto_start_does_not_run_past_the_warning(self):
+        session = self.session_with([])
+        session.state = PAUSED
+        session._page_is_target = lambda _p: True
+        session._detect_verification = lambda _p: None
+
+        session._maybe_auto_start(_FakePage(url=POST_URL))
+
+        self.assertEqual(session.state, BLOCKED)
+
+    def test_the_curator_can_choose_to_capture_signed_out_anyway(self):
+        session = self.session_with([])
+        session._signed_out_blocks_start()
+
+        session.apply("resume", actor="dashboard")
+
+        self.assertEqual(session.state, RECORDING)
+        self.assertTrue(session._signed_out_acknowledged)
+        self.assertFalse(session._signed_out_blocks_start())
+
+    def test_the_warning_is_not_dismissed_by_the_tool_itself(self):
+        """Auto-start lifting its own warning would defeat the point."""
+        session = self.session_with([])
+        session._signed_out_blocks_start()
+
+        session.apply("resume", actor="automatic")
+
+        self.assertFalse(session._signed_out_acknowledged)
+        self.assertTrue(session._signed_out_blocks_start())
+
+    def test_the_manifest_records_which_view_was_captured(self):
+        session = self.session_with([])
+        session._signed_out_blocks_start()
+
+        document = session._manifest_document()
+
+        self.assertEqual(
+            document["requested_work"]["comments"]["viewer"], "signed_out")
+        self.assertIn("ten comments",
+                      document["completeness"]["signed_out_capture_meaning"])
+
+    def test_a_signed_in_manifest_makes_no_such_excuse(self):
+        session = self.session_with([{"name": "c_user", "value": "1"}])
+        session._viewer_signed_in = session._viewer_is_signed_in()
+
+        document = session._manifest_document()
+
+        self.assertEqual(
+            document["requested_work"]["comments"]["viewer"], "signed_in")
+        self.assertIsNone(
+            document["completeness"]["signed_out_capture_meaning"])
+
+
 class GraphQLDecodingTests(unittest.TestCase):
     def test_anti_json_prefix_is_stripped(self):
         self.assertEqual(decode_graphql_documents(b'for (;;);{"a":1}'),
