@@ -95,7 +95,7 @@ function crawlRow(c) {
         ${isRec
           ? `<b>${visited}</b> pages<br>${fmtBytes(bytes)}`
           : isFacebook
-            ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b> comments<br>${Number(fb.pagination_failures) || 0} pagination failures · ${fmtBytes(bytes)}`
+            ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b> comments · <b>${Number(fb.media_captured) || 0}</b> media<br>${Number(fb.graphql_responses) || 0} API responses${Number(fb.pagination_failures) ? ` · ${Number(fb.pagination_failures)} failed` : ""} · ${fmtBytes(bytes)}`
           : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}`}
       </div>
       <span class="badge b-${statusCss}">${status}</span>

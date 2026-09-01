@@ -781,6 +781,56 @@ class FinishedCaptureTests(SessionTestCase):
         self.assertEqual(session._progress_details()["phase"], "scrolling")
 
 
+class ScrollProgressTests(SessionTestCase):
+    """What the capture reports while it is scrolling.
+
+    Posts arrive in GraphQL responses as Facebook answers each scroll, so the
+    response count shows collection is moving even through a stretch where no
+    new post qualifies for export.
+    """
+
+    def test_the_line_reports_posts_and_api_activity(self):
+        session = make_session(self.tmp)
+        session._consider_post(post("1", date="2026-05-01T09:00:00Z"))
+        session.counters["graphql_responses"] = 14
+
+        line = session._scrolling_summary()
+
+        self.assertIn("1 posts", line)
+        self.assertIn("14 API responses", line)
+
+    def test_progress_towards_a_post_count_is_shown(self):
+        session = make_session(self.tmp, mode="latest_n", latest_n=100,
+                               from_date=None)
+        session._consider_post(post("1", date="2026-05-01T09:00:00Z"))
+
+        self.assertIn("1 of 100 posts", session._scrolling_summary())
+
+    def test_progress_towards_a_date_is_shown(self):
+        session = make_session(self.tmp)
+        session._consider_post(post("1", date="2026-05-01T09:00:00Z"))
+
+        line = session._scrolling_summary()
+        self.assertIn("collecting back to 2026-01-01", line)
+        self.assertIn("reached 01 May 2026", line)
+
+    def test_failures_are_surfaced_not_buried(self):
+        session = make_session(self.tmp)
+        session.counters["pagination_failures"] = 2
+
+        self.assertIn("2 failed", session._scrolling_summary())
+
+    def test_api_activity_reaches_the_dashboard(self):
+        session = make_session(self.tmp)
+        session.counters["graphql_responses"] = 9
+        session.counters["graphql_errors"] = 1
+
+        details = session._progress_details()
+
+        self.assertEqual(details["graphql_responses"], 9)
+        self.assertEqual(details["graphql_errors"], 1)
+
+
 class GraphQLDecodingTests(unittest.TestCase):
     def test_anti_json_prefix_is_stripped(self):
         self.assertEqual(decode_graphql_documents(b'for (;;);{"a":1}'),

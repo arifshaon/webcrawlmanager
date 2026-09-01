@@ -48,6 +48,16 @@ FACEBOOK_MODES = {
     "since_last",
 }
 
+def _readable_day(value: object) -> str:
+    """A date a curator can read at a glance, from an ISO timestamp."""
+    raw = str(value or "")
+    try:
+        return datetime.fromisoformat(
+            raw.replace("Z", "+00:00")).strftime("%d %b %Y")
+    except ValueError:
+        return raw[:10] or "unknown"
+
+
 def _mode_summary(config: "FacebookCaptureConfig") -> str:
     """One sentence naming what this capture will do, for the curator."""
     mode = config.mode
@@ -2043,6 +2053,9 @@ class FacebookCaptureSession(RecordingSession):
             return
         self._scrolls += 1
         self.counters["scroll_attempts"] = self._scrolls
+        if not self._exhaustion_notified:
+            self.phase_detail = self._scrolling_summary()
+            self._state_dirty = True
         self._process_media_queue()
         self._next_scroll_at = time.monotonic() + random.uniform(
             self.config.scroll_pause_min, self.config.scroll_pause_max)
@@ -2202,6 +2215,36 @@ class FacebookCaptureSession(RecordingSession):
         "capture_failed": "the capture failed",
     }
 
+    def _scrolling_summary(self) -> str:
+        """What the capture is doing right now, refreshed on every scroll.
+
+        Posts arrive in GraphQL responses as Facebook answers each scroll, so
+        the response count is the honest signal that collection is moving even
+        during a stretch where no new post qualifies for export.
+        """
+        posts = len(self.archive.posts)
+        responses = self.counters.get("graphql_responses", 0)
+        mode = self.config.mode
+        if mode == "latest_n":
+            head = f"{posts} of {self.config.latest_n} posts"
+        elif mode == "date_range" and self.config.from_date:
+            head = f"{posts} posts, collecting back to {self.config.from_date[:10]}"
+        else:
+            head = f"{posts} posts"
+        oldest = self._coverage()["exported_oldest_post"]
+        parts = [head]
+        if oldest:
+            parts.append(f"reached {_readable_day(oldest)}")
+        parts.append(f"{responses} API response"
+                     f"{'' if responses == 1 else 's'}")
+        failures = self.counters.get("pagination_failures", 0)
+        if failures:
+            parts.append(f"{failures} failed")
+        comments = len(self.archive.comments)
+        if comments:
+            parts.append(f"{comments} comments so far")
+        return " · ".join(parts)
+
     def _closing_summary(self) -> str:
         """What a finished capture leaves on screen.
 
@@ -2247,6 +2290,10 @@ class FacebookCaptureSession(RecordingSession):
             "observed_newest_post": coverage["observed_newest_post"],
             "observed_oldest_post": coverage["observed_oldest_post"],
             "requested_range_satisfied": coverage["requested_range_satisfied"],
+            "graphql_responses": self.counters.get("graphql_responses", 0),
+            "graphql_errors": self.counters.get("graphql_errors", 0),
+            "graphql_unparsed": self.counters.get("graphql_unparsed", 0),
+            "media_captured": self.counters.get("media_captured", 0),
             "pagination_failures": self.counters.get("pagination_failures", 0),
             "scroll_attempts": self._scrolls,
             "consecutive_older_posts": self._old_consecutive,

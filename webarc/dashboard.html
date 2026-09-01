@@ -83,6 +83,17 @@
       background:rgba(127,127,127,.10); font-size:.82rem; line-height:1.45; }
     .fb-phase-label { font-weight:600; text-transform:uppercase;
       letter-spacing:.06em; font-size:.7rem; opacity:.75; white-space:nowrap; }
+  #busy-overlay { display: none; position: fixed; inset: 0; z-index: 999;
+    background: rgba(27,30,35,.35); align-items: center; justify-content: center; }
+  .busy-card { background: var(--paper); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 22px 26px; display: flex; align-items: center;
+    gap: 14px; max-width: 26rem; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+  .busy-spin { width: 18px; height: 18px; border-radius: 50%; flex: none;
+    border: 2px solid var(--rule); border-top-color: var(--run);
+    animation: busy-turn .8s linear infinite; }
+  @keyframes busy-turn { to { transform: rotate(360deg) } }
+  @media (prefers-reduced-motion: reduce) { .busy-spin { animation: none } }
+  .busy-text { font-size: 13px; line-height: 1.5; }
   button { font-family: var(--ui); border-radius: 6px; cursor: pointer; }
   button.act, button.secondary {
     font-size: 12px; border: 1px solid var(--rule);
@@ -947,7 +958,23 @@ function toggle(id) {
   const el = document.querySelector(`.crawl[data-id="${id}"]`);
   if (el) el.classList.toggle("open");
 }
+function busy(text) {
+  let node = document.getElementById("busy-overlay");
+  if (!node) {
+    node = document.createElement("div");
+    node.id = "busy-overlay";
+    node.innerHTML = '<div class="busy-card"><div class="busy-spin"></div>' +
+      '<div class="busy-text"></div></div>';
+    document.body.appendChild(node);
+  }
+  node.querySelector(".busy-text").textContent = text;
+  node.style.display = "flex";
+  return () => { node.style.display = "none"; };
+}
 async function replay(id, want) {
+  const done = busy(want === "pages"
+    ? "Building the pages for this capture. Large captures take a moment."
+    : "Preparing the WARC for replay. Large archives take a moment.");
   try {
     const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
     // A Facebook capture can offer both: replay of the archived exchanges,
@@ -956,7 +983,11 @@ async function replay(id, want) {
                                  : (r.replay_url || r.pages_url);
     if (!url) throw new Error("nothing to open for this capture");
     window.open(url, "_blank");
-  } catch (e) { alert("Could not open: " + e.message); }
+  } catch (e) {
+    alert("Could not open: " + e.message);
+  } finally {
+    done();
+  }
 }
 async function ctl(id, cmd) {
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }
