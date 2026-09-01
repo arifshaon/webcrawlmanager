@@ -2527,7 +2527,15 @@ class FacebookCaptureSession(RecordingSession):
         """
         script = r"""
         () => {
-          const articles = Array.from(document.querySelectorAll('[role="article"]'));
+          // A comment is an article nested inside the post's article, so the
+          // nested ones are the thread. The last article in the document is
+          // not: a permalink is followed by suggested posts and by the post's
+          // own article, and scrolling one of those into view scrolls away
+          // from the thread rather than down it.
+          const comments = Array.from(
+            document.querySelectorAll('[role="article"] [role="article"]'));
+          const articles = comments.length ? comments
+            : Array.from(document.querySelectorAll('[role="article"]'));
           const last = articles[articles.length - 1];
           let containers = 0;
           if (last) {

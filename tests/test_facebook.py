@@ -1369,6 +1369,20 @@ class CommentThreadScrollTests(SessionTestCase):
         self.assertIn("overflowY", script)
         self.assertEqual(session.counters["comment_containers_scrolled"], 2)
 
+    def test_the_thread_is_scrolled_not_whatever_article_comes_last(self):
+        """A permalink is followed by suggested posts and by the post itself;
+        scrolling one of those into view scrolls away from the thread."""
+        session = make_session(self.tmp, include_comments=True)
+        page = self._Page()
+
+        session._scroll_comment_thread(page)
+
+        script = page.scripts[0]
+        self.assertIn('[role="article"] [role="article"]', script)
+        target = script.index("const last =")
+        self.assertLess(script.index('[role="article"] [role="article"]'),
+                        target)
+
     def test_a_failing_scroll_does_not_end_the_harvest(self):
         session = make_session(self.tmp, include_comments=True)
 
