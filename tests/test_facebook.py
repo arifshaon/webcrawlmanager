@@ -1332,6 +1332,120 @@ class CommentExpansionTests(SessionTestCase):
         self.assertEqual(rounds_for(500), 250)
 
 
+class CommentThreadScrollTests(SessionTestCase):
+    """A post permalink opens in a dialog, so the window does not scroll.
+
+    Facebook serves a permalink through CometSinglePostDialogRoute: the post
+    sits in a dialog and the page behind it is frozen. Scrolling the window
+    there loaded no further comments however many rounds it was given, and
+    the harvest stalled out in eleven seconds reporting nineteen comments of
+    a thread of hundreds.
+    """
+
+    class _Page:
+        def __init__(self, containers=2, fail=False):
+            self.containers = containers
+            self.fail = fail
+            self.scripts = []
+
+        def evaluate(self, script, *args):
+            self.scripts.append(script)
+            if self.fail:
+                raise RuntimeError("detached frame")
+            return self.containers
+
+        def wait_for_timeout(self, _ms):
+            pass
+
+    def test_the_thread_container_is_scrolled_not_only_the_window(self):
+        session = make_session(self.tmp, include_comments=True)
+        page = self._Page()
+
+        session._scroll_comment_thread(page)
+
+        script = page.scripts[0]
+        self.assertIn("scrollIntoView", script)
+        self.assertIn("scrollTop", script)
+        self.assertIn("overflowY", script)
+        self.assertEqual(session.counters["comment_containers_scrolled"], 2)
+
+    def test_a_failing_scroll_does_not_end_the_harvest(self):
+        session = make_session(self.tmp, include_comments=True)
+
+        session._scroll_comment_thread(self._Page(fail=True))
+
+        self.assertEqual(session.counters["comment_containers_scrolled"], 0)
+
+    def test_the_harvest_scrolls_the_thread(self):
+        session = make_session(self.tmp, include_comments=True)
+        called = {"n": 0}
+        session._expand_comments = lambda _p: 0
+        session._show_all_comments = lambda _p: None
+        session._process_media_queue = lambda budget=0: None
+        session._scroll_comment_thread = lambda _p: called.__setitem__(
+            "n", called["n"] + 1)
+
+        session._read_comment_thread(self._Page(), "post")
+
+        self.assertGreater(called["n"], 0)
+
+
+class ExpansionSurveyTests(SessionTestCase):
+    """What Facebook calls these controls decides whether any of this works.
+
+    It cannot be known from outside a live session, so a run that clicks
+    nothing has to say what it saw instead of leaving it to be guessed at.
+    """
+
+    class _Page:
+        def __init__(self, result):
+            self.result = result
+
+        def evaluate(self, _script, *args):
+            return self.result
+
+    def test_the_first_look_at_the_controls_is_recorded(self):
+        session = make_session(self.tmp, include_comments=True)
+        page = self._Page({"clicked": 0, "matched": 0, "articles": 3,
+                           "labels": ["Like", "Reply", "Most relevant"]})
+
+        session._expand_comments(page)
+
+        recorded = session.archive.events_path.read_text()
+        self.assertIn("comment_controls_surveyed", recorded)
+        self.assertIn("Most relevant", recorded)
+
+    def test_the_survey_is_recorded_once_not_every_round(self):
+        session = make_session(self.tmp, include_comments=True)
+        page = self._Page({"clicked": 1, "matched": 1, "articles": 3,
+                           "labels": []})
+
+        for _ in range(5):
+            session._expand_comments(page)
+
+        self.assertEqual(
+            session.archive.events_path.read_text().count(
+                "comment_controls_surveyed"), 1)
+        self.assertEqual(session.counters["comment_expansion_clicks"], 5)
+
+    def test_the_dialog_is_searched_when_harvesting_one_post(self):
+        session = make_session(self.tmp, include_comments=True)
+        session._permalink_post_id = "1593564465471991"
+        seen = {}
+
+        class _Recorder:
+            def evaluate(self, script, args):
+                seen["script"] = script
+                seen["args"] = args
+                return {"clicked": 0, "matched": 0, "articles": 1,
+                        "labels": []}
+
+        session._expand_comments(_Recorder())
+
+        self.assertTrue(seen["args"]["perPost"])
+        self.assertIn('[role="dialog"]', seen["script"])
+
+
 class GraphQLDecodingTests(unittest.TestCase):
     def test_anti_json_prefix_is_stripped(self):
         self.assertEqual(decode_graphql_documents(b'for (;;);{"a":1}'),

@@ -1459,6 +1459,7 @@ class FacebookCaptureSession(RecordingSession):
         self._exhaustion_notified = False
         self._single_post_done = False
         self._expansion_failure_reported = False
+        self._expansion_survey_reported = False
         self._post_identity: dict[str, str] = {}
         self._page_segment = _page_path_segment(config.page_url)
         # Media the browser already fetched, so an explicit fetch does not
@@ -2278,20 +2279,15 @@ class FacebookCaptureSession(RecordingSession):
         for _ in range(rounds):
             collected = len(self.archive.comments)
             if (self._comment_counts.get(post_id, 0) >= wanted
-                    or stalled >= 5):
+                    or stalled >= 8):
                 break
             if self._closed or self._stop_requested_during_harvest():
                 break
             clicked = self._expand_comments(page)
             # Comments arrive on scroll as well as on click, and the thread
             # is usually below the fold on a permalink.
-            try:
-                page.evaluate(
-                    "() => window.scrollBy({top: window.innerHeight * 0.8,"
-                    " left: 0, behavior: 'auto'})")
-            except Exception:
-                pass
-            page.wait_for_timeout(1200)
+            self._scroll_comment_thread(page)
+            page.wait_for_timeout(1600 if clicked else 1200)
             if len(self.archive.comments) > collected:
                 stalled = 0
             elif not clicked:
@@ -2335,29 +2331,40 @@ class FacebookCaptureSession(RecordingSession):
         ({maximum, includeReplies, perPost}) => {
           const top = Array.from(document.querySelectorAll('[role="article"]'))
             .filter(el => !el.parentElement || !el.parentElement.closest('[role="article"]'));
-          let clicked = 0;
+          const commentMore = /view (all|more|previous)|more comments|previous comments|load more comments|see more comments/i;
+          // "3 replies", "View 2 replies", "View more replies"
+          const replyMore = /view (all|more).*repl|more repl|^\d[\d,.]*\s+repl/i;
+          // A permalink opens the post in a dialog, and the thread's controls
+          // are not reliably inside the article element there, so the dialog
+          // as a whole is searched rather than each article.
+          const roots = perPost
+            ? [document.querySelector('[role="dialog"]') || document.body]
+            : top.slice(-30);
           const budget = perPost ? 12 : 4;
-          const scope = perPost ? top : top.slice(-30);
-          for (const post of scope) {
-            const comments = post.querySelectorAll('[role="article"] [role="article"]').length;
-            if (!perPost && comments >= maximum) continue;
-            const controls = Array.from(post.querySelectorAll('button, [role="button"]'));
+          let clicked = 0, matched = 0;
+          const labels = [];
+          for (const root of roots) {
+            if (!perPost) {
+              const seen = root.querySelectorAll('[role="article"] [role="article"]').length;
+              if (seen >= maximum) continue;
+            }
+            const controls = Array.from(root.querySelectorAll('button, [role="button"]'));
             for (const control of controls) {
-              if (clicked >= budget) break;
-              if (control.dataset && control.dataset.swmClicked === '1') continue;
               const label = ((control.innerText || '') + ' ' +
                 (control.getAttribute('aria-label') || '')).trim();
-              const commentMore = /view (all|more|previous).*comments|more comments|previous comments/i.test(label);
-              // "3 replies", "View 2 replies", "View more replies"
-              const replyMore = /view (all|more).*repl|more repl|^\d[\d,.]*\s+repl/i.test(label);
-              if (commentMore || (includeReplies && replyMore)) {
-                try { control.dataset.swmClicked = '1'; } catch (_) {}
-                control.click(); clicked += 1;
+              if (label && labels.length < 40 && labels.indexOf(label) < 0) {
+                labels.push(label.slice(0, 60));
               }
+              if (control.dataset && control.dataset.swmClicked === '1') continue;
+              if (!(commentMore.test(label) ||
+                    (includeReplies && replyMore.test(label)))) continue;
+              matched += 1;
+              if (clicked >= budget) continue;
+              try { control.dataset.swmClicked = '1'; } catch (_) {}
+              control.click(); clicked += 1;
             }
-            if (clicked >= budget) break;
           }
-          return {clicked, posts_examined: top.length};
+          return {clicked, matched, articles: top.length, labels};
         }
         """
         try:
@@ -2377,10 +2384,59 @@ class FacebookCaptureSession(RecordingSession):
                 self.archive.event("comment_expansion_failed", error=str(exc))
                 log.warning("Facebook comment expansion failed: %s", exc)
             return 0
-        clicked = int((result or {}).get("clicked") or 0)
+        result = result or {}
+        if not self._expansion_survey_reported:
+            # What Facebook labels these controls decides whether any of this
+            # works, and it is not knowable from outside a live session. The
+            # first look is recorded so a run that clicks nothing says what it
+            # saw rather than leaving it to be guessed at.
+            self._expansion_survey_reported = True
+            self.archive.event(
+                "comment_controls_surveyed",
+                articles=int(result.get("articles") or 0),
+                matched=int(result.get("matched") or 0),
+                clicked=int(result.get("clicked") or 0),
+                labels=list(result.get("labels") or [])[:40],
+            )
+        clicked = int(result.get("clicked") or 0)
         if clicked:
             self.counters["comment_expansion_clicks"] += clicked
         return clicked
+
+    def _scroll_comment_thread(self, page) -> None:
+        """Scroll whatever is actually holding the comments.
+
+        A post permalink opens in a dialog, so the window does not scroll --
+        its background is frozen behind the dialog -- and scrolling the window
+        loaded no further comments however many times it was tried.
+        """
+        script = r"""
+        () => {
+          const articles = Array.from(document.querySelectorAll('[role="article"]'));
+          const last = articles[articles.length - 1];
+          let containers = 0;
+          if (last) {
+            try { last.scrollIntoView({block: 'end'}); } catch (_) {}
+            for (let el = last.parentElement;
+                 el && el !== document.body; el = el.parentElement) {
+              if (el.scrollHeight > el.clientHeight + 80 &&
+                  /auto|scroll/.test(getComputedStyle(el).overflowY)) {
+                el.scrollTop = el.scrollHeight;
+                containers += 1;
+              }
+            }
+          }
+          window.scrollBy({top: window.innerHeight * 0.8, left: 0,
+                           behavior: 'auto'});
+          return containers;
+        }
+        """
+        try:
+            containers = int(page.evaluate(script) or 0)
+        except Exception:
+            return
+        if containers:
+            self.counters["comment_containers_scrolled"] += containers
 
     def _page_marker(self, page) -> dict:
         try:
