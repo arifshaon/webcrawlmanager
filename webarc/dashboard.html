@@ -48,6 +48,13 @@
   .storage .k { font-size: 11px; color: var(--muted); font-family: var(--mono);
     text-transform: uppercase; letter-spacing: .05em; }
   .storage .v { font-family: var(--mono); font-size: 20px; margin-top: 4px; }
+  .storage-default { background: var(--paper); border: 1px solid var(--rule);
+    border-top: 0; border-radius: 0 0 8px 8px; padding: 12px 16px 14px; }
+  .storage-default-row { display: flex; gap: 8px; align-items: center;
+    margin-top: 6px; flex-wrap: wrap; }
+  .storage-default-row input { flex: 1 1 320px; font-family: var(--mono);
+    font-size: 12px; }
+  .storage-default .help { display: block; margin-top: 6px; }
   .bar { height: 5px; background: var(--surface); border-radius: 3px; margin-top: 10px; overflow: hidden; }
   .bar span { display: block; height: 100%; background: var(--run); }
   .manifest { border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
@@ -209,6 +216,15 @@
 <main>
   <div class="eyebrow">Storage</div>
   <div class="storage" id="storage"></div>
+  <div class="storage-default" id="storage-default">
+    <label class="field-label" for="storage-root">Default storage location</label>
+    <div class="storage-default-row">
+      <input type="text" id="storage-root" placeholder="the server's own storage directory">
+      <button type="button" class="secondary" id="storage-save">Save</button>
+      <span class="msg" id="storage-msg"></span>
+    </div>
+    <span class="help" id="storage-help"></span>
+  </div>
   <div class="eyebrow">Crawls</div>
   <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
   <div class="eyebrow">New job</div>
@@ -359,6 +375,10 @@
                 <span class="check-copy"><strong>Deduplicate payloads</strong><span>Write revisit records for repeated content.</span></span>
               </label>
             </div>
+            <div class="field wide">
+              <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+              <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty for the default location">
+            </div>
           </div>
         </div>
       </div>
@@ -403,6 +423,10 @@
               <option value="headed">Headed — managed Chrome (recommended)</option>
               <option value="native">Native — system Chrome via CDP (advanced)</option>
             </select>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+            <input type="text" id="r-storage" class="storage-dir" placeholder="leave empty for the default location">
           </div>
           <div class="field wide">
             <div class="rec-warning">
@@ -452,6 +476,10 @@
               <option value="native">Native — system Chrome via CDP (advanced)</option>
             </select>
             <span class="help">SWM keeps a dedicated Facebook browser profile so your login can persist between captures.</span>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+            <input type="text" id="fb-storage" class="storage-dir" placeholder="leave empty for the default location">
           </div>
           <div class="field">
             <label class="field-label" for="fb-mode">Capture mode</label>
@@ -814,6 +842,7 @@ async function startRecording() {
     const body = {url, browser: $("#r-browser").value};
     if ($("#r-name").value.trim()) body.name = $("#r-name").value.trim();
     if ($("#r-operator").value.trim()) body.operator = $("#r-operator").value.trim();
+    if ($("#r-storage").value.trim()) body.storage_dir = $("#r-storage").value.trim();
     await api("/api/recordings", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
@@ -885,6 +914,7 @@ async function startFacebook() {
   };
   if ($("#fb-name").value.trim()) body.name = $("#fb-name").value.trim();
   if ($("#fb-operator").value.trim()) body.operator = $("#fb-operator").value.trim();
+  if ($("#fb-storage").value.trim()) body.storage_dir = $("#fb-storage").value.trim();
   setFbMessage("Opening browser…");
   $("#facebook-start-btn").disabled = true;
   try {
@@ -1010,6 +1040,7 @@ async function start() {
     } else {
       body = {config_yaml: $("#config-yaml").value};
     }
+    if ($("#f-storage").value.trim()) body.storage_dir = $("#f-storage").value.trim();
     await api("/api/crawls", {
       method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)
     });
@@ -1032,6 +1063,7 @@ async function refresh() {
       <div class="cell"><div class="k">Disk free</div><div class="v">${fmtBytes(storage.disk.free)}</div></div>
       <div class="cell"><div class="k">Disk used</div><div class="v">${Math.round(diskPercent)}%</div>
         <div class="bar"><span style="width:${diskPercent.toFixed(1)}%"></span></div></div>`;
+    renderStorageDefault(await api("/api/settings"));
     $("#manifest").innerHTML = crawls.length
       ? crawls.map(crawlRow).join("")
       : `<div class="empty">No crawls yet. Define one below and press <code>Start crawl</code>.</div>`;
@@ -1039,6 +1071,42 @@ async function refresh() {
     $("#manifest").innerHTML = `<div class="empty">Server unreachable — ${e.message}</div>`;
   }
 }
+function renderStorageDefault(settings) {
+  const box = $("#storage-root");
+  // Only overwrite while the curator is not part-way through typing a path.
+  if (document.activeElement !== box) box.value = settings.storage_root || "";
+  const choosable = (settings.storage || {}).available !== false;
+  box.disabled = !choosable;
+  $("#storage-save").disabled = !choosable;
+  $("#storage-help").textContent = choosable
+    ? `Captures go to ${settings.effective_storage_root}. A crawl that names `
+      + `its own location overrides this; existing crawls are not moved.`
+    : (settings.storage || {}).reason || "";
+  document.querySelectorAll(".storage-dir").forEach(field => {
+    field.disabled = !choosable;
+    if (!choosable) field.placeholder = "unavailable on a networked dashboard";
+  });
+}
+
+async function saveStorageDefault() {
+  const msg = $("#storage-msg");
+  msg.textContent = "Saving…";
+  msg.className = "msg";
+  try {
+    const settings = await api("/api/settings", {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({storage_root: $("#storage-root").value.trim()}),
+    });
+    renderStorageDefault(settings);
+    msg.textContent = "Saved.";
+    msg.className = "msg ok";
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg err";
+  }
+}
+
+$("#storage-save").addEventListener("click", saveStorageDefault);
 $("#add-seed-btn").addEventListener("click", () => addSeed(""));
 $("#start-btn").addEventListener("click", start);
 $("#reset-btn").addEventListener("click", resetExample);

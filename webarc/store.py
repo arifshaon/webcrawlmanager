@@ -53,6 +53,12 @@ CREATE TABLE IF NOT EXISTS crawls (
     updated_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS progress (
     crawl_id       INTEGER NOT NULL,
     seed_idx       INTEGER NOT NULL,
@@ -132,7 +138,23 @@ class Store:
         finally:
             conn.close()
 
+    # -- settings ------------------------------------------------------------
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        with self._conn() as c:
+            row = c.execute("SELECT value FROM settings WHERE key=?",
+                            (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._conn() as c:
+            c.execute(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?,?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                "updated_at=excluded.updated_at",
+                (key, value, _now()))
+
     # -- crawl lifecycle -----------------------------------------------------
+
     def create_crawl(self, name: str, config: dict, output_dir: str,
                      seeds_total: int, kind: str = KIND_CRAWL) -> int:
         ts = _now()

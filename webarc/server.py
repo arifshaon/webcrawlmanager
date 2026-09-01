@@ -41,6 +41,8 @@ from .store import (BLOCKED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
                     KIND_RECORDING, PAUSED, PENDING, RUNNING, STOPPED, STOPPING,
                     Store)
 
+log = logging.getLogger(__name__)
+
 BASE = Path(__file__).resolve().parent
 DASHBOARD = BASE / "dashboard.html"
 DASHBOARD_HARDENING = BASE / "dashboard_hardening.js"
@@ -79,6 +81,85 @@ def _recording_capability() -> dict:
                 "reason": "Interactive recording is unavailable because SWM "
                           "is running without a graphical desktop."}
     return {"available": True, "reason": None}
+
+
+_STORAGE_ROOT_SETTING = "storage_root"
+
+
+def _storage_is_curator_choosable() -> dict:
+    """Whether a curator may name a storage directory from this dashboard.
+
+    Writing wherever the person sitting at the machine points is the
+    dashboard's own authority when it is bound to loopback. Reachable over a
+    network it is not: naming a path would let anyone who can reach the port
+    write to any directory the server can, so the same override that permits
+    a remote browser is required for this.
+    """
+    if _BIND_HOST in _LOOPBACK_HOSTS or _ALLOW_REMOTE_RECORDING:
+        return {"available": True, "reason": None}
+    return {"available": False,
+            "reason": "A storage location cannot be chosen here because the "
+                      "dashboard is not bound to this machine's loopback "
+                      "interface. Captures go to the server's configured "
+                      "storage. Start the server with "
+                      "--allow-remote-recording to override."}
+
+
+def _usable_directory(path: Path, label: str) -> Path:
+    """Resolve a curator-named directory, or say plainly why it cannot serve."""
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError as exc:
+        raise HTTPException(400, f"{label} cannot be used: {exc}")
+    if resolved.exists() and not resolved.is_dir():
+        raise HTTPException(400, f"{label} is a file, not a directory.")
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(400, f"{label} cannot be created: {exc}")
+    if not os.access(resolved, os.W_OK):
+        raise HTTPException(400, f"{label} is not writable.")
+    return resolved
+
+
+def _default_storage_root() -> Path:
+    """Where captures go when a crawl does not name its own location.
+
+    A default that has become unusable -- an unplugged drive, a directory
+    since made read-only -- must not fail every new capture, so the server's
+    own root is used and the reason is logged.
+    """
+    stored = (_store().get_setting(_STORAGE_ROOT_SETTING) or "").strip()
+    if not stored:
+        return _WARC_ROOT
+    try:
+        return _usable_directory(Path(stored), "The default storage location")
+    except HTTPException as exc:
+        log.warning("Default storage %s unusable (%s); using %s",
+                    stored, exc.detail, _WARC_ROOT)
+        return _WARC_ROOT
+
+
+def _storage_root_for(requested: object) -> Path:
+    """The root this crawl's own directory is created under."""
+    text = str(requested or "").strip()
+    if not text:
+        return _default_storage_root()
+    choosable = _storage_is_curator_choosable()
+    if not choosable["available"]:
+        raise HTTPException(403, choosable["reason"])
+    return _usable_directory(Path(text), "That storage location")
+
+
+def _crawl_dir(row: dict) -> Path:
+    """Where this crawl's files actually are.
+
+    Recomputing the path from the server's root was safe only while every
+    crawl lived under it. A crawl given its own storage location has to be
+    read back from where it was written, and output_dir is what records that.
+    """
+    stored = str((row or {}).get("output_dir") or "").strip()
+    return Path(stored) if stored else _WARC_ROOT / str((row or {})["id"])
 
 
 def _store() -> Store:
@@ -175,7 +256,7 @@ def _launch_worker(crawl_id: int) -> int:
 
 def _crawl_view(row: dict) -> dict:
     progress = _store().get_progress(row["id"])
-    crawl_dir = _WARC_ROOT / str(row["id"])
+    crawl_dir = _crawl_dir(row)
     disk_bytes = _dir_size(crawl_dir)
     reported = sum(p["bytes"] for p in progress)
     visited = sum(p["visited"] for p in progress)
@@ -196,6 +277,9 @@ def _crawl_view(row: dict) -> dict:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "error": row["error"],
+        # Where this crawl's files are, so the dashboard can show a capture
+        # kept somewhere other than the default without guessing.
+        "output_dir": str(crawl_dir),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
@@ -232,6 +316,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "recording": visible,
             "facebook": dict(visible),
             "simulate": _SIMULATE,
+            "storage": _storage_is_curator_choosable(),
         }
 
     @app.post("/api/recordings")
@@ -271,11 +356,15 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             },
             "seeds": [{"url": url}],
         }
+        # Resolved before the row exists: a location that cannot serve
+        # should fail the request, not leave a crawl pointing nowhere.
+        storage_root = _storage_root_for(payload.get("storage_dir"))
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="", seeds_total=1,
             kind=KIND_RECORDING)
-        crawl_dir = _WARC_ROOT / str(crawl_id)
+        crawl_dir = storage_root / str(crawl_id)
         config["output_dir"] = str(crawl_dir)
+        crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
 
         pid = _launch_worker(crawl_id)
@@ -292,7 +381,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 return job
         return None
 
-    def _launch_facebook_job(name: str, facebook: dict) -> JSONResponse:
+    def _launch_facebook_job(name: str, facebook: dict,
+                             storage_root: Path) -> JSONResponse:
         """Validate, persist and launch one Facebook job configuration."""
         from .facebook import FacebookCaptureConfig
 
@@ -315,8 +405,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             name=name, config=config, output_dir="", seeds_total=1,
             kind=KIND_FACEBOOK,
         )
-        crawl_dir = _WARC_ROOT / str(crawl_id)
+        crawl_dir = storage_root / str(crawl_id)
         config["output_dir"] = str(crawl_dir)
+        crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
         pid = _launch_worker(crawl_id)
         _store().set_pid(crawl_id, pid)
@@ -397,7 +488,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 )
             facebook["prior_newest_post_id"] = previous.get("newest_post_id")
             facebook["prior_newest_post_date"] = previous.get("newest_post_date")
-        return _launch_facebook_job(name, facebook)
+        return _launch_facebook_job(
+            name, facebook, _storage_root_for(payload.get("storage_dir")))
 
     @app.post("/api/config/parse")
     def parse_config(payload: dict = Body(...)):
@@ -433,13 +525,15 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             raise HTTPException(400, "provide config_yaml or config")
 
         name = payload.get("name") or config.get("crawl_name", "webarc-crawl")
+        storage_root = _storage_root_for(payload.get("storage_dir"))
         # create once to obtain the id, then point the config at its own dir
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="",
             seeds_total=len(config["seeds"]))
-        crawl_dir = _WARC_ROOT / str(crawl_id)
+        crawl_dir = storage_root / str(crawl_id)
         config["output_dir"] = str(crawl_dir)
         config.setdefault("crawl_name", name)
+        crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
 
         pid = _launch_worker(crawl_id)
@@ -497,7 +591,11 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             facebook.get("root_capture_id") or crawl_id
         )
         name = f"{row['name']} — continuation"
-        return _launch_facebook_job(name[:200], facebook)
+        # A continuation belongs beside the capture it continues, whatever
+        # the current default is and whether or not this dashboard would let
+        # a curator name that location today.
+        return _launch_facebook_job(name[:200], facebook,
+                                    _crawl_dir(row).parent)
 
     @app.post("/api/crawls/{crawl_id}/kill")
     def kill(crawl_id: int):
@@ -515,7 +613,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         if _pid_alive(row["pid"]):
             raise HTTPException(409, "crawl is still running; stop it first")
         if purge:
-            shutil.rmtree(_WARC_ROOT / str(crawl_id), ignore_errors=True)
+            shutil.rmtree(_crawl_dir(row), ignore_errors=True)
         _store().delete_crawl(crawl_id)
         return {"ok": True, "purged": purge}
 
@@ -531,7 +629,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
         if kind not in ("pages", "media"):
             raise HTTPException(404, "not found")
-        base = (_WARC_ROOT / str(crawl_id) / kind).resolve()
+        base = (_crawl_dir(_require(crawl_id)) / kind).resolve()
         try:
             target = (base / path).resolve()
             target.relative_to(base)      # refuse anything outside the capture
@@ -547,7 +645,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         global _PYWB
         row = _require(crawl_id)
         from .replay import (ReplayServer, build_replay_site, collection_name)
-        crawl_dir = _WARC_ROOT / str(crawl_id)
+        crawl_dir = _crawl_dir(row)
         warcs = sorted(crawl_dir.glob("*.warc.gz")) + sorted(crawl_dir.glob("*.warc"))
 
         # A Facebook capture is read through the pages built from its records.
@@ -590,13 +688,43 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         prog = _store().get_progress(crawl_id)
         return prog[0]["seed_url"] if prog else None
 
+    @app.get("/api/settings")
+    def read_settings():
+        configured = (_store().get_setting(_STORAGE_ROOT_SETTING) or "").strip()
+        return {
+            "storage_root": configured,
+            "effective_storage_root": str(_default_storage_root()),
+            "server_storage_root": str(_WARC_ROOT),
+            "storage": _storage_is_curator_choosable(),
+        }
+
+    @app.put("/api/settings")
+    def write_settings(payload: dict = Body(...)):
+        """Change where captures go by default.
+
+        Existing crawls are not moved or re-pointed: each records the
+        directory it was written to, so a changed default applies to captures
+        made after it.
+        """
+        if "storage_root" not in payload:
+            raise HTTPException(400, "provide storage_root")
+        requested = str(payload.get("storage_root") or "").strip()
+        if requested:
+            choosable = _storage_is_curator_choosable()
+            if not choosable["available"]:
+                raise HTTPException(403, choosable["reason"])
+            _usable_directory(Path(requested),
+                              "That default storage location")
+        _store().set_setting(_STORAGE_ROOT_SETTING, requested)
+        return read_settings()
+
     @app.get("/api/storage")
     def storage():
         crawls = _store().list_crawls()
         per_crawl = []
         total = 0
         for r in crawls:
-            b = _dir_size(_WARC_ROOT / str(r["id"]))
+            b = _dir_size(_crawl_dir(r))
             total += b
             per_crawl.append({"id": r["id"], "name": r["name"], "bytes": b})
         usage = shutil.disk_usage(_WARC_ROOT)
