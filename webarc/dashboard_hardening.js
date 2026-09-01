@@ -22,6 +22,15 @@ function statusClass(value) {
 
 // Override the renderer used by every refresh. All values originating in the
 // API or SQLite are escaped before entering an innerHTML template.
+function facebookPhaseLabel(phase) {
+  return ({
+    waiting_to_start: "Waiting",
+    scrolling: "Collecting",
+    scrolling_paused: "Paused",
+    verification_required: "Needs you",
+  })[String(phase || "")] || "Status";
+}
+
 function crawlRow(c) {
   const id = Number(c.id);
   if (!Number.isSafeInteger(id) || id < 0) return "";
@@ -57,7 +66,7 @@ function crawlRow(c) {
     const details = sd.details || {};
     const facebookDetail = isFacebook ? `
       <div class="cur">${escapeHtml(details.message || details.phase || "")}</div>
-      <div class="cur">newest: ${escapeHtml(details.newest_post || "not yet observed")} · oldest: ${escapeHtml(details.oldest_post || "not yet observed")} · pagination failures: ${Number(details.pagination_failures) || 0} · detected gaps: ${Number(details.detected_gaps) || 0}</div>` : "";
+      <div class="cur">newest: ${escapeHtml(details.newest_post || "not yet observed")} · oldest: ${escapeHtml(details.oldest_post || "not yet observed")} · pagination failures: ${Number(details.pagination_failures) || 0}</div>` : "";
     return `
       <div class="seed">
         <div>
@@ -90,12 +99,16 @@ function crawlRow(c) {
       </div>
       <span class="badge b-${statusCss}">${status}</span>
     </div>
+    ${isFacebook && (fb.message || fb.phase) ? `<div class="fb-phase">
+      <span class="fb-phase-label">${escapeHtml(facebookPhaseLabel(fb.phase))}</span>
+      <span>${escapeHtml(fb.message || "")}</span>
+    </div>` : ""}
     <div class="actions">
       <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
-      <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isFacebook ? (blocked ? "Verification resolved — resume" : "Start / resume scrolling") : "Resume"}</button>
+      <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isFacebook ? (blocked ? "I have resolved it — continue" : "Resume scrolling") : "Resume"}</button>
       <button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isFacebook ? "Stop and save" : "Stop"}</button>
       ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
-      <button class="act replay" onclick="replay(${id})" ${bytes > 0 ? "" : "disabled"}>Replay</button>
+      <button class="act replay" onclick="replay(${id})" ${(bytes > 0 || (isFacebook && Number(fb.posts_exported) > 0)) ? "" : "disabled"}>${isFacebook ? "Open pages" : "Replay"}</button>
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
     </div>
     <div class="seeds">${seedRows}</div>

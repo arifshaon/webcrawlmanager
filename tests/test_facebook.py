@@ -17,7 +17,8 @@ import unittest
 from pathlib import Path
 
 from webarc.config import BrowserConfig
-from webarc.facebook import (FacebookCaptureConfig, FacebookCaptureSession,
+from webarc.facebook import (BLOCKED, PAUSED, RECORDING,
+                             FacebookCaptureConfig, FacebookCaptureSession,
                              FacebookComment, FacebookPost,
                              canonical_facebook_page_url,
                              decode_graphql_documents, extract_graphql_records,
@@ -587,6 +588,115 @@ class CommentHarvestTests(SessionTestCase):
         self.assertEqual(work["comments"]["maximum_per_post"], 25)
         self.assertTrue(work["media"]["requested"])
         self.assertEqual(work["media"]["outstanding_at_close"], 0)
+
+
+class _FakePage:
+    """A browser page whose URL and visible text the test controls."""
+
+    def __init__(self, url=PAGE, body="Posts"):
+        self.url = url
+        self._body = body
+
+    def content(self):
+        return f"<html><body>{self._body}</body></html>"
+
+    def locator(self, _selector):
+        page = self
+
+        class _Locator:
+            def inner_text(self, **_kwargs):
+                return page._body
+        return _Locator()
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+    def wait_for_load_state(self, *_a, **_k):
+        pass
+
+
+class AutoStartTests(SessionTestCase):
+    """The curator chose a mode and its criteria; collection should follow.
+
+    Pressing a button afterwards adds nothing, so a capture starts by itself
+    once the Page is on screen. What genuinely needs a person -- a login wall,
+    a verification challenge, the wrong page -- waits and says so.
+    """
+
+    def test_collection_starts_once_the_page_is_open(self):
+        session = make_session(self.tmp)
+        self.assertEqual(session.state, PAUSED)
+
+        session._maybe_auto_start(_FakePage())
+
+        self.assertEqual(session.state, RECORDING)
+        self.assertTrue(session.started_scrolling)
+
+    def test_the_chosen_mode_is_named_for_the_curator(self):
+        session = make_session(self.tmp, mode="latest_n", latest_n=100,
+                               from_date=None)
+        session._maybe_auto_start(_FakePage())
+
+        self.assertIn("latest 100 posts", session.phase_detail)
+
+    def test_a_login_wall_waits_and_explains(self):
+        session = make_session(self.tmp)
+        session._maybe_auto_start(
+            _FakePage(url="https://www.facebook.com/login/?next=x"))
+
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("Sign in", session.phase_detail)
+
+    def test_another_page_being_open_waits_and_explains(self):
+        session = make_session(self.tmp)
+        session._maybe_auto_start(
+            _FakePage(url="https://www.facebook.com/someoneelse"))
+
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("Waiting for", session.phase_detail)
+
+    def test_collection_starts_when_the_curator_opens_the_page(self):
+        session = make_session(self.tmp)
+        session._maybe_auto_start(_FakePage(url="https://www.facebook.com/"))
+        self.assertEqual(session.state, PAUSED)
+
+        session._maybe_auto_start(_FakePage())
+
+        self.assertEqual(session.state, RECORDING)
+
+    def test_a_pause_the_curator_asked_for_is_not_overridden(self):
+        session = make_session(self.tmp)
+        session._maybe_auto_start(_FakePage())
+        session.apply("pause", actor="dashboard")
+        self.assertEqual(session.state, PAUSED)
+
+        session._maybe_auto_start(_FakePage())
+
+        self.assertEqual(session.state, PAUSED)
+
+    def test_a_facebook_block_resumes_itself_once_resolved(self):
+        session = make_session(self.tmp)
+        session._maybe_auto_start(_FakePage())
+        session._enter_blocked("Facebook is asking for verification.")
+        self.assertEqual(session.state, BLOCKED)
+
+        session._maybe_auto_start(_FakePage())
+
+        self.assertEqual(session.state, RECORDING)
+
+    def test_opting_out_leaves_the_start_to_the_curator(self):
+        session = make_session(self.tmp, auto_start=False)
+        session._maybe_auto_start(_FakePage())
+
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("Waiting for you to start", session.phase_detail)
+
+    def test_nothing_starts_once_a_stop_is_pending(self):
+        session = make_session(self.tmp)
+        session._request_stop("curator_stop", "rule")
+        session._maybe_auto_start(_FakePage())
+
+        self.assertEqual(session.state, PAUSED)
 
 
 class GraphQLDecodingTests(unittest.TestCase):

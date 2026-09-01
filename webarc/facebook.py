@@ -48,6 +48,23 @@ FACEBOOK_MODES = {
     "since_last",
 }
 
+def _mode_summary(config: "FacebookCaptureConfig") -> str:
+    """One sentence naming what this capture will do, for the curator."""
+    mode = config.mode
+    if mode == "date_range":
+        span = config.from_date or "the earliest post"
+        return (f"Collecting posts back to {span[:10]}"
+                + (f" and no newer than {config.to_date[:10]}"
+                   if config.to_date else ""))
+    if mode == "latest_n":
+        return f"Collecting the latest {config.latest_n} posts"
+    if mode == "since_last":
+        return "Collecting posts published since the previous capture"
+    if mode == "end_of_timeline":
+        return "Collecting posts until Facebook stops offering older ones"
+    return "Collecting posts until you select Stop and save"
+
+
 _FACEBOOK_HOSTS = {
     "facebook.com", "www.facebook.com", "m.facebook.com",
     "web.facebook.com",
@@ -780,6 +797,7 @@ class FacebookCaptureConfig:
     consecutive_older: int = 5
     capture_media: bool = True
     write_warc: bool = True
+    auto_start: bool = True
     include_comments: bool = False
     max_comments_per_post: int = 25
     include_replies: bool = False
@@ -839,6 +857,7 @@ class FacebookCaptureConfig:
             consecutive_older=max(2, min(consecutive, 25)),
             capture_media=bool(raw.get("capture_media", True)),
             write_warc=bool(raw.get("write_warc", True)),
+            auto_start=bool(raw.get("auto_start", True)),
             include_comments=bool(raw.get("include_comments", False)),
             max_comments_per_post=maximum,
             include_replies=bool(raw.get("include_replies", False)),
@@ -1143,8 +1162,11 @@ class FacebookCaptureSession(RecordingSession):
         self.stop_rule: Optional[str] = None
         self.failure: Optional[str] = None
         self.phase_detail = (
-            "Log in if needed, open the Page, then start scrolling. "
-            "Network capture is already active."
+            f"Opening the Page. {_mode_summary(config)} will begin "
+            "automatically once the Page is on screen."
+            if config.auto_start else
+            "Waiting for you to start. Open the Page, then select Start "
+            "scrolling. Capture is already active."
         )
         self.counters: Counter = Counter()
         self.exclusions: Counter = Counter()
@@ -1974,6 +1996,56 @@ class FacebookCaptureSession(RecordingSession):
             self.config.scroll_pause_min, self.config.scroll_pause_max)
         self._checkpoint()
 
+    def _maybe_auto_start(self, page) -> None:
+        """Begin the chosen mode as soon as the Page is genuinely on screen.
+
+        The curator picked a mode and its criteria; making them press a button
+        afterwards adds nothing. What can genuinely need a person -- a login
+        wall, a verification challenge, or the wrong page being open -- is
+        reported instead, and scrolling starts by itself once that clears.
+        """
+        if not self.config.auto_start or self._pending_stop:
+            return
+        if self.state == PAUSED and self.started_scrolling:
+            # A pause the curator asked for stays until they lift it.
+            return
+        if self.state not in (PAUSED, BLOCKED):
+            return
+        blocker = self._detect_verification(page)
+        if blocker:
+            # _detect_verification's own message already says what to do.
+            if self.phase_detail != blocker:
+                self.phase_detail = blocker
+                self._state_dirty = True
+            return
+        if not self._page_is_target(page):
+            waiting = (
+                f"Waiting for {self.config.page_url} to open in the browser. "
+                f"{_mode_summary(self.config)} will begin automatically."
+            )
+            if self.phase_detail != waiting:
+                self.phase_detail = waiting
+                self._state_dirty = True
+            return
+        self.archive.event(
+            "auto_start" if not self.started_scrolling else "auto_resumed",
+            mode=self.config.mode, previous_state=self.state,
+            current_url=page.url)
+        self.apply(CMD_RESUME, actor="automatic")
+        self.phase_detail = f"{_mode_summary(self.config)}."
+        self._state_dirty = True
+
+    def _page_is_target(self, page) -> bool:
+        """Whether the browser is showing the Page this capture is for."""
+        try:
+            current = page.url or ""
+        except Exception:
+            return False
+        if not current.startswith(("http://", "https://")):
+            return False
+        segment = _page_path_segment(current)
+        return bool(segment) and segment == self._page_segment
+
     def _detect_verification(self, page) -> Optional[str]:
         url = page.url.lower()
         path = urlsplit(url).path.rstrip("/") or "/"
@@ -2128,6 +2200,7 @@ class FacebookCaptureSession(RecordingSession):
                     "consecutive_older_required": self.config.consecutive_older,
                     "capture_media": self.config.capture_media,
                     "write_warc": self.config.write_warc,
+                    "auto_start": self.config.auto_start,
                     "include_comments": self.config.include_comments,
                     "maximum_comments_per_post": self.config.max_comments_per_post,
                     "include_replies": self.config.include_replies,
@@ -2424,6 +2497,7 @@ class FacebookCaptureSession(RecordingSession):
                             and now - self._last_dom_check >= 2.0:
                         self._check_manual_activity(active)
                         self._collect_dom_posts(active)
+                        self._maybe_auto_start(active)
                         self._last_dom_check = now
 
                 if self._state_dirty:

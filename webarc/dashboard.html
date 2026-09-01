@@ -78,6 +78,11 @@
   .counts { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
   .counts b { color: var(--ink); font-weight: 600; }
   .actions { display: flex; gap: 6px; padding: 0 18px 14px 18px; }
+    .fb-phase { display:flex; gap:.5rem; align-items:baseline; flex-wrap:wrap;
+      padding:.5rem .9rem; margin:0 .9rem .6rem; border-radius:6px;
+      background:rgba(127,127,127,.10); font-size:.82rem; line-height:1.45; }
+    .fb-phase-label { font-weight:600; text-transform:uppercase;
+      letter-spacing:.06em; font-size:.7rem; opacity:.75; white-space:nowrap; }
   button { font-family: var(--ui); border-radius: 6px; cursor: pointer; }
   button.act, button.secondary {
     font-size: 12px; border: 1px solid var(--rule);
@@ -475,6 +480,10 @@
               <span class="check-copy"><strong>Capture images and media</strong><span>Fetch the images and video referenced by captured posts, and keep them as files.</span></span>
             </label>
             <label class="check-row">
+              <input type="checkbox" id="fb-autostart" checked>
+              <span class="check-copy"><strong>Start collecting automatically</strong><span>Begins as soon as the Page is on screen, and pauses by itself if Facebook asks for a login or verification. Clear this to position the browser yourself first.</span></span>
+            </label>
+            <label class="check-row">
               <input type="checkbox" id="fb-warc" checked>
               <span class="check-copy"><strong>Write a WARC</strong><span>Preserves the raw exchanges. Replay of a Facebook feed only ever shows the Page as first loaded; the captured posts, media and comments are read through the pages SWM builds either way.</span></span>
             </label>
@@ -858,6 +867,7 @@ async function startFacebook() {
     latest_n: Number($("#fb-latest-n").value || 100),
     capture_media: $("#fb-media").checked,
     write_warc: $("#fb-warc").checked,
+    auto_start: $("#fb-autostart").checked,
     include_comments: $("#fb-comments").checked,
     max_comments_per_post: Number($("#fb-comment-max").value || 25),
     include_replies: $("#fb-replies").checked,
@@ -917,7 +927,7 @@ function crawlRow(c) {
     </div>
     <div class="actions">
       <button class="act" onclick="ctl(${c.id},'pause')"  ${canPause?"":"disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
-      <button class="act" onclick="ctl(${c.id},'resume')" ${canResume?"":"disabled"}>${isFacebook ? (blocked ? "Verification resolved — resume" : "Start / resume scrolling") : "Resume"}</button>
+      <button class="act" onclick="ctl(${c.id},'resume')" ${canResume?"":"disabled"}>${isFacebook ? (blocked ? "I have resolved it — continue" : "Resume scrolling") : "Resume"}</button>
       <button class="act danger" onclick="ctl(${c.id},'stop')" ${canStop?"":"disabled"}>${isFacebook ? "Stop and save" : "Stop"}</button>
       ${isFacebook ? `<button class="act" onclick="continueFacebook(${c.id})" ${(["stopped","failed"].includes(s))?"":"disabled"}>Continue</button>` : ""}
       <button class="act replay" onclick="replay(${c.id})" ${t.bytes>0?"":"disabled"}>Replay</button>

@@ -375,6 +375,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "consecutive_older": 5,
             "capture_media": bool(payload.get("capture_media", True)),
             "write_warc": bool(payload.get("write_warc", True)),
+            "auto_start": bool(payload.get("auto_start", True)),
             "include_comments": bool(payload.get("include_comments", False)),
             "max_comments_per_post": payload.get("max_comments_per_post", 25),
             "include_replies": bool(payload.get("include_replies", False)),
@@ -524,6 +525,28 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from .replay import (ReplayServer, build_replay_site, collection_name)
         crawl_dir = _WARC_ROOT / str(crawl_id)
         warcs = sorted(crawl_dir.glob("*.warc.gz")) + sorted(crawl_dir.glob("*.warc"))
+
+        # A Facebook capture is read through the pages built from its records:
+        # its feed cannot be re-driven at replay, and it may have been run
+        # without a WARC at all.
+        from .facebook_render import build_site, is_facebook_capture
+        if is_facebook_capture(crawl_dir):
+            coll = collection_name(crawl_id)
+            try:
+                site = build_site(crawl_dir, _REPLAY_ROOT / coll / "pages")
+                if _PYWB is None:
+                    _PYWB = ReplayServer(_REPLAY_ROOT, port=8091)
+                    _PYWB.start_background()
+            except Exception as exc:
+                raise HTTPException(
+                    500, f"could not build capture pages: {exc}") from exc
+            base = _PYWB.replay_url(coll).rsplit("/", 1)[0]
+            return {
+                "collection": coll,
+                "replay_url": f"{base}/{site.name}/index.html",
+                "kind": "facebook_pages",
+            }
+
         if not warcs:
             raise HTTPException(409, "no WARC files captured yet for this crawl")
 
