@@ -108,7 +108,9 @@ function crawlRow(c) {
       <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isFacebook ? (blocked ? "I have resolved it — continue" : "Resume scrolling") : "Resume"}</button>
       <button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isFacebook ? "Stop and save" : "Stop"}</button>
       ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
-      <button class="act replay" onclick="replay(${id})" ${(bytes > 0 || (isFacebook && Number(fb.posts_exported) > 0)) ? "" : "disabled"}>${isFacebook ? "Open pages" : "Replay"}</button>
+      ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
+      <button class="act replay" onclick="replay(${id},'warc')" ${bytes > 0 ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
+      : `<button class="act replay" onclick="replay(${id})" ${bytes > 0 ? "" : "disabled"}>Replay</button>`}
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
     </div>
     <div class="seeds">${seedRows}</div>

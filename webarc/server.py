@@ -24,6 +24,8 @@ pages. Stop also hard-kills the pid as a fallback if the worker is wedged.
 
 from __future__ import annotations
 
+import logging
+
 import os
 import shutil
 import signal
@@ -517,6 +519,28 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         _store().delete_crawl(crawl_id)
         return {"ok": True, "purged": purge}
 
+    @app.get("/captures/{crawl_id}/{kind}/{path:path}")
+    def capture_file(crawl_id: int, kind: str, path: str):
+        """Serve a Facebook capture's rendered pages and their media.
+
+        Pages and media are siblings inside the capture directory, so serving
+        them under a shared prefix keeps the relative references in the pages
+        working without copying media into a second location.
+        """
+        from fastapi.responses import FileResponse
+
+        if kind not in ("pages", "media"):
+            raise HTTPException(404, "not found")
+        base = (_WARC_ROOT / str(crawl_id) / kind).resolve()
+        try:
+            target = (base / path).resolve()
+            target.relative_to(base)      # refuse anything outside the capture
+        except (ValueError, OSError):
+            raise HTTPException(404, "not found") from None
+        if not target.is_file():
+            raise HTTPException(404, "not found")
+        return FileResponse(target)
+
     @app.post("/api/crawls/{crawl_id}/replay")
     def replay(crawl_id: int):
         """Build a ReplayWeb.page site for this crawl and return the replay URL."""
@@ -526,28 +550,27 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         crawl_dir = _WARC_ROOT / str(crawl_id)
         warcs = sorted(crawl_dir.glob("*.warc.gz")) + sorted(crawl_dir.glob("*.warc"))
 
-        # A Facebook capture is read through the pages built from its records:
-        # its feed cannot be re-driven at replay, and it may have been run
-        # without a WARC at all.
+        # A Facebook capture is read through the pages built from its records.
+        # They are built inside the capture directory, beside the media they
+        # reference, and served from there so those references resolve. When
+        # the capture also has a WARC, both ways in are offered: replay shows
+        # the Page as it first loaded, the pages show what was collected.
         from .facebook_render import build_site, is_facebook_capture
+        pages_url = None
         if is_facebook_capture(crawl_dir):
-            coll = collection_name(crawl_id)
             try:
-                site = build_site(crawl_dir, _REPLAY_ROOT / coll / "pages")
-                if _PYWB is None:
-                    _PYWB = ReplayServer(_REPLAY_ROOT, port=8091)
-                    _PYWB.start_background()
+                build_site(crawl_dir)
+                pages_url = f"/captures/{crawl_id}/pages/index.html"
             except Exception as exc:
-                raise HTTPException(
-                    500, f"could not build capture pages: {exc}") from exc
-            base = _PYWB.replay_url(coll).rsplit("/", 1)[0]
-            return {
-                "collection": coll,
-                "replay_url": f"{base}/{site.name}/index.html",
-                "kind": "facebook_pages",
-            }
+                if not warcs:
+                    raise HTTPException(
+                        500, f"could not build capture pages: {exc}") from exc
+                logging.getLogger(__name__).warning(
+                    "Could not build capture pages for %d: %s", crawl_id, exc)
 
         if not warcs:
+            if pages_url:
+                return {"pages_url": pages_url, "kind": "facebook_pages"}
             raise HTTPException(409, "no WARC files captured yet for this crawl")
 
         coll = collection_name(crawl_id)
@@ -560,7 +583,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         except Exception as exc:
             raise HTTPException(500, f"replay setup failed: {exc}") from exc
 
-        return {"collection": coll, "replay_url": _PYWB.replay_url(coll)}
+        return {"collection": coll, "replay_url": _PYWB.replay_url(coll),
+                "pages_url": pages_url}
 
     def row_seed_url(crawl_id: int) -> str | None:
         prog = _store().get_progress(crawl_id)

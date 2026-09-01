@@ -947,11 +947,16 @@ function toggle(id) {
   const el = document.querySelector(`.crawl[data-id="${id}"]`);
   if (el) el.classList.toggle("open");
 }
-async function replay(id) {
+async function replay(id, want) {
   try {
     const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
-    window.open(r.replay_url, "_blank");
-  } catch (e) { alert("Replay failed: " + e.message); }
+    // A Facebook capture can offer both: replay of the archived exchanges,
+    // and the pages built from its records.
+    const url = want === "pages" ? (r.pages_url || r.replay_url)
+                                 : (r.replay_url || r.pages_url);
+    if (!url) throw new Error("nothing to open for this capture");
+    window.open(url, "_blank");
+  } catch (e) { alert("Could not open: " + e.message); }
 }
 async function ctl(id, cmd) {
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }

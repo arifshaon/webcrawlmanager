@@ -546,6 +546,32 @@ class CommentHarvestTests(SessionTestCase):
         self.assertEqual(
             session.archive.comments["c1"].parent_post_id, "555")
 
+    def test_a_payload_id_does_not_override_the_page_being_read(self):
+        # Facebook labels comments with feedback ids that need not match the
+        # post id. Trusting those split one post's comments across several
+        # budgets, so the harvest read its own progress as nil and stopped.
+        session = make_session(self.tmp, include_comments=True)
+        session._permalink_post_id = "555"
+        session._consider_comment(FacebookComment(
+            comment_id="c1", text="hello", parent_post_id="feedback:999"))
+
+        self.assertEqual(
+            session.archive.comments["c1"].parent_post_id, "555")
+        self.assertEqual(session._comment_counts["555"], 1)
+        self.assertEqual(session._comment_counts["feedback:999"], 0)
+
+    def test_the_whole_budget_is_reachable_on_one_permalink(self):
+        session = make_session(self.tmp, include_comments=True,
+                               max_comments_per_post=25)
+        session._permalink_post_id = "555"
+        for n in range(25):
+            session._consider_comment(FacebookComment(
+                comment_id=f"c{n}", text="hi",
+                parent_post_id=f"feedback:{n}"))
+
+        self.assertEqual(session.counters["comments_exported"], 25)
+        self.assertNotIn("comment_limit_reached", session.exclusions)
+
     def test_each_permalink_post_gets_its_own_budget(self):
         session = make_session(self.tmp, include_comments=True,
                                max_comments_per_post=1)

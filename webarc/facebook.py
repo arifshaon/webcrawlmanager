@@ -1569,9 +1569,12 @@ class FacebookCaptureSession(RecordingSession):
         if comment.depth > 0 and not self.config.include_replies:
             self.exclusions["replies_not_requested"] += 1
             return
-        if self._permalink_post_id and not comment.parent_post_id:
+        if self._permalink_post_id:
             # Found while that post's own permalink was open, so it is that
-            # post's comment even when the payload does not say so.
+            # post's comment. Facebook labels comments with feedback ids that
+            # need not match the post id, and trusting those split one post's
+            # comments across several budgets and made the harvest loop read
+            # its own progress as nil.
             comment.parent_post_id = self._permalink_post_id
         bucket = comment.parent_post_id
         if not bucket:
@@ -1824,6 +1827,47 @@ class FacebookCaptureSession(RecordingSession):
                 return True
         return False
 
+    def _show_all_comments(self, page) -> None:
+        """Switch the thread from Facebook's default filtered view.
+
+        A permalink opens on "Most relevant", which shows a fraction of the
+        thread and will never yield the requested number however long it is
+        paginated. Selecting "All comments" is what makes the rest reachable.
+        """
+        script = r"""
+        () => {
+          const opener = Array.from(
+            document.querySelectorAll('[role="button"], button')).find(el => {
+              const label = ((el.innerText || '') + ' ' +
+                (el.getAttribute('aria-label') || '')).toLowerCase();
+              return /most relevant|top comments|relevant/.test(label);
+            });
+          if (!opener) return {opened: false, chose: false};
+          opener.click();
+          return {opened: true, chose: false};
+        }
+        """
+        chooser = r"""
+        () => {
+          const option = Array.from(document.querySelectorAll(
+            '[role="menuitem"], [role="menuitemradio"], [role="option"]'))
+            .find(el => /all comments/i.test(el.innerText || ''));
+          if (!option) return false;
+          option.click();
+          return true;
+        }
+        """
+        try:
+            opened = page.evaluate(script)
+            if not (opened or {}).get("opened"):
+                return
+            page.wait_for_timeout(700)
+            if page.evaluate(chooser):
+                self.counters["comment_filter_set_to_all"] += 1
+                page.wait_for_timeout(1500)
+        except Exception as exc:
+            log.debug("Comment ordering unchanged: %s", exc)
+
     def _harvest_one_post(self, page, post: FacebookPost) -> None:
         self._permalink_post_id = post.post_id
         try:
@@ -1838,21 +1882,29 @@ class FacebookCaptureSession(RecordingSession):
         try:
             page.wait_for_timeout(1500)
             self._process_media_queue(budget=6)
+            self._show_all_comments(page)
             wanted = self.config.max_comments_per_post
             stalled = 0
-            for _ in range(40):
-                collected = self._comment_counts.get(post.post_id, 0)
-                if collected >= wanted or stalled >= 3:
+            for _ in range(60):
+                collected = len(self.archive.comments)
+                if (self._comment_counts.get(post.post_id, 0) >= wanted
+                        or stalled >= 5):
                     break
                 if self._closed or self._stop_requested_during_harvest():
                     break
                 clicked = self._expand_comments(page)
+                # Comments arrive on scroll as well as on click, and the
+                # thread is usually below the fold on a permalink.
+                try:
+                    page.evaluate(
+                        "() => window.scrollBy({top: window.innerHeight * 0.8,"
+                        " left: 0, behavior: 'auto'})")
+                except Exception:
+                    pass
                 page.wait_for_timeout(1200)
-                if self._comment_counts.get(post.post_id, 0) > collected:
+                if len(self.archive.comments) > collected:
                     stalled = 0
-                else:
-                    stalled += 1
-                if not clicked:
+                elif not clicked:
                     stalled += 1
         except Exception as exc:
             self.counters["comment_page_failures"] += 1
