@@ -917,6 +917,92 @@ class FieldSpellingTests(unittest.TestCase):
         self.assertEqual(len(comments), 25)
 
 
+POST_URL = ("https://www.facebook.com/Yusuffali.MA/posts/i-am-thankful-to-hh"
+            "-sheikh-tamim-bin-hamad/1593564465471991")
+
+
+class SinglePostTargetTests(SessionTestCase):
+    """A post permalink is not a timeline.
+
+    Facebook shows the Page's other posts beneath a permalink, so scrolling
+    one as though it were a Page collected those neighbours and their
+    comments -- content from a different capture than the one requested.
+    """
+
+    def test_a_post_url_is_recognised(self):
+        config = FacebookCaptureConfig.from_dict(
+            {"page_url": POST_URL, "mode": "date_range",
+             "from_date": "2026-01-01"})
+
+        self.assertEqual(config.target_kind, "post")
+        self.assertEqual(config.mode, "single_post")
+        self.assertEqual(config.target_post_id, "1593564465471991")
+
+    def test_a_page_url_is_still_a_page(self):
+        config = FacebookCaptureConfig.from_dict(
+            {"page_url": PAGE, "mode": "latest_n", "latest_n": 20})
+
+        self.assertEqual(config.target_kind, "page")
+        self.assertEqual(config.mode, "latest_n")
+
+    def test_query_style_post_urls_are_recognised(self):
+        for url, expected in (
+            ("https://www.facebook.com/photo?fbid=99887766&set=a.123", "99887766"),
+            ("https://www.facebook.com/permalink.php?story_fbid=555&id=1", "555"),
+            ("https://www.facebook.com/page/videos/778899", "778899"),
+        ):
+            with self.subTest(url=url):
+                config = FacebookCaptureConfig.from_dict({"page_url": url})
+                self.assertEqual(config.target_kind, "post")
+                self.assertEqual(config.target_post_id, expected)
+
+    def test_only_the_requested_post_is_exported(self):
+        session = make_session(self.tmp, page_url=POST_URL)
+        session._consider_post(post("1593564465471991",
+                                    date="2026-05-01T09:00:00Z"))
+        session._consider_post(post("999", date="2026-04-01T09:00:00Z"))
+
+        self.assertEqual(list(session.archive.posts), ["1593564465471991"])
+        self.assertEqual(session.exclusions["not_the_requested_post"], 1)
+
+    def test_a_neighbouring_posts_comments_are_refused(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True)
+        session._consider_comment(FacebookComment(
+            comment_id="mine", text="on the requested post",
+            parent_post_id="1593564465471991"))
+        session._consider_comment(FacebookComment(
+            comment_id="theirs", text="on another post",
+            parent_post_id="999"))
+
+        self.assertEqual(list(session.archive.comments), ["mine"])
+        self.assertEqual(session.exclusions["comment_on_another_post"], 1)
+
+    def test_the_capture_reads_the_post_then_stops(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=False)
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertEqual(session._pending_stop[0], "single_post_captured")
+
+    def test_the_post_is_read_only_once(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=False)
+        page = _FakePage(url=POST_URL)
+        session._capture_single_post(page)
+        session._pending_stop = None
+        session._capture_single_post(page)
+
+        self.assertIsNone(session._pending_stop)
+
+    def test_the_mode_is_described_for_the_curator(self):
+        session = make_session(self.tmp, page_url=POST_URL)
+        session._maybe_auto_start(_FakePage(url=POST_URL))
+
+        self.assertIn("this post and its comments", session.phase_detail)
+
+
 class GraphQLDecodingTests(unittest.TestCase):
     def test_anti_json_prefix_is_stripped(self):
         self.assertEqual(decode_graphql_documents(b'for (;;);{"a":1}'),

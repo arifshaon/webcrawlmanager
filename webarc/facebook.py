@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 
 BLOCKED = "blocked"
 FACEBOOK_MODES = {
+    "single_post",
     "date_range",
     "latest_n",
     "until_stopped",
@@ -61,6 +62,8 @@ def _readable_day(value: object) -> str:
 def _mode_summary(config: "FacebookCaptureConfig") -> str:
     """One sentence naming what this capture will do, for the curator."""
     mode = config.mode
+    if mode == "single_post":
+        return "Collecting this post and its comments"
     if mode == "date_range":
         span = config.from_date or "the earliest post"
         return (f"Collecting posts back to {span[:10]}"
@@ -120,11 +123,13 @@ _AUTH_PATH_MARKERS = (
 
 
 def canonical_facebook_page_url(value: object) -> str:
-    """Validate and normalise an explicit Facebook Page URL.
+    """Validate and normalise a Facebook capture target.
 
-    URL shape cannot distinguish every vanity-named Page from a personal
-    profile. Obvious profile/non-Page routes are rejected here; the GraphQL
-    root ``__typename`` is checked again after the visible browser loads.
+    Accepts a Page URL or a single post URL, keeping only the query keys that
+    identify which post is meant. URL shape cannot distinguish every
+    vanity-named Page from a personal profile, so obvious profile/non-Page
+    routes are rejected here and the GraphQL root ``__typename`` is checked
+    again once the visible browser loads.
     """
     raw = str(value or "").strip()
     parts = urlsplit(raw)
@@ -140,7 +145,13 @@ def canonical_facebook_page_url(value: object) -> str:
             "Facebook capture supports Pages only; personal profiles, groups "
             "and other Facebook surfaces are not accepted."
         )
-    return urlunsplit(("https", "www.facebook.com", path, "", ""))
+    query = ""
+    if facebook_target_kind(raw) == "post":
+        kept = [(key, value) for key, value in parse_qsl(parts.query or "",
+                                                         keep_blank_values=False)
+                if key.lower() in _POST_QUERY_KEYS]
+        query = urlencode(kept)
+    return urlunsplit(("https", "www.facebook.com", path, query, ""))
 
 
 def _page_path_segment(url: str) -> str:
@@ -173,6 +184,56 @@ def _root_identity_segments(root: dict) -> set[str]:
         if segment:
             segments.add(segment)
     return segments
+
+
+_POST_PATH_MARKERS = ("/posts/", "/permalink/", "/permalink.php", "/videos/",
+                      "/photo", "/story.php", "/watch", "/reel/", "/groups/")
+# Query keys that identify which post a URL names. They have to survive
+# canonicalisation: the QNL comment workflow copies photo?fbid=... URLs, and
+# stripping the query leaves nothing to tell one post from another.
+_POST_QUERY_KEYS = ("fbid", "story_fbid", "v", "id", "set")
+
+
+def facebook_target_kind(url: str) -> str:
+    """Whether a URL names one post or a whole Page.
+
+    A post permalink is not a timeline. Scrolling one collects the related
+    posts Facebook shows beneath it, and their comments, which belong to a
+    different capture than the one that was asked for.
+    """
+    parts = urlsplit(str(url or ""))
+    path = (parts.path or "").lower()
+    query = (parts.query or "").lower()
+    if "/groups/" in path:
+        # Groups are a different surface with different access rules.
+        return "page"
+    if any(marker in path for marker in _POST_PATH_MARKERS):
+        return "post"
+    if any(f"{key}=" in query for key in ("fbid", "story_fbid")):
+        return "post"
+    return "page"
+
+
+def facebook_post_id_from_url(url: str) -> Optional[str]:
+    """The post's own identifier, so a capture can tell it from its neighbours."""
+    parts = urlsplit(str(url or ""))
+    query = parse_qs(parts.query or "")
+    for key in ("story_fbid", "fbid", "post_id", "v"):
+        values = query.get(key) or []
+        if values and str(values[0]).strip():
+            return str(values[0]).strip()
+    segments = [segment for segment in (parts.path or "").split("/") if segment]
+    for segment in reversed(segments):
+        if segment.isdigit():
+            return segment
+    # A slug-only permalink still identifies the post; keep the last segment
+    # so the capture has something to match against.
+    for marker in ("posts", "permalink", "videos"):
+        if marker in segments:
+            index = segments.index(marker)
+            if index + 1 < len(segments):
+                return segments[index + 1]
+    return None
 
 
 def facebook_page_key(url: str) -> str:
@@ -840,6 +901,8 @@ class FacebookCaptureConfig:
     capture_media: bool = True
     write_warc: bool = True
     auto_start: bool = True
+    target_kind: str = "page"
+    target_post_id: Optional[str] = None
     include_comments: bool = False
     max_comments_per_post: int = 25
     include_replies: bool = False
@@ -870,7 +933,12 @@ class FacebookCaptureConfig:
                 raise ValueError("Latest N must be a whole number.") from exc
             if not 1 <= latest_n <= 100_000:
                 raise ValueError("Latest N must be between 1 and 100,000.")
-        if mode == "date_range" and not from_date:
+        target_kind = facebook_target_kind(page_url)
+        if target_kind == "post":
+            # One post has nothing to page through, so the stopping modes do
+            # not apply: the capture is that post and its comments.
+            mode = "single_post"
+        elif mode == "date_range" and not from_date:
             raise ValueError("Date range mode requires a From date.")
         if mode == "since_last" and not raw.get("prior_newest_post_date"):
             raise ValueError("No previous capture date is available for this Page.")
@@ -900,6 +968,8 @@ class FacebookCaptureConfig:
             capture_media=bool(raw.get("capture_media", True)),
             write_warc=bool(raw.get("write_warc", True)),
             auto_start=bool(raw.get("auto_start", True)),
+            target_kind=target_kind,
+            target_post_id=facebook_post_id_from_url(page_url),
             include_comments=bool(raw.get("include_comments", False)),
             max_comments_per_post=maximum,
             include_replies=bool(raw.get("include_replies", False)),
@@ -1242,6 +1312,7 @@ class FacebookCaptureSession(RecordingSession):
         self._last_checkpoint_at = 0.0
         self._profile_rejected = False
         self._exhaustion_notified = False
+        self._single_post_done = False
         self._page_segment = _page_path_segment(config.page_url)
         # Media the browser already fetched, so an explicit fetch does not
         # duplicate it, plus the queue of media still to be collected.
@@ -1533,9 +1604,24 @@ class FacebookCaptureSession(RecordingSession):
                     or post.post_id == self.config.prior_newest_post_id)
         return True
 
+    def _is_requested_post(self, post: FacebookPost) -> bool:
+        """Whether this record is the single post the capture asked for."""
+        wanted = self.config.target_post_id
+        if not wanted:
+            return True
+        if post.post_id == wanted:
+            return True
+        return wanted in (post.permalink_url or "")
+
     def _select_post(self, post: FacebookPost) -> tuple[bool, Optional[str]]:
         mode = self.config.mode
         date_value = post.created_time
+        if mode == "single_post":
+            # A post permalink also shows the Page's other posts underneath.
+            # They are preserved in WARC but are not what was requested.
+            if self._is_requested_post(post):
+                return True, None
+            return False, "not_the_requested_post"
         if self.config.continuation_of and post.post_id in self.known_post_ids:
             return False, "already_captured_before_continuation"
         if mode == "since_last":
@@ -1611,7 +1697,14 @@ class FacebookCaptureSession(RecordingSession):
         if comment.depth > 0 and not self.config.include_replies:
             self.exclusions["replies_not_requested"] += 1
             return
-        if self._permalink_post_id:
+        if self.config.mode == "single_post":
+            target = self.config.target_post_id
+            parent = comment.parent_post_id or self._permalink_post_id
+            if target and parent and target not in (parent, self._permalink_post_id):
+                self.exclusions["comment_on_another_post"] += 1
+                return
+            comment.parent_post_id = target or parent
+        elif self._permalink_post_id:
             # Found while that post's own permalink was open, so it is that
             # post's comment. Facebook labels comments with feedback ids that
             # need not match the post id, and trusting those split one post's
@@ -1783,7 +1876,8 @@ class FacebookCaptureSession(RecordingSession):
         are actually paginated. Runs once the scrolling phase has finished, so
         it does not disturb the feed's scroll position.
         """
-        if self._harvest_done or not self.config.include_comments:
+        if (self._harvest_done or not self.config.include_comments
+                or self.config.mode == "single_post"):
             return
         self._harvest_done = True
         targets = [post for post in self.archive.posts.values()
@@ -1939,38 +2033,70 @@ class FacebookCaptureSession(RecordingSession):
             self._permalink_post_id = None
             return
         try:
-            page.wait_for_timeout(1500)
-            self._process_media_queue(budget=6)
-            self._show_all_comments(page)
-            wanted = self.config.max_comments_per_post
-            stalled = 0
-            for _ in range(60):
-                collected = len(self.archive.comments)
-                if (self._comment_counts.get(post.post_id, 0) >= wanted
-                        or stalled >= 5):
-                    break
-                if self._closed or self._stop_requested_during_harvest():
-                    break
-                clicked = self._expand_comments(page)
-                # Comments arrive on scroll as well as on click, and the
-                # thread is usually below the fold on a permalink.
-                try:
-                    page.evaluate(
-                        "() => window.scrollBy({top: window.innerHeight * 0.8,"
-                        " left: 0, behavior: 'auto'})")
-                except Exception:
-                    pass
-                page.wait_for_timeout(1200)
-                if len(self.archive.comments) > collected:
-                    stalled = 0
-                elif not clicked:
-                    stalled += 1
+            self._read_comment_thread(page, post.post_id)
         except Exception as exc:
             self.counters["comment_page_failures"] += 1
             self.archive.event("comment_expansion_failed",
                                post_id=post.post_id, error=str(exc))
         finally:
             self._permalink_post_id = None
+
+    def _read_comment_thread(self, page, post_id: str) -> None:
+        """Expand one post's thread on the page already showing it."""
+        page.wait_for_timeout(1500)
+        self._process_media_queue(budget=6)
+        self._show_all_comments(page)
+        wanted = self.config.max_comments_per_post
+        stalled = 0
+        for _ in range(60):
+            collected = len(self.archive.comments)
+            if (self._comment_counts.get(post_id, 0) >= wanted
+                    or stalled >= 5):
+                break
+            if self._closed or self._stop_requested_during_harvest():
+                break
+            clicked = self._expand_comments(page)
+            # Comments arrive on scroll as well as on click, and the thread
+            # is usually below the fold on a permalink.
+            try:
+                page.evaluate(
+                    "() => window.scrollBy({top: window.innerHeight * 0.8,"
+                    " left: 0, behavior: 'auto'})")
+            except Exception:
+                pass
+            page.wait_for_timeout(1200)
+            if len(self.archive.comments) > collected:
+                stalled = 0
+            elif not clicked:
+                stalled += 1
+
+    def _capture_single_post(self, page) -> None:
+        """Read the one post this capture was given, then finish.
+
+        The browser is already showing it, so there is no timeline to scroll:
+        scrolling a post permalink only pulls in the Page's other posts and
+        their comments, which is not what was asked for.
+        """
+        if self._single_post_done:
+            return
+        self._single_post_done = True
+        self._permalink_post_id = self.config.target_post_id
+        self.phase_detail = "Reading this post and expanding its comments."
+        self._state_dirty = True
+        try:
+            if self.config.include_comments:
+                self._read_comment_thread(
+                    page, self.config.target_post_id or "")
+            else:
+                page.wait_for_timeout(2500)
+                self._process_media_queue(budget=6)
+        except Exception as exc:
+            self.counters["comment_page_failures"] += 1
+            self.archive.event("single_post_read_failed", error=str(exc))
+        finally:
+            self._permalink_post_id = None
+        self._request_stop("single_post_captured",
+                           "requested_post_and_comments_read")
 
     def _expand_comments(self, page) -> int:
         """Click whatever exposes more comments, returning how many controls
@@ -2257,6 +2383,8 @@ class FacebookCaptureSession(RecordingSession):
             "it reached the previous capture of this Page",
         "end_of_available_timeline":
             "Facebook stopped offering older posts",
+        "single_post_captured":
+            "the requested post and its comments were read",
         "curator_stop": "you selected Stop and save",
         "browser_closed": "the browser was closed",
         "unsupported_personal_profile":
@@ -2378,6 +2506,8 @@ class FacebookCaptureSession(RecordingSession):
                 "page_key": self.config.page_key,
                 "page_name": self.page_name,
                 "target_type": self.target_type,
+                "target_kind": self.config.target_kind,
+                "target_post_id": self.config.target_post_id,
                 "mode": self.config.mode,
                 "parameters": {
                     "from": self.config.from_date,
@@ -2677,7 +2807,10 @@ class FacebookCaptureSession(RecordingSession):
                     verification = self._detect_verification(active)
                     if verification and self.state == RECORDING:
                         self._enter_blocked(verification)
-                    if self.state == RECORDING and now >= self._next_scroll_at:
+                    if (self.state == RECORDING
+                            and self.config.mode == "single_post"):
+                        self._capture_single_post(active)
+                    elif self.state == RECORDING and now >= self._next_scroll_at:
                         self._scroll_once(active)
                     elif self.state in (PAUSED, BLOCKED) \
                             and now - self._last_dom_check >= 2.0:
