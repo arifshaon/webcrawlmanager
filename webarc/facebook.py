@@ -2188,11 +2188,47 @@ class FacebookCaptureSession(RecordingSession):
             "requested_range_satisfied": satisfied,
         }
 
+    _STOP_REASONS = {
+        "date_range_boundary_reached": "the requested date range was covered",
+        "latest_n_reached": "the requested number of posts was reached",
+        "previous_capture_boundary_reached":
+            "it reached the previous capture of this Page",
+        "end_of_available_timeline":
+            "Facebook stopped offering older posts",
+        "curator_stop": "you selected Stop and save",
+        "browser_closed": "the browser was closed",
+        "unsupported_personal_profile":
+            "the requested URL is a personal profile, not a Page",
+        "capture_failed": "the capture failed",
+    }
+
+    def _closing_summary(self) -> str:
+        """What a finished capture leaves on screen.
+
+        The list shows this line long after the run ends, so it says what was
+        collected and why it stopped rather than describing a step that is
+        over.
+        """
+        posts = len(self.archive.posts)
+        comments = len(self.archive.comments)
+        media = len(self.archive.media_index)
+        collected = f"{posts} post{'' if posts == 1 else 's'}"
+        if self.config.include_comments or comments:
+            collected += f", {comments} comment{'' if comments == 1 else 's'}"
+        if self.config.capture_media or media:
+            collected += f", {media} media file{'' if media == 1 else 's'}"
+        because = self._STOP_REASONS.get(self.stop_reason or "")
+        if not because and self.stop_reason:
+            because = str(self.stop_reason).replace("_", " ")
+        return (f"Collected {collected}."
+                + (f" Stopped because {because}." if because else ""))
+
     def _progress_details(self) -> dict:
         coverage = self._coverage()
         return {
             "phase": (
-                "verification_required" if self.state == BLOCKED
+                "finished" if self.state == STOPPED
+                else "verification_required" if self.state == BLOCKED
                 else "scrolling" if self.state == RECORDING
                 else "waiting_to_start" if not self.started_scrolling
                 else "scrolling_paused"
@@ -2575,6 +2611,7 @@ class FacebookCaptureSession(RecordingSession):
             self.stop_reason = "browser_closed" if self._closed else "stopped"
             self.stop_rule = self.stop_rule or "session_loop_ended"
         self.state = STOPPED
+        self.phase_detail = self._closing_summary()
         self._report_facebook()
         self._checkpoint(force=True)
         if self.failure:

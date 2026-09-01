@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 
 from webarc.config import BrowserConfig
-from webarc.facebook import (BLOCKED, PAUSED, RECORDING,
+from webarc.facebook import (BLOCKED, PAUSED, RECORDING, STOPPED,
                              FacebookCaptureConfig, FacebookCaptureSession,
                              FacebookComment, FacebookPost,
                              canonical_facebook_page_url,
@@ -723,6 +723,62 @@ class AutoStartTests(SessionTestCase):
         session._maybe_auto_start(_FakePage())
 
         self.assertEqual(session.state, PAUSED)
+
+
+class FinishedCaptureTests(SessionTestCase):
+    """What a finished capture reports.
+
+    The list keeps showing this line long after the run ends, so a completed
+    capture must not describe itself as paused, nor leave behind a note about
+    a step that is over.
+    """
+
+    def finish(self, session, reason="date_range_boundary_reached"):
+        session.stop_reason = reason
+        session.state = STOPPED
+        session.phase_detail = session._closing_summary()
+        return session._progress_details()
+
+    def test_a_finished_capture_is_not_reported_as_paused(self):
+        session = make_session(self.tmp)
+        session.started_scrolling = True
+
+        details = self.finish(session)
+
+        self.assertEqual(details["phase"], "finished")
+
+    def test_the_summary_says_what_was_collected(self):
+        session = make_session(self.tmp, include_comments=True)
+        session._consider_post(post("1", date="2026-05-01T09:00:00Z"))
+        session._permalink_post_id = "1"
+        session._consider_comment(
+            FacebookComment(comment_id="c1", text="hi"))
+
+        details = self.finish(session)
+
+        self.assertIn("1 post", details["message"])
+        self.assertIn("1 comment", details["message"])
+
+    def test_the_summary_says_why_it_stopped(self):
+        session = make_session(self.tmp)
+        details = self.finish(session)
+        self.assertIn("requested date range was covered", details["message"])
+
+    def test_a_curator_stop_is_described_plainly(self):
+        session = make_session(self.tmp)
+        details = self.finish(session, reason="curator_stop")
+        self.assertIn("you selected Stop and save", details["message"])
+
+    def test_an_unknown_stop_reason_is_still_readable(self):
+        session = make_session(self.tmp)
+        details = self.finish(session, reason="some_new_reason")
+        self.assertIn("some new reason", details["message"])
+        self.assertNotIn("_", details["message"].split("because")[-1])
+
+    def test_a_running_capture_is_still_reported_as_scrolling(self):
+        session = make_session(self.tmp)
+        session.state = RECORDING
+        self.assertEqual(session._progress_details()["phase"], "scrolling")
 
 
 class GraphQLDecodingTests(unittest.TestCase):

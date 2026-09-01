@@ -28,6 +28,7 @@ function facebookPhaseLabel(phase) {
     scrolling: "Collecting",
     scrolling_paused: "Paused",
     verification_required: "Needs you",
+    finished: "Finished",
   })[String(phase || "")] || "Status";
 }
 
