@@ -591,6 +591,20 @@ class CommentHarvestTests(SessionTestCase):
         self.assertFalse(session._harvest_done)
         self.assertEqual(session.counters["posts_comment_harvested"], 0)
 
+    def test_a_harvest_with_nowhere_to_go_says_so(self):
+        session = make_session(self.tmp, include_comments=True)
+        session._consider_post(post("1", date="2026-05-01T09:00:00Z"))
+
+        class _NoPages:
+            def new_page(self):
+                raise AssertionError("no post has a permalink to visit")
+
+        session._harvest_comments(_NoPages())
+
+        self.assertIn("No comments collected", session.phase_detail)
+        self.assertEqual(
+            session._progress_details()["posts_without_permalink"], 1)
+
     def test_posts_without_a_permalink_are_reported(self):
         session = make_session(self.tmp, include_comments=True)
         session._consider_post(post("1", date="2026-05-01T09:00:00Z"))
@@ -829,6 +843,78 @@ class ScrollProgressTests(SessionTestCase):
 
         self.assertEqual(details["graphql_responses"], 9)
         self.assertEqual(details["graphql_errors"], 1)
+
+
+class FieldSpellingTests(unittest.TestCase):
+    """Facebook mixes naming conventions inside one payload.
+
+    wwwURL sits beside creation_time, legacyFBID beside post_id. Matching a
+    field only by its exact spelling missed the same field written another
+    way -- and because the permalink is what the comment pass navigates to,
+    missing wwwURL meant no post had a permalink, every post was skipped, and
+    the only comments captured were the one or two Facebook previews in the
+    feed.
+    """
+
+    SEGMENT = "ucalgaryqatar"
+    LINK = "https://www.facebook.com/ucalgaryqatar/posts/12345"
+
+    def story(self, **fields):
+        node = {"__typename": "Story", "message": {"text": "A post"}}
+        node.update(fields)
+        return {"data": {"node": {
+            "__typename": "Page", "name": "UCQ",
+            "timeline_feed_units": {"edges": [{"node": node}]}}}}
+
+    def only_post(self, document):
+        posts, _c, _t, _n = extract_graphql_records([document], self.SEGMENT)
+        self.assertEqual(len(posts), 1, "expected exactly one post")
+        return posts[0]
+
+    def test_permalink_is_found_however_it_is_spelled(self):
+        for key in ("wwwURL", "www_url", "permalink_url", "permalinkURL",
+                    "url", "storyURL", "story_url"):
+            with self.subTest(key=key):
+                found = self.only_post(self.story(
+                    post_id="12345", creation_time=1756000000, **{key: self.LINK}))
+                self.assertEqual(found.permalink_url, self.LINK)
+
+    def test_identifiers_and_times_are_found_in_camel_case(self):
+        found = self.only_post(self.story(
+            postID="999", creationTime=1756000000, wwwURL=self.LINK))
+
+        self.assertEqual(found.post_id, "999")
+        self.assertTrue(found.created_time)
+        self.assertEqual(found.permalink_url, self.LINK)
+
+    def test_comments_are_found_in_camel_case(self):
+        edges = [{"node": {"legacyFBID": str(1000 + n),
+                           "body": {"text": f"Comment {n}"},
+                           "author": {"id": str(900 + n), "name": f"P{n}"},
+                           "createdTime": 1756000000 + n, "depth": 0}}
+                 for n in range(5)]
+        document = {"data": {"node": {"comment_rendering_instance": {
+            "comments": {"edges": edges}}}}}
+
+        _posts, comments, _t, _n = extract_graphql_records(
+            [document], self.SEGMENT)
+
+        self.assertEqual(len(comments), 5)
+        self.assertTrue(all(c.created_time for c in comments))
+        self.assertTrue(all(c.author_name for c in comments))
+
+    def test_a_whole_comment_page_is_extracted_not_a_preview(self):
+        edges = [{"node": {"legacy_fbid": str(1000 + n),
+                           "body": {"text": f"Comment {n}"},
+                           "created_time": 1756000000 + n, "depth": 0}}
+                 for n in range(25)]
+        document = {"data": {"node": {"comment_rendering_instance": {
+            "comments": {"edges": edges, "total_count": 42}}}}}
+
+        _posts, comments, _t, _n = extract_graphql_records(
+            [document], self.SEGMENT)
+
+        self.assertEqual(len(comments), 25)
 
 
 class GraphQLDecodingTests(unittest.TestCase):

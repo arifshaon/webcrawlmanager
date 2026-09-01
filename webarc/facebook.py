@@ -414,17 +414,49 @@ def _walk(value: object, path: tuple[str, ...] = (),
             yield from _walk(child, (*path, str(index)), ancestors)
 
 
+def _norm_key(key: object) -> str:
+    """Compare field names ignoring case and underscores.
+
+    Facebook mixes naming conventions within one payload -- wwwURL beside
+    creation_time, legacy_fbid beside feedbackTargetID -- so matching a field
+    by its exact spelling misses the same field written another way.
+    """
+    return str(key).replace("_", "").lower()
+
+
+def _lookup(obj: dict, keys: Iterable[str]) -> object:
+    """First present value among ``keys``, in priority order, spelling-tolerant."""
+    keys = list(keys)
+    for key in keys:
+        value = obj.get(key)
+        if value not in (None, "", [], {}):
+            return value
+    normalised: dict[str, object] = {}
+    for key, value in obj.items():
+        if value not in (None, "", [], {}):
+            normalised.setdefault(_norm_key(key), value)
+    for key in keys:
+        value = normalised.get(_norm_key(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _has_key(obj: dict, keys: Iterable[str]) -> bool:
+    wanted = {_norm_key(key) for key in keys}
+    return any(_norm_key(key) in wanted for key in obj)
+
+
 def _find_value(obj: dict, keys: Iterable[str], max_depth: int = 3) -> object:
-    wanted = set(keys)
+    wanted = list(keys)
     queue: deque[tuple[object, int]] = deque([(obj, 0)])
     while queue:
         current, depth = queue.popleft()
         if not isinstance(current, dict):
             continue
-        for key in wanted:
-            value = current.get(key)
-            if value not in (None, "", [], {}):
-                return value
+        found = _lookup(current, wanted)
+        if found is not None:
+            return found
         if depth >= max_depth:
             continue
         for value in current.values():
@@ -439,7 +471,7 @@ def _find_value(obj: dict, keys: Iterable[str], max_depth: int = 3) -> object:
 
 def _identifier(obj: dict, keys: Iterable[str]) -> Optional[str]:
     for key in keys:
-        value = obj.get(key)
+        value = _lookup(obj, (key,))
         if isinstance(value, (str, int)) and str(value).strip():
             return str(value).strip()
     return None
@@ -469,7 +501,7 @@ def _permalink(obj: dict) -> Optional[str]:
     fallback: list[str] = []
     for current, _path, _ancestors in _walk(obj):
         for key in _PERMALINK_KEYS:
-            value = current.get(key)
+            value = _lookup(current, (key,))
             if not isinstance(value, str) or not value.startswith("http"):
                 continue
             if any(part in value for part in ("/posts/", "story_fbid=",
@@ -507,7 +539,7 @@ def _actor(obj: dict) -> tuple[Optional[str], Optional[str]]:
 def _is_pinned(obj: dict, ancestors: tuple[dict, ...]) -> bool:
     for candidate in (obj, *reversed(ancestors[-4:])):
         for key in _PIN_KEYS:
-            value = candidate.get(key)
+            value = _lookup(candidate, (key,))
             if value is True or (isinstance(value, str)
                                  and value.lower() in ("true", "pinned")):
                 return True
@@ -569,7 +601,7 @@ def _timeline_item(path: tuple[str, ...], obj: dict) -> bool:
     has_feed_path = any(marker in joined for marker in (
         "timeline", "feed_units", "timeline_feed", "edges",
     ))
-    has_direct_identity = any(key in obj for key in _POST_ID_KEYS[:-1])
+    has_direct_identity = _has_key(obj, _POST_ID_KEYS[:-1])
     typename = str(obj.get("__typename") or "").lower()
     return has_feed_path and (has_direct_identity or "story" in typename
                               or "post" in typename)
@@ -629,7 +661,7 @@ def _looks_like_comment(obj: dict, path: tuple[str, ...]) -> bool:
     return has_text and (
         "comment" in typename
         or "comment_depth" in obj
-        or ("comments" in joined and any(k in obj for k in _COMMENT_ID_KEYS))
+        or ("comments" in joined and _has_key(obj, _COMMENT_ID_KEYS))
     )
 
 
@@ -1760,7 +1792,24 @@ class FacebookCaptureSession(RecordingSession):
         if without:
             self.counters["posts_without_permalink"] += without
         if not targets:
+            # Without permalinks there is nowhere to go, and the only comments
+            # in the capture are the one or two Facebook previews in the feed.
+            # Say so: silence here reads as "this Page has few comments".
+            self.phase_detail = (
+                f"No comments collected: none of the {len(self.archive.posts)} "
+                "captured posts carried a link to open. Comments cannot be "
+                "read from the feed alone."
+            )
+            self._state_dirty = True
+            self.archive.event("comment_harvest_impossible",
+                               posts=len(self.archive.posts))
+            log.warning("Facebook comment harvest skipped: no captured post "
+                        "has a permalink to open")
             return
+        if without:
+            log.warning("%d of %d captured posts have no permalink and will "
+                        "contribute no comments", without,
+                        len(self.archive.posts))
 
         self.archive.event("comment_harvest_started", posts=len(targets),
                            maximum_per_post=self.config.max_comments_per_post,
@@ -2290,6 +2339,8 @@ class FacebookCaptureSession(RecordingSession):
             "observed_newest_post": coverage["observed_newest_post"],
             "observed_oldest_post": coverage["observed_oldest_post"],
             "requested_range_satisfied": coverage["requested_range_satisfied"],
+            "posts_without_permalink": self.counters.get(
+                "posts_without_permalink", 0),
             "graphql_responses": self.counters.get("graphql_responses", 0),
             "graphql_errors": self.counters.get("graphql_errors", 0),
             "graphql_unparsed": self.counters.get("graphql_unparsed", 0),
