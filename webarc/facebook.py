@@ -4,8 +4,9 @@ The Facebook collector deliberately separates two preservation layers:
 
 * every eligible browser exchange is written to WARC, including traffic seen
   while scrolling is paused and posts outside a requested export range;
-* posts and comments recognised in Facebook GraphQL responses are normalised
-  to JSONL/CSV for discovery and review.
+* posts and comments recognised in Facebook GraphQL responses, and in the
+  JSON Facebook renders into the page itself, are normalised to JSONL/CSV
+  for discovery and review.
 
 Facebook changes its internal GraphQL schemas frequently. Extraction is
 therefore evidence-led and defensive: records retain their source path and
@@ -15,6 +16,7 @@ it records the exact stopping rule, pagination failures and detected gaps.
 
 from __future__ import annotations
 
+import base64
 import csv
 import hashlib
 import json
@@ -681,15 +683,25 @@ def _post_aliases(obj: dict, permalink: Optional[str]) -> list[str]:
     return found
 
 
+_RESPONSE_ROOT_SUFFIXES = ("data.node", "data.node_v2", "data.story",
+                           "data.post", "data.story_card")
+
+
 def _timeline_item(path: tuple[str, ...], obj: dict) -> bool:
     joined = ".".join(path).lower()
     has_feed_path = any(marker in joined for marker in (
         "timeline", "feed_units", "timeline_feed", "edges",
     ))
+    # A post served as the subject of its own response -- what a permalink
+    # returns -- sits at the response root rather than inside a feed. It is
+    # the requested post, which is a stronger claim than sitting in a feed,
+    # so requiring a feed path discarded exactly the post that was asked for.
+    is_response_root = any(joined.endswith(suffix)
+                           for suffix in _RESPONSE_ROOT_SUFFIXES)
     has_direct_identity = _has_key(obj, _POST_ID_KEYS[:-1])
     typename = str(obj.get("__typename") or "").lower()
-    return has_feed_path and (has_direct_identity or "story" in typename
-                              or "post" in typename)
+    return (has_feed_path or is_response_root) and (
+        has_direct_identity or "story" in typename or "post" in typename)
 
 
 @dataclass
@@ -727,6 +739,9 @@ class FacebookComment:
     text: Optional[str] = None
     depth: int = 0
     source_path: Optional[str] = None
+    # A comment whose whole content is a GIF or a photo has no text at all;
+    # without its media the exported record says nothing.
+    media_urls: list[str] = field(default_factory=list)
 
 
 def _merge_post(existing: FacebookPost, incoming: FacebookPost) -> FacebookPost:
@@ -746,15 +761,61 @@ def _merge_post(existing: FacebookPost, incoming: FacebookPost) -> FacebookPost:
     return existing
 
 
+_RELAY_ID_RE = re.compile(r"^[A-Za-z0-9+/]{12,}={0,2}$")
+
+
+def _relay_global_id(value: object) -> Optional[tuple[str, str]]:
+    """Decode a Relay global id into the kind of thing it names and its id.
+
+    Facebook labels the same comment twice in one payload: once by its legacy
+    numeric id on the comment node, and once by a base64 global id such as
+    ``comment:<post>_<comment>`` on a renderer that wraps it. Read literally
+    those are two comments, one of them empty. It also uses the same encoding
+    for stories, so the decoded prefix says whether an object is a comment at
+    all.
+    """
+    if not isinstance(value, str) or not _RELAY_ID_RE.match(value):
+        return None
+    try:
+        decoded = base64.b64decode(value + "=" * (-len(value) % 4)).decode(
+            "ascii")
+    except Exception:
+        return None
+    if decoded.startswith("comment:"):
+        tail = decoded.split(":", 1)[1].rsplit("_", 1)[-1]
+        return ("comment", tail) if tail else None
+    if decoded.startswith("feedback:"):
+        # A comment names the post it hangs off by the post's feedback id,
+        # encoded. Left encoded it matches no post, and the comment can only
+        # be attributed by which permalink happened to be open at the time.
+        tail = decoded.split(":", 1)[1].split("_", 1)[0]
+        return ("post", tail) if tail else None
+    if decoded.startswith("S:"):
+        tail = decoded.rsplit(":", 1)[-1]
+        return ("story", tail) if tail else None
+    return None
+
+
+_COMMENT_SUBSTANCE_KEYS = ("comment_depth", "body", "attachments",
+                           "author", "actor", "preferred_body")
+
+
 def _looks_like_comment(obj: dict, path: tuple[str, ...]) -> bool:
+    """Recognise a comment record by its own substance, not only its text.
+
+    A comment whose whole content is a GIF or a photo carries no message.
+    Requiring text misses it twice over: it is lost from the comment export,
+    and -- because such a node still carries an id under a feed path -- it is
+    then mistaken for a post, taking its media and its date with it.
+    """
     typename = str(obj.get("__typename") or "").lower()
     joined = ".".join(path).lower()
-    has_text = bool(_message_text(obj))
-    return has_text and (
-        "comment" in typename
-        or "comment_depth" in obj
-        or ("comments" in joined and _has_key(obj, _COMMENT_ID_KEYS))
-    )
+    if not (_has_key(obj, _COMMENT_ID_KEYS) or "comment_depth" in obj):
+        return False
+    named_comment = "comment" in typename or "comment_depth" in obj
+    if not (named_comment or "comments" in joined):
+        return False
+    return bool(_message_text(obj) or _has_key(obj, _COMMENT_SUBSTANCE_KEYS))
 
 
 def extract_graphql_records(
@@ -799,6 +860,14 @@ def extract_graphql_records(
                 comment_id = _identifier(obj, _COMMENT_ID_KEYS)
                 if not comment_id:
                     continue
+                global_id = _relay_global_id(comment_id)
+                if global_id is not None:
+                    kind, legacy = global_id
+                    if kind != "comment":
+                        # A story stub carried inside a comment -- the parent
+                        # post, repeated. It is not a comment of its own.
+                        continue
+                    comment_id = legacy
                 author_id, author_name = _actor(obj)
                 depth_raw = obj.get("comment_depth") or obj.get("depth") or 0
                 try:
@@ -818,6 +887,10 @@ def extract_graphql_records(
                         parent_post = _identifier(ancestor, _POST_ID_KEYS)
                         if parent_post:
                             break
+                parent_global = _relay_global_id(parent_post)
+                if parent_global is not None and parent_global[0] in (
+                        "post", "story"):
+                    parent_post = parent_global[1]
                 parent_comment = _identifier(obj, (
                     "parent_comment_id", "reply_parent_id",
                 ))
@@ -831,7 +904,16 @@ def extract_graphql_records(
                     text=_message_text(obj),
                     depth=depth,
                     source_path=".".join(path),
+                    media_urls=_media_urls(obj),
                 ))
+                continue
+
+            if any(_looks_like_comment(ancestor, ()) for ancestor in ancestors):
+                # Objects below a comment node -- composer plugins, attached
+                # stories -- carry a post_id but none of the post's own
+                # content, and inherit the *comment's* date from their
+                # ancestors. Minting a post from one produces a record that
+                # is wrong rather than merely thin.
                 continue
 
             typename = str(obj.get("__typename") or "").lower()
@@ -896,6 +978,36 @@ def decode_graphql_documents(body: bytes) -> list[object]:
             continue
         documents.append(value)
         position = end
+    return documents
+
+
+_EMBEDDED_JSON_RE = re.compile(
+    r'<script[^>]+type="application/json"[^>]*>(.*?)</script>',
+    re.DOTALL | re.IGNORECASE)
+
+
+def extract_embedded_documents(body: bytes) -> list[object]:
+    """Decode the JSON payloads Facebook embeds in a rendered HTML page.
+
+    A permalink page serves the post itself -- its text, date, permalink and
+    attachments -- inside the initial HTML document, and issues GraphQL
+    requests only for what arrives afterwards, such as further comments.
+    Reading only the GraphQL traffic therefore collects a post's comments
+    while missing the post they belong to.
+    """
+    try:
+        text = body.decode("utf-8", errors="replace")
+    except Exception:
+        return []
+    documents: list[object] = []
+    for block in _EMBEDDED_JSON_RE.findall(text):
+        block = block.strip()
+        if not block or block[0] not in "{[":
+            continue
+        try:
+            documents.append(json.loads(block))
+        except (json.JSONDecodeError, ValueError):
+            continue
     return documents
 
 
@@ -1045,7 +1157,8 @@ class FacebookArchive:
     ]
     COMMENT_FIELDS = [
         "comment_id", "created_time", "parent_post_id", "parent_comment_id",
-        "author_id", "author_name", "text", "depth", "source_path",
+        "author_id", "author_name", "text", "depth", "media_urls",
+        "source_path",
     ]
 
     def __init__(self, out_dir: Path):
@@ -1481,7 +1594,45 @@ class FacebookCaptureSession(RecordingSession):
                 )
                 log.warning("Facebook GraphQL extraction failed for %s: %s",
                             response.url, exc)
+        elif self._is_page_document(response):
+            try:
+                self._consume_document(response, body)
+            except Exception as exc:
+                self.counters["document_extraction_failures"] += 1
+                self.archive.event(
+                    "document_extraction_failed", url=response.url,
+                    error=str(exc),
+                )
+                log.warning("Facebook document extraction failed for %s: %s",
+                            response.url, exc)
         super()._write_exchange(response, body)
+
+    @staticmethod
+    def _is_page_document(response) -> bool:
+        """A rendered Facebook page, as opposed to its later XHR traffic."""
+        try:
+            if response.request.resource_type != "document":
+                return False
+        except Exception:
+            return False
+        if "facebook.com" not in response.url.lower():
+            return False
+        content_type = (response.headers.get("content-type", "") or "").lower()
+        return "html" in content_type
+
+    def _consume_document(self, response, body: bytes) -> None:
+        """Read the records Facebook renders into the page itself.
+
+        A single-post permalink is served with the post already in the HTML;
+        no GraphQL request ever carries it. Without this the capture sees the
+        comment traffic that follows and reports a post with no text, no
+        date, no permalink and no media.
+        """
+        documents = extract_embedded_documents(body)
+        if not documents:
+            return
+        self.counters["documents_mined"] += 1
+        self._ingest_records(documents)
 
     def _consume_graphql(self, response, body: bytes) -> None:
         self.counters["graphql_responses"] += 1
@@ -1506,6 +1657,9 @@ class FacebookCaptureSession(RecordingSession):
             self.counters["graphql_errors"] += error_count
             self.counters["pagination_failures"] += 1
             self.archive.event("graphql_payload_errors", count=error_count)
+        self._ingest_records(documents)
+
+    def _ingest_records(self, documents: list[object]) -> None:
         posts, comments, target_type, page_name = extract_graphql_records(
             documents, self._page_segment)
         if target_type:
@@ -1788,6 +1942,7 @@ class FacebookCaptureSession(RecordingSession):
         if self.archive.add_comment(comment):
             self._comment_counts[bucket] += 1
             self.counters["comments_exported"] += 1
+            self._queue_comment_media(comment)
 
     # -- page observation and automatic work -----------------------------
     def _on_frame_navigated(self, frame) -> None:
@@ -1887,6 +2042,16 @@ class FacebookCaptureSession(RecordingSession):
             # earlier response was discarded, because nothing yet said this
             # media belonged to a captured post.
             self._media_queue.append((post.post_id, url))
+
+    def _queue_comment_media(self, comment: FacebookComment) -> None:
+        """A GIF or photo comment's content is its media, so collect it too."""
+        if not self.config.capture_media:
+            return
+        for url in comment.media_urls:
+            if not url or url in self._media_wanted:
+                continue
+            self._media_wanted.add(url)
+            self._media_queue.append((f"comment-{comment.comment_id}", url))
 
     def _process_media_queue(self, budget: int = 3) -> None:
         """Fetch a few queued media objects, without stalling the scroll loop."""
@@ -2649,10 +2814,12 @@ class FacebookCaptureSession(RecordingSession):
                         "posts_without_permalink", 0),
                     "comments_exported": len(self.archive.comments),
                     "note": (
-                        "Comments are collected from each post's own "
-                        "permalink after scrolling ends, because a Page feed "
-                        "never exposes a full comment thread. A post with no "
-                        "permalink in its record cannot be visited."
+                        "Comments are read from the page as rendered and "
+                        "from the GraphQL traffic that follows, then from "
+                        "each post's own permalink after scrolling ends, "
+                        "because a Page feed never exposes a full comment "
+                        "thread. A post with no permalink in its record "
+                        "cannot be visited."
                     ),
                 },
                 "media": {
@@ -2664,9 +2831,10 @@ class FacebookCaptureSession(RecordingSession):
                         "media_fetch_failures", 0),
                     "outstanding_at_close": len(self._media_queue),
                     "note": (
-                        "Media referenced by captured posts is fetched during "
-                        "the run, while its signed URLs still resolve, in "
-                        "addition to whatever the browser loaded by itself."
+                        "Media referenced by captured posts and comments is "
+                        "fetched during the run, while its signed URLs still "
+                        "resolve, in addition to whatever the browser loaded "
+                        "by itself."
                     ),
                 },
             },

@@ -12,6 +12,7 @@ Everything here runs without a browser or any Facebook access.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +23,7 @@ from webarc.facebook import (BLOCKED, PAUSED, RECORDING, STOPPED,
                              FacebookComment, FacebookPost,
                              canonical_facebook_page_url,
                              decode_graphql_documents, extract_graphql_records,
+                             extract_embedded_documents,
                              _page_path_segment, _redact_post_data)
 
 PAGE = "https://www.facebook.com/qatarnationallibrary"
@@ -1096,6 +1098,158 @@ class MediaShapeTests(unittest.TestCase):
             "__typename": "Video",
             "playable_url": "https://video/e.mp4"}}]}),
             ["https://video/e.mp4"])
+
+
+class RenderedPageTests(unittest.TestCase):
+    """A permalink serves the post in the page, not over GraphQL.
+
+    Facebook renders a single post -- its text, date, permalink and photos --
+    into the initial HTML document, then uses GraphQL only for what comes
+    afterwards. A capture that reads GraphQL alone collects the post's
+    comments and reports the post itself as empty.
+    """
+
+    RENDERED = {'require': [['ScheduledServerJS', 'handle', None, [{'__bbox': {'require': [['RelayPrefetchedStreamCache', 'next', [], ['x', {'__bbox': {'result': {'data': {'node_v2': {'__typename': 'Story', 'post_id': '1593564465471991', 'creation_time': 1784000000, 'wwwURL': 'https://www.facebook.com/page/posts/pfbid02abc', 'message': {'text': 'I am thankful to H.H. Sheikh Tamim'}, 'attachments': [{'media': {'__typename': 'Photo', 'image': {'uri': 'https://scontent/photo.jpg'}}}]}}}}}]]]}}]]]}
+
+    def document(self, payload, wrapper='<script type="application/json" '
+                                        'data-sjs>%s</script>'):
+        return ("<!DOCTYPE html><html><body>"
+                + wrapper % json.dumps(payload)
+                + "</body></html>").encode("utf-8")
+
+    def test_embedded_payloads_are_decoded(self):
+        found = extract_embedded_documents(self.document({"a": 1}))
+
+        self.assertEqual(found, [{"a": 1}])
+
+    def test_a_page_with_no_embedded_json_yields_nothing(self):
+        self.assertEqual(
+            extract_embedded_documents(b"<html><body>hello</body></html>"), [])
+
+    def test_unparsable_blocks_are_skipped_not_fatal(self):
+        body = (b'<script type="application/json">{"good": 1}</script>'
+                b'<script type="application/json">{broken</script>')
+
+        self.assertEqual(extract_embedded_documents(body), [{"good": 1}])
+
+    def test_scripts_that_are_not_json_are_left_alone(self):
+        body = b'<script>var x = {"not": "a payload"};</script>'
+
+        self.assertEqual(extract_embedded_documents(body), [])
+
+    def test_the_rendered_post_is_captured_whole(self):
+        documents = extract_embedded_documents(self.document(self.RENDERED))
+        posts, _, _, _ = extract_graphql_records(documents)
+
+        self.assertEqual(len(posts), 1)
+        found = posts[0]
+        self.assertEqual(found.post_id, "1593564465471991")
+        self.assertIn("thankful", found.text)
+        self.assertTrue(found.created_time)
+        self.assertTrue(found.permalink_url)
+        self.assertEqual(found.media_urls, ["https://scontent/photo.jpg"])
+
+    def test_the_rendered_post_counts_as_a_timeline_post(self):
+        """A permalink serves the post at the response root, not in a feed."""
+        documents = extract_embedded_documents(self.document(self.RENDERED))
+        posts, _, _, _ = extract_graphql_records(documents)
+
+        self.assertTrue(posts[0].timeline_item)
+
+    def test_a_rendered_post_survives_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = make_session(Path(tmp), page_url=POST_URL)
+            response = _FakeResponse()
+            response.url = POST_URL
+            response.headers = {"content-type": "text/html"}
+            response.request = type("r", (), {"resource_type": "document"})
+
+            session._consume_document(response, self.document(self.RENDERED))
+
+            self.assertEqual(list(session.archive.posts), ["1593564465471991"])
+            self.assertEqual(session.counters["non_timeline_post_candidates"], 0)
+
+    def test_the_session_reads_the_page_it_loaded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = make_session(Path(tmp))
+            response = _FakeResponse()
+            response.url = "https://www.facebook.com/page/posts/1593564465471991"
+            response.headers = {"content-type": "text/html"}
+            response.request = type("r", (), {"resource_type": "document"})
+
+            self.assertTrue(session._is_page_document(response))
+            session._consume_document(response, self.document(self.RENDERED))
+
+            self.assertIn("1593564465471991", session.seen_this_run)
+            self.assertIn("thankful",
+                          session.seen_this_run["1593564465471991"].text)
+
+    def test_xhr_responses_are_not_mined_as_pages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = make_session(Path(tmp))
+
+            self.assertFalse(session._is_page_document(_FakeResponse()))
+
+
+class CommentShapeTests(unittest.TestCase):
+    """Comments Facebook labels twice, and comments with no words at all."""
+
+    PAYLOAD = {'data': {'node': {'__typename': 'Feedback', 'comment_rendering_instance_for_feed_location': {'comments': {'edges': [{'node': {'__typename': 'Comment', 'id': '1727562635162792', 'created_time': 1786000000, 'author': {'id': '42', 'name': 'Someone'}, 'attachments': [{'media': {'__typename': 'Photo', 'image': {'uri': 'https://scontent/gif.gif'}}}], 'comet_comment_author_name_and_badges_renderer': {'comment': {'id': 'Y29tbWVudDoxNTkzNTY0NDY1NDcxOTkxXzE3Mjc1NjI2MzUxNjI3OTI=', 'author': {'id': '42', 'name': 'Someone'}, 'parent_post_story': {'id': 'UzpfSTkwMDoxNTkzNTY0NDY1NDcxOTkxOjE1OTM1NjQ0NjU0NzE5OTE=', 'attachments': []}}}, 'feedback': {'__typename': 'Feedback', 'plugins': [{'__typename': 'CommentComposerMentionsPlugin', 'post_id': '1593564465471991', 'context_id': '1593564465471991'}]}}}]}}}}}
+
+    def records(self):
+        return extract_graphql_records([self.PAYLOAD])
+
+    def test_a_comment_whose_content_is_a_gif_is_still_a_comment(self):
+        _, comments, _, _ = self.records()
+
+        self.assertEqual([c.comment_id for c in comments], ["1727562635162792"])
+
+    def test_a_wordless_comment_is_not_mistaken_for_a_post(self):
+        posts, _, _, _ = self.records()
+
+        self.assertEqual(posts, [])
+
+    def test_the_relay_global_id_is_not_a_second_comment(self):
+        _, comments, _, _ = self.records()
+
+        self.assertEqual(len(comments), 1)
+
+    def test_the_parent_post_stub_is_not_a_comment(self):
+        _, comments, _, _ = self.records()
+
+        self.assertNotIn("1593564465471991", [c.comment_id for c in comments])
+
+    def test_a_composer_plugin_does_not_become_a_post(self):
+        """It carries the post's id and would inherit the comment's date."""
+        posts, _, _, _ = self.records()
+
+        self.assertEqual([p.post_id for p in posts], [])
+
+    def test_a_comment_names_its_post_through_an_encoded_feedback_id(self):
+        """Left encoded it matches no post, so the comment loses its parent."""
+        _, comments, _, _ = extract_graphql_records([{"data": {"comments": {
+            "edges": [{"node": {
+                "__typename": "Comment", "id": "1727562635162792",
+                "body": {"text": "hello"},
+                "feedback_target_id": "ZmVlZGJhY2s6MTU5MzU2NDQ2NTQ3MTk5MQ=="}}]}}}])
+
+        self.assertEqual([c.parent_post_id for c in comments], ["1593564465471991"])
+
+    def test_a_gif_comments_media_is_kept(self):
+        _, comments, _, _ = self.records()
+
+        self.assertEqual(comments[0].media_urls, ["https://scontent/gif.gif"])
+
+    def test_a_relay_id_decodes_to_what_it_names(self):
+        from webarc.facebook import _relay_global_id
+
+        self.assertEqual(_relay_global_id("Y29tbWVudDoxNTkzNTY0NDY1NDcxOTkxXzE3Mjc1NjI2MzUxNjI3OTI="),
+                         ("comment", "1727562635162792"))
+        self.assertEqual(_relay_global_id("UzpfSTkwMDoxNTkzNTY0NDY1NDcxOTkxOjE1OTM1NjQ0NjU0NzE5OTE="),
+                         ("story", "1593564465471991"))
+        self.assertEqual(_relay_global_id("ZmVlZGJhY2s6MTU5MzU2NDQ2NTQ3MTk5MQ=="), ("post", "1593564465471991"))
+        self.assertIsNone(_relay_global_id("1727562635162792"))
+        self.assertIsNone(_relay_global_id(None))
 
 
 class GraphQLDecodingTests(unittest.TestCase):
