@@ -1523,6 +1523,11 @@ class FacebookCaptureSession(RecordingSession):
                 # They have seen the sign-in warning and chosen to go on.
                 self._signed_out_acknowledged = True
             self._next_scroll_at = 0.0
+            # A single-post capture reads once and then holds. Without this
+            # the hold's own "carry on" button did nothing: the read was
+            # marked done, so resuming returned immediately.
+            if self.config.mode == "single_post":
+                self._single_post_done = False
             self._state_dirty = True
             self.archive.event(
                 "scrolling_resumed", actor=actor, previous_state=previous,
@@ -2302,6 +2307,7 @@ class FacebookCaptureSession(RecordingSession):
                 break
             if self._closed or self._stop_requested_during_harvest():
                 break
+            self._report_thread_progress()
             clicked = self._expand_comments(page)
             # Comments arrive on scroll as well as on click, and the thread
             # is usually below the fold on a permalink.
@@ -2311,6 +2317,13 @@ class FacebookCaptureSession(RecordingSession):
                 stalled = 0
             elif not clicked:
                 stalled += 1
+
+    def _report_thread_progress(self) -> None:
+        """Say how far through the thread the harvest is, while it runs."""
+        detail = f"Reading this post's comments. {self._comment_progress()}"
+        if detail != self.phase_detail:
+            self.phase_detail = detail
+            self._state_dirty = True
 
     def _capture_single_post(self, page) -> None:
         """Read the one post this capture was given, then decide what to do.
@@ -2420,21 +2433,40 @@ class FacebookCaptureSession(RecordingSession):
         self.state = PAUSED
         self.phase_detail = (
             f"{self._comment_progress()} {explanation} Select "
-            "\u201cStop and save\u201d when you have what you need "
-            "\u2014 everything you open in the browser is still being "
-            "preserved."
+            "\u201cResume scrolling\u201d to carry on reading the thread, "
+            "or \u201cStop and save\u201d when you have what you need. "
+            "Everything you open in the browser is preserved either way."
         )
         self._state_dirty = True
         self.archive.event(event, comments=len(self.archive.comments),
                            **details)
 
+    def _thread_length(self) -> Optional[int]:
+        """How many comments Facebook says the captured post has.
+
+        A count against the requested maximum answers the wrong question: the
+        curator wants to know how much of the thread they have, and only the
+        thread's own length says that.
+        """
+        stated = None
+        for post in self.archive.posts.values():
+            if isinstance(post.comments_count, int):
+                stated = max(stated or 0, post.comments_count)
+        return stated
+
     def _comment_progress(self) -> str:
-        """What the thread yielded, said plainly enough to decide on."""
+        """How much of the thread is in hand, in the thread's own terms."""
         if not self.config.include_comments:
             return "The post was requested without comments."
         collected = len(self.archive.comments)
-        return (f"{collected} of up to {self.config.max_comments_per_post} "
-                "requested comments were collected.")
+        stated = self._thread_length()
+        wanted = self.config.max_comments_per_post
+        if stated is None:
+            return (f"{collected} comments collected; Facebook has not said "
+                    f"how long the thread is. You asked for up to {wanted}.")
+        return (f"{collected} of {stated} comments on this post collected"
+                + (f" (you asked for up to {wanted})." if wanted < stated
+                   else "."))
 
     def _expand_comments(self, page) -> int:
         """Click whatever exposes more comments, returning how many controls
@@ -2916,6 +2948,9 @@ class FacebookCaptureSession(RecordingSession):
             "posts_observed": self.counters.get("posts_observed", 0),
             "posts_exported": self.counters.get("posts_exported", 0),
             "comments_exported": self.counters.get("comments_exported", 0),
+            # What Facebook says the thread holds, so the dashboard can show
+            # progress against the thread rather than against the request.
+            "comments_available": self._thread_length(),
             "pinned_posts": self.counters.get("pinned_posts_observed", 0),
             # Bounds of the exported dataset. Observed bounds are wider in
             # date_range mode, because posts outside the range are still seen

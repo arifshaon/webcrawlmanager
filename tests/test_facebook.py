@@ -1551,7 +1551,8 @@ class CuratorDecisionTests(SessionTestCase):
 
         self.assertIsNone(session._pending_stop)
         self.assertEqual(session.state, PAUSED)
-        self.assertIn("19 of up to 500", session.phase_detail)
+        self.assertIn("19 of 455 comments on this post",
+                      session.phase_detail)
 
     def test_a_thread_that_was_read_out_finishes(self):
         session = self.make(max_comments_per_post=500)
@@ -1687,6 +1688,89 @@ class SignedOutCaptureTests(SessionTestCase):
             document["requested_work"]["comments"]["viewer"], "signed_in")
         self.assertIsNone(
             document["completeness"]["signed_out_capture_meaning"])
+
+
+class ThreadProgressTests(SessionTestCase):
+    """Progress against the request answers the wrong question.
+
+    "10 of up to 400 requested" tells a curator what they typed into a box.
+    What they need to know is how much of the thread they have, and only the
+    thread's own length says that.
+    """
+
+    def session(self, stated=None, collected=0, wanted=400):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=wanted)
+        session.started_scrolling = True
+        if stated is not None:
+            session.archive.add_post(post("1593564465471991",
+                                          date="2026-07-17T15:16:35Z"))
+            session.archive.posts["1593564465471991"].comments_count = stated
+        for n in range(collected):
+            session.archive.add_comment(FacebookComment(comment_id=str(n)))
+        return session
+
+    def test_progress_is_reported_against_the_thread(self):
+        session = self.session(stated=433, collected=10)
+
+        self.assertIn("10 of 433 comments on this post",
+                      session._comment_progress())
+
+    def test_the_requested_maximum_is_named_when_it_binds(self):
+        session = self.session(stated=433, collected=10, wanted=400)
+
+        self.assertIn("up to 400", session._comment_progress())
+
+    def test_the_requested_maximum_is_left_out_when_it_does_not(self):
+        session = self.session(stated=433, collected=10, wanted=500)
+
+        self.assertNotIn("up to 500", session._comment_progress())
+
+    def test_an_unstated_thread_length_is_not_invented(self):
+        session = self.session(stated=None, collected=10)
+        progress = session._comment_progress()
+
+        self.assertIn("has not said how long", progress)
+        self.assertIn("10 comments collected", progress)
+
+    def test_the_thread_length_travels_with_the_progress_report(self):
+        session = self.session(stated=433, collected=10)
+
+        self.assertEqual(
+            session._progress_details()["comments_available"], 433)
+
+    def test_progress_is_reported_while_the_thread_is_read(self):
+        session = self.session(stated=433, collected=10)
+        session._expand_comments = lambda _p: 0
+        session._show_all_comments = lambda _p: None
+        session._process_media_queue = lambda budget=0: None
+        session._scroll_comment_thread = lambda _p: None
+        page = type("p", (), {"wait_for_timeout": lambda self, ms: None})()
+
+        session._read_comment_thread(page, "1593564465471991")
+
+        self.assertIn("10 of 433 comments", session.phase_detail)
+
+    def test_carrying_on_reads_the_thread_again(self):
+        """The hold offers "carry on"; it has to actually do something."""
+        session = self.session(stated=433, collected=10)
+        session._read_comment_thread = lambda *a: None
+        session._capture_single_post(_FakePage(url=POST_URL))
+        self.assertTrue(session._single_post_done)
+
+        session.apply("resume", actor="dashboard")
+
+        self.assertFalse(session._single_post_done)
+
+    def test_the_hold_offers_both_ways_out(self):
+        session = self.session(stated=433, collected=10)
+        session._read_comment_thread = lambda *a: None
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertIn("Resume scrolling", session.phase_detail)
+        self.assertIn("Stop and save", session.phase_detail)
 
 
 class GraphQLDecodingTests(unittest.TestCase):
