@@ -738,3 +738,102 @@ class BrowserChoiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             InstagramCaptureConfig.from_dict({
                 "targets": ["qnl"], "browser": {"mode": "firefox"}})
+
+
+class RenderedPassTests(unittest.TestCase):
+    """The optional rendered WARC: headless, after collection, signed in.
+
+    The sign-in window closes once the session is read; it is not where the
+    WARC comes from. The WARC is made by a headless pass at the end of the
+    run, carrying the job's session, over the posts that were collected.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import http.server
+        import threading
+        try:
+            from playwright.sync_api import sync_playwright  # noqa: F401
+        except ImportError:                                # pragma: no cover
+            raise unittest.SkipTest("playwright is not installed")
+        cls.site = tempfile.TemporaryDirectory()
+        root = Path(cls.site.name)
+        (root / "p1.html").write_text(
+            '<!doctype html><title>Post one</title><h1>Rendered</h1>'
+            '<img src="/pic.png">')
+        (root / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        handler = lambda *a, **k: http.server.SimpleHTTPRequestHandler(  # noqa: E731
+            *a, directory=str(root), **k)
+        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        cls.port = cls.server.server_address[1]
+        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.site.cleanup()
+
+    def test_the_pass_writes_a_warc_of_the_captured_posts(self):
+        from warcio.archiveiterator import ArchiveIterator
+        from webarc.worker import _instagram_rendered_pass
+
+        out = tempfile.TemporaryDirectory()
+        self.addCleanup(out.cleanup)
+        config = InstagramCaptureConfig.from_dict({"targets": ["qnl"],
+                                                   "write_warc": True})
+        session = {"cookies": {"sessionid": "1%3Aabc"},
+                   "user_agent": "Mozilla/5.0 SWM-rendered-pass"}
+
+        written = _instagram_rendered_pass(
+            {"name": "ig-demo"}, config, Path(out.name),
+            [f"http://127.0.0.1:{self.port}/p1.html"], session)
+
+        self.assertEqual(written, 1)
+        warcs = list(Path(out.name).glob("*.warc.gz"))
+        self.assertEqual(len(warcs), 1)
+        with warcs[0].open("rb") as handle:
+            records = list(ArchiveIterator(handle))
+        uris = {r.rec_headers.get_header("WARC-Target-URI") for r in records}
+        self.assertIn(f"http://127.0.0.1:{self.port}/p1.html", uris)
+        self.assertIn(f"http://127.0.0.1:{self.port}/pic.png", uris)
+        agents = {r.http_headers.get_header("User-Agent")
+                  for r in records if r.rec_type == "request"}
+        # the job's session travels with the pass, user agent included
+        self.assertEqual(agents, {"Mozilla/5.0 SWM-rendered-pass"})
+
+    def test_the_session_cookies_are_placed_in_the_context(self):
+        from unittest import mock
+        from webarc import worker
+
+        seen = {}
+
+        class _Ctx:
+            def add_cookies(self, cookies):
+                seen["cookies"] = cookies
+
+        class _Driver:
+            _context = _Ctx()
+
+            def __init__(self, *a, **k): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def new_page(self, _cb):
+                class _Page:
+                    def on(self, *_a): pass
+                return _Page()
+            def visit(self, page, url): return None
+
+        out = tempfile.TemporaryDirectory()
+        self.addCleanup(out.cleanup)
+        config = InstagramCaptureConfig.from_dict({"targets": ["qnl"],
+                                                   "write_warc": True})
+        with mock.patch.object(worker, "_instagram_rendered_pass",
+                               wraps=worker._instagram_rendered_pass), \
+                mock.patch("webarc.browser.BrowserDriver", _Driver):
+            worker._instagram_rendered_pass(
+                {"name": "x"}, config, Path(out.name), ["https://www.instagram.com/p/C1/"],
+                {"cookies": {"sessionid": "s", "csrftoken": "c"}, "user_agent": "ua"})
+
+        names = {c["name"] for c in seen["cookies"]}
+        self.assertEqual(names, {"sessionid", "csrftoken"})
+        self.assertTrue(all(c["domain"] == ".instagram.com" for c in seen["cookies"]))
