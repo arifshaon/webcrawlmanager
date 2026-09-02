@@ -4,3 +4,5 @@
 playwright>=1.44
 warcio>=1.7.4
 PyYAML>=6.0
+# Instagram capture (background extraction over the signed-in browser profile):
+instaloader>=4.14

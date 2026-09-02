@@ -117,7 +117,7 @@ class StorageFieldTests(DashboardTestCase):
         fields = re.findall(r'id="([a-z-]+)" class="storage-dir"', self.markup)
 
         self.assertEqual(sorted(fields), ["f-storage", "fb-storage",
-                                          "r-storage"])
+                                          "ig-storage", "r-storage"])
 
     def test_every_storage_field_has_a_browse_button(self):
         """A path typed from memory is a path typed wrong."""
@@ -143,10 +143,10 @@ class StorageFieldTests(DashboardTestCase):
         self.assertIn("if (!storageRootEdited)", self.script)
 
     def test_each_one_is_sent_when_it_is_filled_in(self):
-        for field in ("f-storage", "fb-storage", "r-storage"):
+        for field in ("f-storage", "fb-storage", "ig-storage", "r-storage"):
             with self.subTest(field=field):
                 self.assertIn(f'$("#{field}").value.trim()', self.script)
-        self.assertEqual(self.script.count("body.storage_dir"), 3)
+        self.assertEqual(self.script.count("body.storage_dir"), 4)
 
 
 if __name__ == "__main__":

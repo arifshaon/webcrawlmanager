@@ -27,6 +27,8 @@ function facebookPhaseLabel(phase) {
     waiting_to_start: "Waiting",
     scrolling: "Collecting",
     scrolling_paused: "Paused",
+    collecting: "Collecting",
+    paused: "Paused",
     verification_required: "Needs you",
     finished: "Finished",
   })[String(phase || "")] || "Status";
@@ -41,6 +43,8 @@ function crawlRow(c) {
   const statusCss = statusClass(rawStatus);
   const isRec = c.kind === "recording";
   const isFacebook = c.kind === "facebook";
+  const isInstagram = c.kind === "instagram";
+  const isSocial = isFacebook || isInstagram;
   const running = rawStatus === "running";
   const paused = rawStatus === "paused";
   const blocked = rawStatus === "blocked";
@@ -54,7 +58,7 @@ function crawlRow(c) {
   const failed = Number(t.failed) || 0;
   const bytes = Number(t.bytes) || 0;
   const seeds = Array.isArray(c.seeds) ? c.seeds : [];
-  const fb = isFacebook && seeds[0] && seeds[0].details
+  const fb = isSocial && seeds[0] && seeds[0].details
     ? seeds[0].details : {};
 
   const seedRows = seeds.map(sd => {
@@ -68,14 +72,21 @@ function crawlRow(c) {
     const facebookDetail = isFacebook ? `
       <div class="cur">${escapeHtml(details.message || details.phase || "")}</div>
       <div class="cur">newest: ${escapeHtml(details.newest_post || "not yet observed")} · oldest: ${escapeHtml(details.oldest_post || "not yet observed")} · pagination failures: ${Number(details.pagination_failures) || 0}</div>` : "";
+    const targetRows = isInstagram && Array.isArray(fb.targets) ? fb.targets.map(t => `
+      <div class="cur">${escapeHtml(t.label || "")} · ${escapeHtml(t.status || "pending")} · ${Number(t.posts_selected) || 0} selected of ${Number(t.posts_encountered) || 0} seen${t.reason ? ` · ${escapeHtml(t.reason)}` : ""}</div>`).join("") : "";
+    if (isInstagram && sd !== seeds[0]) return "";
+    const instagramDetail = isInstagram ? `
+      <div class="cur">viewer: ${escapeHtml(fb.viewer || "unknown")} · newest: ${escapeHtml(fb.newest_post || "not yet")} · oldest: ${escapeHtml(fb.oldest_post || "not yet")} · rate-limit waits: ${Number(fb.rate_limit_waits) || 0} · media failed: ${Number(fb.media_failed) || 0}</div>
+      ${targetRows}` : "";
     return `
       <div class="seed">
         <div>
-          <div class="url">${escapeHtml(sd.seed_url)}</div>
-          ${current}
+          <div class="url">${isInstagram ? `${Number(fb.targets_done) || 0} of ${Number(fb.targets_total) || seeds.length} targets` : escapeHtml(sd.seed_url)}</div>
+          ${isInstagram ? "" : current}
           ${facebookDetail}
+          ${instagramDetail}
         </div>
-        <div class="st">${seedStatus} · ${seedVisited} ${isFacebook ? "posts" : "pages"} · ${fmtBytes(seedBytes)}</div>
+        <div class="st">${seedStatus} · ${seedVisited} ${isSocial ? "posts" : "pages"} · ${fmtBytes(seedBytes)}</div>
       </div>`;
   }).join("");
 
@@ -88,29 +99,33 @@ function crawlRow(c) {
     <div class="row" onclick="toggle(${id})">
       <div class="gutter g-${statusCss}"></div>
       <div>
-        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : ""}${name}</div>
-        <div class="meta"><span class="id">#${id}</span> · ${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : `${seedsTotal} seed(s)`} · ${created}</div>
+        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : isInstagram ? '<span class="fb-chip ig-chip">IG</span>' : ""}${name}</div>
+        <div class="meta"><span class="id">#${id}</span> · ${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
       </div>
       <div class="counts">
         ${isRec
           ? `<b>${visited}</b> pages<br>${fmtBytes(bytes)}`
+          : isInstagram
+            ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b>${Number(fb.media_expected) ? `/${Number(fb.media_expected)}` : ""} media<br>${Number(fb.warc_files) ? "rendered WARC · " : ""}${fmtBytes(bytes)}`
           : isFacebook
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b> media<br>${Number(fb.graphql_responses) || 0} API responses${Number(fb.pagination_failures) ? ` · ${Number(fb.pagination_failures)} failed` : ""} · ${fmtBytes(bytes)}`
           : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}`}
       </div>
       <span class="badge b-${statusCss}">${status}</span>
     </div>
-    ${isFacebook && (fb.message || fb.phase) ? `<div class="fb-phase">
+    ${isSocial && (fb.message || fb.phase) ? `<div class="fb-phase">
       <span class="fb-phase-label">${escapeHtml(facebookPhaseLabel(fb.phase))}</span>
       <span>${escapeHtml(fb.message || "")}</span>
     </div>` : ""}
     <div class="actions">
       <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
-      <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isFacebook ? (blocked ? "I have resolved it — continue" : "Resume scrolling") : "Resume"}</button>
-      <button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isFacebook ? "Stop and save" : "Stop"}</button>
+      <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
+      <button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>
       ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
       ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
       <button class="act replay" onclick="replay(${id},'warc')" ${bytes > 0 ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
+      : isInstagram ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
+      <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How Instagram presented the captured posts">Replay WARC</button>`
       : `<button class="act replay" onclick="replay(${id})" ${bytes > 0 ? "" : "disabled"}>Replay</button>`}
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
     </div>

@@ -191,6 +191,7 @@
   .fb-chip { font-family: var(--mono); font-size: 10px; letter-spacing: .05em;
     color: #1D4ED8; background: #E4ECFA; border-radius: 4px;
     padding: 2px 6px; margin-right: 7px; vertical-align: 1px; }
+  .ig-chip { color: #9a3412; background: #fde7d8; }
   .rec-warning { border: 1px solid var(--rule); border-left: 3px solid var(--pause);
     background: var(--pause-bg); border-radius: 6px; padding: 10px 12px;
     font-size: 12px; color: var(--ink); margin-top: 4px; }
@@ -302,6 +303,8 @@
       data-job="record" role="tab" aria-selected="false">Record session</button>
     <button type="button" class="mode-tab" id="job-tab-facebook"
       data-job="facebook" role="tab" aria-selected="false">Facebook</button>
+    <button type="button" class="mode-tab" id="job-tab-instagram"
+      data-job="instagram" role="tab" aria-selected="false">Instagram</button>
   </div>
   <form id="new-form" onsubmit="return false">
     <div class="editor-head">
@@ -647,6 +650,122 @@
       <span class="mode-note" id="facebook-cap-note"></span>
     </div>
   </div>
+  <div id="instagram-form" class="hidden" style="border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:var(--paper)">
+    <div class="guided">
+      <div class="form-section">
+        <div class="section-head">
+          <span class="section-title">Capture Instagram profiles, posts or reels</span>
+          <span class="section-hint">Runs in the background. A browser window opens only if Instagram needs you to sign in or clear a verification.</span>
+        </div>
+        <div class="section-body form-grid">
+          <div class="field wide">
+            <label class="field-label" for="ig-targets">Targets — one per line</label>
+            <textarea id="ig-targets" rows="4" placeholder="qatarnationallibrary&#10;https://www.instagram.com/someprofile/&#10;https://www.instagram.com/p/Cabc123/"></textarea>
+            <span class="help">A profile (username or URL) collects its posts and reels using the mode below. A post or reel URL collects that item only. Explore, hashtag, story and direct-message URLs are refused: they cannot be presented as an archive of anything.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="ig-name">Capture name</label>
+            <input type="text" id="ig-name" placeholder="derived from the targets if empty">
+          </div>
+          <div class="field">
+            <label class="field-label" for="ig-operator">Operator</label>
+            <input type="text" id="ig-operator" placeholder="webarc">
+            <span class="help">Stored in the capture manifest.</span>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+            <div class="storage-row">
+              <input type="text" id="ig-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <button type="button" class="secondary browse-btn" data-target="ig-storage">Browse…</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label" for="ig-mode">Capture mode</label>
+            <select id="ig-mode">
+              <option value="latest_n">Latest N posts</option>
+              <option value="date_range">Date range</option>
+              <option value="until_stopped">Until I stop it</option>
+              <option value="end_of_timeline">End of observed timeline</option>
+              <option value="since_last">Since last capture</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Profile surfaces</label>
+            <label class="check-row">
+              <input type="checkbox" id="ig-surface-posts" checked>
+              <span class="check-copy"><strong>Posts grid</strong></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="ig-surface-reels" checked>
+              <span class="check-copy"><strong>Reels tab</strong><span>An item on both is kept once.</span></span>
+            </label>
+          </div>
+          <div class="field wide hidden" id="ig-date-options">
+            <label class="field-label">Requested post dates</label>
+            <div class="inline-fields">
+              <div>
+                <label class="help" for="ig-from">From (required)</label>
+                <input type="date" id="ig-from">
+              </div>
+              <div>
+                <label class="help" for="ig-to">To (optional)</label>
+                <input type="date" id="ig-to">
+              </div>
+            </div>
+            <span class="help">Pinned posts never end the capture on their own. SWM stops after five consecutive non-pinned posts older than From.</span>
+          </div>
+          <div class="field wide" id="ig-latest-options">
+            <label class="field-label" for="ig-latest-n">Number of latest non-pinned posts</label>
+            <input type="number" id="ig-latest-n" min="1" max="100000" step="1" value="100">
+          </div>
+          <div class="field wide hidden" id="ig-mode-note"></div>
+          <div class="field wide">
+            <label class="field-label">Capture options</label>
+            <label class="check-row">
+              <input type="checkbox" id="ig-media" checked>
+              <span class="check-copy"><strong>Download original media</strong><span>Every image, video and carousel component at the highest resolution Instagram serves, with SHA-256 fixity.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="ig-warc">
+              <span class="check-copy"><strong>Also record a rendered WARC</strong><span>After collection, opens each captured post in the signed-in profile and records how Instagram presented it. Context, not the record.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="ig-comments">
+              <span class="check-copy"><strong>Capture comments</strong><span>Read each post's comment thread.</span></span>
+            </label>
+            <div id="ig-comment-options" class="hidden">
+              <div class="inline-fields" style="margin-top:10px">
+                <div>
+                  <label class="field-label" for="ig-comment-max">Maximum comments per post</label>
+                  <input type="number" id="ig-comment-max" min="1" max="5000" step="1" value="25">
+                </div>
+                <div>
+                  <label class="field-label" for="ig-reply-max">Maximum replies per comment</label>
+                  <input type="number" id="ig-reply-max" min="1" max="1000" step="1" value="10">
+                </div>
+              </div>
+              <label class="check-row" style="margin-top:8px">
+                <input type="checkbox" id="ig-replies">
+                <span class="check-copy"><strong>Include replies</strong></span>
+              </label>
+              <div class="cost-warning"><b>Comments are where the rate limit lands.</b> Every post is its own pagination, so a profile of 300 posts with comments on is 300 further request sequences. Expect the run to be paused by Instagram and resumed; it is built for that.</div>
+            </div>
+          </div>
+          <div class="field wide">
+            <div class="rec-warning">
+              Use a dedicated institutional Instagram account for capture, not a personal one: background collection is the pattern Instagram's automation detection acts on, and it acts on the account. Sign in once in the dedicated Instagram browser profile (the window opens the first time a capture needs it); SWM reads that session when a job starts and holds it in memory only. SWM never asks for the password and never writes the session anywhere else.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form-foot">
+      <button type="button" class="primary" id="instagram-start-btn">Start capture</button>
+      <span class="msg" id="instagram-msg"></span>
+      <span class="spacer"></span>
+      <span class="mode-note" id="instagram-cap-note"></span>
+    </div>
+  </div>
   </section>
 </main>
 </div>
@@ -908,14 +1027,17 @@ function resetExample() {
 }
 let recordingCapability = null;
 let facebookCapability = null;
+let instagramCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
     recordingCapability = caps.recording;
     facebookCapability = caps.facebook;
+    instagramCapability = caps.instagram || {available: false, reason: "not reported by the server"};
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
     facebookCapability = {available: false, reason: "capability check failed"};
+    instagramCapability = {available: false, reason: "capability check failed"};
   }
   const tab = $("#job-tab-record");
   if (recordingCapability && !recordingCapability.available) {
@@ -927,6 +1049,14 @@ async function loadCapabilities() {
     facebookTab.classList.add("disabled");
     facebookTab.title = facebookCapability.reason || "unavailable";
   }
+  const instagramTab = $("#job-tab-instagram");
+  if (instagramCapability && !instagramCapability.available) {
+    instagramTab.classList.add("disabled");
+    instagramTab.title = instagramCapability.reason || "unavailable";
+  }
+  if (instagramCapability && instagramCapability.note) {
+    $("#instagram-cap-note").textContent = instagramCapability.note;
+  }
 }
 function switchJob(job) {
   if (job === "record" && recordingCapability && !recordingCapability.available) {
@@ -937,6 +1067,10 @@ function switchJob(job) {
     $("#facebook-cap-note").textContent = facebookCapability.reason || "";
     return;
   }
+  if (job === "instagram" && instagramCapability && !instagramCapability.available) {
+    $("#instagram-cap-note").textContent = instagramCapability.reason || "";
+    return;
+  }
   $$(".job-tabs .mode-tab").forEach(tab => {
     const active = tab.dataset.job === job;
     tab.classList.toggle("active", active);
@@ -945,6 +1079,7 @@ function switchJob(job) {
   $("#new-form").classList.toggle("hidden", job !== "crawl");
   $("#record-form").classList.toggle("hidden", job !== "record");
   $("#facebook-form").classList.toggle("hidden", job !== "facebook");
+  $("#instagram-form").classList.toggle("hidden", job !== "instagram");
 }
 async function startRecording() {
   const msg = $("#record-msg");
@@ -1048,6 +1183,92 @@ async function startFacebook() {
     setFbMessage(error.message, "err");
   } finally {
     $("#facebook-start-btn").disabled = false;
+  }
+}
+function updateInstagramMode() {
+  const mode = $("#ig-mode").value;
+  $("#ig-date-options").classList.toggle("hidden", mode !== "date_range");
+  $("#ig-latest-options").classList.toggle("hidden", mode !== "latest_n");
+  const note = $("#ig-mode-note");
+  const notes = {
+    until_stopped: "SWM keeps walking each profile until you select Stop and save, or Instagram offers nothing further.",
+    end_of_timeline: "SWM stops when Instagram offers no further posts. The manifest calls this end_of_available_timeline — not all posts.",
+    since_last: "SWM uses each profile's newest post from its previous capture. Pinned posts never trigger the boundary.",
+  };
+  note.classList.toggle("hidden", !notes[mode]);
+  note.classList.toggle("mode-explanation", Boolean(notes[mode]));
+  note.textContent = notes[mode] || "";
+  if (mode === "since_last") refreshInstagramState();
+}
+async function refreshInstagramState() {
+  const note = $("#instagram-cap-note");
+  if ($("#ig-mode").value !== "since_last") return;
+  const targets = instagramTargets();
+  if (!targets.length) return;
+  try {
+    const known = [];
+    const unknown = [];
+    for (const target of targets.slice(0, 20)) {
+      const result = await api(`/api/instagram/state?target=${encodeURIComponent(target)}`);
+      (result.available ? known : unknown).push(result.label);
+    }
+    note.textContent = unknown.length
+      ? `No previous capture for ${unknown.join(", ")}; run another mode first.`
+      : `Previous captures found for ${known.join(", ")}.`;
+  } catch (error) {
+    note.textContent = error.message;
+  }
+}
+function instagramTargets() {
+  return $("#ig-targets").value.split(/\r?\n/).map(t => t.trim()).filter(Boolean);
+}
+async function startInstagram() {
+  const msg = $("#instagram-msg");
+  const setMsg = (text, cls="") => {
+    msg.textContent = text; msg.className = "msg" + (cls ? " " + cls : "");
+  };
+  const targets = instagramTargets();
+  if (!targets.length) { setMsg("Add at least one profile, post or reel.", "err"); return; }
+  const mode = $("#ig-mode").value;
+  if (mode === "date_range" && !$("#ig-from").value) {
+    setMsg("Choose a From date for Date range mode.", "err"); return;
+  }
+  if (mode === "date_range" && $("#ig-to").value && $("#ig-from").value > $("#ig-to").value) {
+    setMsg("From must be on or before To.", "err"); return;
+  }
+  const surfaces = [];
+  if ($("#ig-surface-posts").checked) surfaces.push("posts");
+  if ($("#ig-surface-reels").checked) surfaces.push("reels");
+  if (!surfaces.length) { setMsg("Select at least one of Posts and Reels.", "err"); return; }
+  const body = {
+    targets, mode, surfaces,
+    from_date: $("#ig-from").value || null,
+    to_date: $("#ig-to").value || null,
+    latest_n: Number($("#ig-latest-n").value || 100),
+    capture_media: $("#ig-media").checked,
+    write_warc: $("#ig-warc").checked,
+    include_comments: $("#ig-comments").checked,
+    max_comments_per_post: Number($("#ig-comment-max").value || 25),
+    include_replies: $("#ig-replies").checked,
+    max_replies_per_comment: Number($("#ig-reply-max").value || 10),
+  };
+  if ($("#ig-name").value.trim()) body.name = $("#ig-name").value.trim();
+  if ($("#ig-operator").value.trim()) body.operator = $("#ig-operator").value.trim();
+  if ($("#ig-storage").value.trim()) body.storage_dir = $("#ig-storage").value.trim();
+  setMsg("Starting…");
+  $("#instagram-start-btn").disabled = true;
+  try {
+    await api("/api/instagram", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    setMsg("Capture started. It runs in the background; a browser opens only if Instagram needs you.", "ok");
+    showView("jobs");
+    refresh();
+  } catch (error) {
+    setMsg(error.message, "err");
+  } finally {
+    $("#instagram-start-btn").disabled = false;
   }
 }
 function statusClass(s) { return s.toLowerCase(); }
@@ -1347,6 +1568,12 @@ $$(".job-tabs .mode-tab").forEach(tab => tab.addEventListener("click", () => swi
 $("#record-start-btn").addEventListener("click", startRecording);
 $("#facebook-start-btn").addEventListener("click", startFacebook);
 $("#fb-mode").addEventListener("change", updateFacebookMode);
+$("#instagram-start-btn").addEventListener("click", startInstagram);
+$("#ig-mode").addEventListener("change", updateInstagramMode);
+$("#ig-targets").addEventListener("blur", refreshInstagramState);
+$("#ig-comments").addEventListener("change", () => {
+  $("#ig-comment-options").classList.toggle("hidden", !$("#ig-comments").checked);
+});
 $("#fb-url").addEventListener("blur", refreshFacebookState);
 $("#fb-comments").addEventListener("change", () => {
   $("#fb-comment-options").classList.toggle("hidden", !$("#fb-comments").checked);
@@ -1355,6 +1582,7 @@ showView(viewFromHash());
 loadCapabilities();
 resetExample();
 updateFacebookMode();
+updateInstagramMode();
 setInterval(() => $("#clock").textContent = new Date().toISOString().replace("T"," ").slice(0,19)+"Z", 1000);
 refresh();
 setInterval(refresh, 2000);

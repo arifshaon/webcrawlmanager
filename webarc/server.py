@@ -38,8 +38,8 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .store import (BLOCKED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
-                    KIND_RECORDING, PAUSED, PENDING, RUNNING, STOPPED, STOPPING,
-                    Store)
+                    KIND_INSTAGRAM, KIND_RECORDING, PAUSED, PENDING, RUNNING,
+                    STOPPED, STOPPING, Store)
 
 log = logging.getLogger(__name__)
 
@@ -177,6 +177,23 @@ def _crawl_dir(row: dict) -> Path:
     """
     stored = str((row or {}).get("output_dir") or "").strip()
     return Path(stored) if stored else _WARC_ROOT / str((row or {})["id"])
+
+
+def _instagram_capability() -> dict:
+    """Instagram capture runs in the background; a display is needed only to
+    sign in, and the dashboard says so rather than refusing outright."""
+    try:
+        import instaloader  # noqa: F401
+    except ImportError:
+        return {"available": False,
+                "reason": "Instagram capture needs the instaloader package. "
+                          "Install it with: pip install instaloader"}
+    visible = _recording_capability()
+    note = None if visible["available"] else (
+        "No graphical desktop: the capture can run, but signing in to "
+        "Instagram or clearing a checkpoint needs a browser window, which "
+        "cannot open here.")
+    return {"available": True, "reason": None, "note": note}
 
 
 def _store() -> Store:
@@ -334,6 +351,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "facebook": dict(visible),
             "simulate": _SIMULATE,
             "storage": _storage_is_curator_choosable(),
+            "instagram": _instagram_capability(),
         }
 
     @app.post("/api/recordings")
@@ -614,6 +632,87 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return _launch_facebook_job(name[:200], facebook,
                                     _crawl_dir(row).parent)
 
+    @app.get("/api/instagram/state")
+    def instagram_state(target: str):
+        from .instagram import parse_instagram_target
+
+        try:
+            parsed = parse_instagram_target(target)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        state = _store().get_instagram_target(parsed.key)
+        return {"available": bool(state and state.get("newest_media_id")),
+                "state": state, "key": parsed.key, "label": parsed.label}
+
+    @app.post("/api/instagram")
+    def create_instagram_capture(payload: dict = Body(...)):
+        """Start a background Instagram capture over one or more targets.
+
+        No browser opens unless a person is needed. The session comes from the
+        dedicated Instagram browser profile, which the curator signs into once.
+        """
+        from .instagram import InstagramCaptureConfig, parse_instagram_target
+
+        operator = str(payload.get("operator") or "webarc").strip() or "webarc"
+        if len(operator) > 200:
+            raise HTTPException(400, "operator must be 200 characters or fewer")
+        profile_dir = Path(_store().db_path).resolve().parent / \
+            "browser-profiles" / "instagram"
+        instagram = {
+            "targets": payload.get("targets"),
+            "mode": str(payload.get("mode") or "latest_n"),
+            "from_date": payload.get("from_date"),
+            "to_date": payload.get("to_date"),
+            "latest_n": payload.get("latest_n"),
+            "surfaces": payload.get("surfaces") or ["posts", "reels"],
+            "capture_media": bool(payload.get("capture_media", True)),
+            "include_comments": bool(payload.get("include_comments", False)),
+            "max_comments_per_post": payload.get("max_comments_per_post", 25),
+            "include_replies": bool(payload.get("include_replies", False)),
+            "max_replies_per_comment": payload.get("max_replies_per_comment", 10),
+            "write_warc": bool(payload.get("write_warc", False)),
+            "operator": operator,
+            "browser_profile_dir": str(profile_dir),
+        }
+        # "since last" needs each profile's previous newest post; look them up
+        # here so a target without one is refused before anything starts.
+        if instagram["mode"] == "since_last":
+            prior = {}
+            for item in (payload.get("targets") or []):
+                try:
+                    target = parse_instagram_target(item)
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                state = _store().get_instagram_target(target.key)
+                if state and state.get("newest_media_id"):
+                    prior[target.key] = {"media_id": state["newest_media_id"],
+                                         "date": state.get("newest_post_date")}
+            instagram["prior_newest"] = prior
+        try:
+            config = InstagramCaptureConfig.from_dict(instagram)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        labels = [parse_instagram_target(u).label for u in config.targets]
+        default_name = "ig-" + "-".join(l.lstrip("@").replace(" ", "-")
+                                        for l in labels[:3])
+        if len(labels) > 3:
+            default_name += f"-and-{len(labels) - 3}-more"
+        name = str(payload.get("name") or default_name).strip()[:200] or "instagram"
+        storage_root = _storage_root_for(payload.get("storage_dir"))
+        config_json = {"instagram": instagram,
+                       "seeds": [{"url": u} for u in config.targets]}
+        crawl_id = _store().create_crawl(
+            name=name, config=config_json, output_dir="",
+            seeds_total=len(config.targets), kind=KIND_INSTAGRAM)
+        crawl_dir = storage_root / str(crawl_id)
+        config_json["output_dir"] = str(crawl_dir)
+        crawl_dir.mkdir(parents=True, exist_ok=True)
+        _store().finalize_config(crawl_id, config_json, str(crawl_dir))
+        pid = _launch_worker(crawl_id)
+        _store().set_pid(crawl_id, pid)
+        return JSONResponse(status_code=201,
+                            content=_crawl_view(_store().get_crawl(crawl_id)))
+
     @app.post("/api/crawls/{crawl_id}/kill")
     def kill(crawl_id: int):
         """Hard-kill fallback if a worker won't stop gracefully."""
@@ -671,8 +770,20 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         # the capture also has a WARC, both ways in are offered: replay shows
         # the Page as it first loaded, the pages show what was collected.
         from .facebook_render import build_site, is_facebook_capture
+        from .instagram_render import build_site as build_instagram_site
+        from .instagram_render import is_instagram_capture
         pages_url = None
-        if is_facebook_capture(crawl_dir):
+        if is_instagram_capture(crawl_dir):
+            try:
+                build_instagram_site(crawl_dir)
+                pages_url = f"/captures/{crawl_id}/pages/index.html"
+            except Exception as exc:
+                if not warcs:
+                    raise HTTPException(
+                        500, f"could not build capture pages: {exc}") from exc
+                log.warning("Could not build capture pages for %d: %s",
+                            crawl_id, exc)
+        elif is_facebook_capture(crawl_dir):
             try:
                 build_site(crawl_dir)
                 pages_url = f"/captures/{crawl_id}/pages/index.html"
@@ -685,7 +796,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
         if not warcs:
             if pages_url:
-                return {"pages_url": pages_url, "kind": "facebook_pages"}
+                return {"pages_url": pages_url, "kind": "capture_pages"}
             raise HTTPException(409, "no WARC files captured yet for this crawl")
 
         coll = collection_name(crawl_id)

@@ -7,6 +7,7 @@ files, its size and its replay all point at an empty directory.
 """
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -389,3 +390,87 @@ class RemoteBindingTests(StorageTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstagramApiTests(StorageTestCase):
+    """The Instagram job: targets as seeds, background by default."""
+
+    def create(self, **payload):
+        body = {"targets": ["qnl", "https://www.instagram.com/p/Cabc123/"],
+                "mode": "latest_n", "latest_n": 5, **payload}
+        return self.client.post("/api/instagram", json=body)
+
+    def test_a_job_is_created_with_one_seed_per_target(self):
+        response = self.create()
+
+        self.assertEqual(response.status_code, 201, response.text)
+        made = response.json()
+        self.assertEqual(made["kind"], "instagram")
+        self.assertEqual(made["seeds_total"], 2)
+        self.assertEqual(made["name"], "ig-qnl-post-Cabc123")
+
+    def test_a_bad_target_is_refused_with_the_reason(self):
+        response = self.create(targets=["https://www.instagram.com/explore/tags/doha/"])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ranking", response.text)
+
+    def test_since_last_without_prior_state_is_refused(self):
+        response = self.create(mode="since_last", targets=["qnl"])
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("No previous capture state", response.text)
+
+    def test_the_state_endpoint_reports_what_is_known(self):
+        self.assertFalse(self.client.get(
+            "/api/instagram/state", params={"target": "qnl"}).json()["available"])
+        srv._store().record_instagram_capture(3, {
+            "instagram:@qnl": {"media_id": "9", "date": "2026-03-01T00:00:00Z",
+                               "username": "qnl", "url": "https://www.instagram.com/qnl/"}}, [])
+
+        state = self.client.get("/api/instagram/state", params={"target": "qnl"}).json()
+
+        self.assertTrue(state["available"])
+        self.assertEqual(state["state"]["newest_media_id"], "9")
+
+    def test_it_honours_a_storage_location(self):
+        mine = self.tmp / "instagram-collection"
+
+        made = self.create(storage_dir=str(mine)).json()
+
+        self.assertEqual(Path(self.row(made["id"])["output_dir"]),
+                         mine.resolve() / str(made["id"]))
+
+    def test_the_session_comes_from_the_dedicated_profile(self):
+        made = self.create().json()
+        stored = json.loads(srv._store().get_crawl(made["id"])["config_json"])
+
+        self.assertTrue(stored["instagram"]["browser_profile_dir"].endswith(
+            str(Path("browser-profiles") / "instagram")))
+
+    def test_the_capability_is_reported(self):
+        capabilities = self.client.get("/api/capabilities").json()
+
+        self.assertIn("instagram", capabilities)
+        self.assertIn("available", capabilities["instagram"])
+
+    def test_replay_offers_the_pages_of_a_package(self):
+        made = self.create().json()
+        crawl_dir = Path(self.row(made["id"])["output_dir"])
+        srv._store().set_pid(made["id"], None)
+        (crawl_dir / "instagram-posts.jsonl").write_text(json.dumps({
+            "media_id": "1", "shortcode": "Cabc123", "kind": "image",
+            "created_time": "2026-03-01T00:00:00Z", "caption": "hello",
+            "media_urls": [], "media_files": []}) + "\n")
+        (crawl_dir / "instagram-manifest.json").write_text(json.dumps({
+            "capture": {"targets": [{"url": "https://www.instagram.com/qnl/",
+                                     "label": "@qnl"}], "mode": "latest_n"}}))
+
+        response = self.client.post(f"/api/crawls/{made['id']}/replay")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["kind"], "capture_pages")
+        served = self.client.get(response.json()["pages_url"])
+        self.assertEqual(served.status_code, 200)
+        self.assertIn("hello", self.client.get(
+            f"/captures/{made['id']}/pages/posts/Cabc123.html").text)

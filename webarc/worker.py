@@ -21,7 +21,8 @@ from .config import CrawlConfig, SeedConfig, _build_section
 from .config import (BehaviorConfig, BrowserConfig, ScopeConfig, WarcConfig)
 from .control import StoreController
 from .store import (BLOCKED, COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP,
-                    FAILED, KIND_FACEBOOK, KIND_RECORDING, PAUSED, RUNNING,
+                    FAILED, KIND_FACEBOOK, KIND_INSTAGRAM, KIND_RECORDING,
+                    PAUSED, RUNNING,
                     STOPPED, Store)
 
 log = logging.getLogger("webarc.worker")
@@ -259,6 +260,153 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
     return session.run()
 
 
+def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
+    """Run a background Instagram capture, opening a browser only for a person.
+
+    The session comes from the dedicated Instagram browser profile, read
+    without a window when the job starts and handed to the client in memory.
+    A login wall or a checkpoint opens that profile visibly on the page that
+    needs the curator, and the session is read again once they continue.
+    """
+    import json
+
+    from .instagram import (BLOCKED as IG_BLOCKED, InstagramCaptureConfig,
+                            InstagramCaptureSession, InstaloaderClient,
+                            read_session_from_profile)
+
+    raw = json.loads(row["config_json"])
+    ig_raw = raw.get("instagram", {})
+    config = InstagramCaptureConfig.from_dict(ig_raw)
+    output_dir = Path(row["output_dir"])
+    profile_dir = config.browser_profile_dir
+
+    session = None
+    if profile_dir:
+        try:
+            session = read_session_from_profile(profile_dir)
+        except Exception as exc:
+            log.warning("Could not read the Instagram browser profile: %s", exc)
+    client = InstaloaderClient(session, profile_dir)
+
+    def control_poll():
+        command = store.get_control(crawl_id)
+        if command == CTRL_STOP:
+            return "stop"
+        if command == CTRL_PAUSE:
+            store.clear_control(crawl_id)
+            return "pause"
+        if command == CTRL_RESUME:
+            store.clear_control(crawl_id)
+            return "resume"
+        return None
+
+    last_state = {"state": None}
+
+    def on_progress(state, visited, current_url, failed=0, details=None,
+                    **_ignored):
+        store.update_progress(
+            crawl_id, 1, status=state, visited=visited, failed=failed,
+            current_url=current_url, details=details or {})
+        if state != last_state["state"]:
+            last_state["state"] = state
+            if state == PAUSED:
+                store.set_status(crawl_id, PAUSED)
+            elif state == IG_BLOCKED:
+                store.set_status(crawl_id, BLOCKED)
+            elif state == "recording":
+                store.set_status(crawl_id, RUNNING)
+
+    def open_browser(url: str):
+        """Show the profile to the curator; return what closes it again."""
+        if not profile_dir:
+            return lambda: None
+        from playwright.sync_api import sync_playwright
+        pw = sync_playwright().start()
+        try:
+            context = pw.chromium.launch_persistent_context(
+                str(profile_dir), headless=False)
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        except Exception:
+            pw.stop()
+            raise
+
+        def close():
+            try:
+                context.close()
+            finally:
+                pw.stop()
+        return close
+
+    def persist(targets, posts, profiles):
+        target_of_post = {}
+        for key, newest in targets.items():
+            newest.setdefault("url", next(
+                (u for u in config.targets if key.endswith("@" + str(
+                    newest.get("username") or ""))), ""))
+        store.record_instagram_capture(crawl_id, targets, posts, target_of_post)
+
+    def rendered_pass(urls: list[str]) -> int:
+        return _instagram_rendered_pass(row, config, output_dir, urls)
+
+    known = {}
+    for url in config.targets:
+        from .instagram import parse_instagram_target
+        target = parse_instagram_target(url)
+        known[target.key] = store.get_instagram_media_ids(target.key)
+
+    capture = InstagramCaptureSession(
+        config=config, client=client, output_dir=output_dir,
+        crawl_id=crawl_id, crawl_name=row["name"], known_ids=known,
+        control_poll=control_poll, on_progress=on_progress, persist=persist,
+        open_browser=open_browser,
+        rendered_pass=rendered_pass if config.write_warc else None)
+    return capture.run()
+
+
+def _instagram_rendered_pass(row: dict, config, output_dir: Path,
+                             urls: list[str]) -> int:
+    """Record how Instagram presents the captured posts, into a WARC.
+
+    Runs headless over the same signed-in profile, after the collection is
+    safe on disk. Secrets are redacted on the way to the WARC exactly as for
+    Facebook. Returns the number of WARC files written.
+    """
+    from .browser import BrowserDriver
+    from .crawler import PageCapture
+    from .facebook import FacebookWarcSession
+
+    browser = BrowserConfig(mode="headless",
+                            user_data_dir=config.browser_profile_dir)
+    behavior = BehaviorConfig(scroll=True, mouse_jitter=False,
+                              dismiss_consent=True, obey_robots=False)
+    warc = FacebookWarcSession(
+        output_dir, row["name"], urls[0] if urls else "https://www.instagram.com/",
+        1, config.operator, WarcConfig(),
+        info_extra={
+            "robots": "none",
+            "description": ("Rendered context for an Instagram capture: how "
+                            "Instagram presented the posts collected in this "
+                            "package. Not the primary record."),
+        })
+    written = 0
+    try:
+        with BrowserDriver(browser, behavior) as driver:
+            capture = PageCapture(warc, driver)
+            page = driver.new_page(capture.on_response)
+            page.on("requestfinished", capture.on_request_finished)
+            page.on("requestfailed", capture.on_request_failed)
+            for url in urls:
+                try:
+                    driver.visit(page, url)
+                    written += 1
+                except Exception as exc:
+                    log.warning("Rendered pass could not open %s: %s", url, exc)
+    finally:
+        warc.close()
+    return len(list(output_dir.glob("*.warc.gz"))) if written else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="webarc.worker")
     parser.add_argument("crawl_id", type=int)
@@ -294,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
             _run_recording(store, args.crawl_id, row)
         elif kind == KIND_FACEBOOK:
             facebook_result = _run_facebook(store, args.crawl_id, row)
+        elif kind == KIND_INSTAGRAM:
+            facebook_result = _run_instagram(store, args.crawl_id, row)
         else:
             from .crawler import run_crawl
             run_crawl(_config_from_row(row), controller)
@@ -304,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # decide final crawl-level status from control state
     facebook_stop = (facebook_result or {}).get("stop_reason") \
-        if kind == KIND_FACEBOOK else None
+        if kind in (KIND_FACEBOOK, KIND_INSTAGRAM) else None
     if facebook_stop == "unsupported_personal_profile":
         # Not a crash, but not a completed capture either: record why, so the
         # dashboard shows the reason rather than an empty successful run.
@@ -312,7 +462,7 @@ def main(argv: list[str] | None = None) -> int:
             args.crawl_id, FAILED,
             error=(facebook_result or {}).get("detail")
             or "The requested URL is a personal Facebook profile, not a Page.")
-    elif facebook_stop == "browser_closed":
+    elif facebook_stop in ("browser_closed", "curator_stop"):
         store.set_status(args.crawl_id, STOPPED)
     elif controller.should_stop():
         store.set_status(args.crawl_id, STOPPED)
