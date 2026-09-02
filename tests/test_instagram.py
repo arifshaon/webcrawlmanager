@@ -638,3 +638,103 @@ class SessionFromProfileTests(unittest.TestCase):
 
         self.assertEqual(sorted(found["cookies"]), ["ds_user_id", "sessionid"])
         self.assertTrue(found["user_agent"].startswith("Mozilla/5.0"))
+
+
+class NativeChromeSessionTests(unittest.TestCase):
+    """The system's own Chrome, attached over CDP, read without a window."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:                                # pragma: no cover
+            raise unittest.SkipTest("playwright is not installed")
+        import glob
+        import shutil
+        with sync_playwright() as pw:
+            candidates = [pw.chromium.executable_path]
+        candidates += [shutil.which(n) or "" for n in
+                       ("google-chrome", "google-chrome-stable", "chromium")]
+        candidates += sorted(glob.glob(
+            "/opt/pw-browsers/chromium-*/chrome-linux*/chrome"), reverse=True)
+        cls.chrome = next((c for c in candidates if c and Path(c).exists()), None)
+        if not cls.chrome:                                   # pragma: no cover
+            raise unittest.SkipTest("no Chrome binary to drive natively")
+
+    def native_profile(self, cookies):
+        """Sign a profile in the way native mode would: through CDP."""
+        from playwright.sync_api import sync_playwright
+        from webarc.instagram import (_close_native_chrome,
+                                      _launch_native_chrome, _wait_for_cdp)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        process, port = _launch_native_chrome(tmp.name, True, self.chrome)
+        _wait_for_cdp(port, process)
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            context = browser.contexts[0]
+            if cookies:
+                context.add_cookies(cookies)
+            # the way the sign-in window is closed for a real curator
+            _close_native_chrome(port, process, browser)
+        return tmp.name
+
+    def test_a_signed_in_native_profile_yields_the_session(self):
+        from webarc.instagram import read_session_from_profile
+        far = 4102444800
+        profile = self.native_profile([
+            {"name": "sessionid", "value": "7%3Axyz", "domain": ".instagram.com",
+             "path": "/", "expires": far, "secure": True, "httpOnly": True},
+            {"name": "csrftoken", "value": "t", "domain": ".instagram.com",
+             "path": "/", "expires": far},
+        ])
+
+        found = read_session_from_profile(profile, browser_mode="native",
+                                          chrome_path=self.chrome)
+
+        self.assertEqual(sorted(found["cookies"]), ["csrftoken", "sessionid"])
+        self.assertTrue(found["user_agent"].startswith("Mozilla/5.0"))
+
+    def test_an_empty_native_profile_yields_none(self):
+        from webarc.instagram import read_session_from_profile
+
+        self.assertIsNone(read_session_from_profile(
+            self.native_profile([]), browser_mode="native",
+            chrome_path=self.chrome))
+
+    def test_each_native_launch_takes_a_port_of_its_own(self):
+        """So an Instagram job never collides with a recording's CDP port."""
+        from webarc.instagram import _launch_native_chrome
+        tmp_a = tempfile.TemporaryDirectory(); self.addCleanup(tmp_a.cleanup)
+        tmp_b = tempfile.TemporaryDirectory(); self.addCleanup(tmp_b.cleanup)
+        first, port_a = _launch_native_chrome(tmp_a.name, True, self.chrome)
+        try:
+            second, port_b = _launch_native_chrome(tmp_b.name, True, self.chrome)
+            try:
+                self.assertNotEqual(port_a, port_b)
+            finally:
+                second.terminate(); second.wait(timeout=10)
+        finally:
+            first.terminate(); first.wait(timeout=10)
+
+
+class BrowserChoiceTests(unittest.TestCase):
+    def test_the_job_carries_the_browser_choice(self):
+        config = InstagramCaptureConfig.from_dict({
+            "targets": ["qnl"], "mode": "latest_n",
+            "browser": {"mode": "native", "user_data_dir": "/tmp/p",
+                        "chrome_path": "/opt/chrome"}})
+
+        self.assertEqual(config.browser_mode, "native")
+        self.assertEqual(config.browser_profile_dir, "/tmp/p")
+        self.assertEqual(config.chrome_path, "/opt/chrome")
+
+    def test_headed_is_the_default(self):
+        config = InstagramCaptureConfig.from_dict({"targets": ["qnl"]})
+
+        self.assertEqual(config.browser_mode, "headed")
+
+    def test_anything_else_is_refused(self):
+        with self.assertRaises(ValueError):
+            InstagramCaptureConfig.from_dict({
+                "targets": ["qnl"], "browser": {"mode": "firefox"}})

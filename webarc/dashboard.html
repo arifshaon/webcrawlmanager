@@ -673,6 +673,14 @@
             <input type="text" id="ig-operator" placeholder="webarc">
             <span class="help">Stored in the capture manifest.</span>
           </div>
+          <div class="field">
+            <label class="field-label" for="ig-browser">Browser for sign-in and rendered capture</label>
+            <select id="ig-browser">
+              <option value="headed">Headed — managed Chrome with a dedicated profile (recommended)</option>
+              <option value="native">Native — your system Chrome via CDP (advanced)</option>
+            </select>
+            <span class="help">Either way SWM keeps a dedicated Instagram profile: sign in there once and the session is read from it for every capture. The window opens only when Instagram needs you.</span>
+          </div>
           <div class="field wide">
             <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
             <div class="storage-row">
@@ -1244,6 +1252,7 @@ async function startInstagram() {
   if (!surfaces.length) { setMsg("Select at least one of Posts and Reels.", "err"); return; }
   const body = {
     targets, mode, surfaces,
+    browser: $("#ig-browser").value,
     from_date: $("#ig-from").value || null,
     to_date: $("#ig-to").value || null,
     latest_n: Number($("#ig-latest-n").value || 100),

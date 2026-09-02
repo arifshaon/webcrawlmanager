@@ -656,9 +656,13 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         operator = str(payload.get("operator") or "webarc").strip() or "webarc"
         if len(operator) > 200:
             raise HTTPException(400, "operator must be 200 characters or fewer")
+        browser_mode = str(payload.get("browser") or "headed")
+        if browser_mode not in ("headed", "native"):
+            raise HTTPException(400, "browser must be 'headed' or 'native'")
         profile_dir = Path(_store().db_path).resolve().parent / \
             "browser-profiles" / "instagram"
         instagram = {
+            "browser": {"mode": browser_mode, "user_data_dir": str(profile_dir)},
             "targets": payload.get("targets"),
             "mode": str(payload.get("mode") or "latest_n"),
             "from_date": payload.get("from_date"),

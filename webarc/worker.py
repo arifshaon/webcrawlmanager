@@ -272,7 +272,7 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
 
     from .instagram import (BLOCKED as IG_BLOCKED, InstagramCaptureConfig,
                             InstagramCaptureSession, InstaloaderClient,
-                            read_session_from_profile)
+                            open_profile_for_curator, read_session_from_profile)
 
     raw = json.loads(row["config_json"])
     ig_raw = raw.get("instagram", {})
@@ -283,10 +283,13 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
     session = None
     if profile_dir:
         try:
-            session = read_session_from_profile(profile_dir)
+            session = read_session_from_profile(
+                profile_dir, browser_mode=config.browser_mode,
+                chrome_path=config.chrome_path)
         except Exception as exc:
             log.warning("Could not read the Instagram browser profile: %s", exc)
-    client = InstaloaderClient(session, profile_dir)
+    client = InstaloaderClient(session, profile_dir, config.browser_mode,
+                               config.chrome_path)
 
     def control_poll():
         command = store.get_control(crawl_id)
@@ -320,23 +323,9 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
         """Show the profile to the curator; return what closes it again."""
         if not profile_dir:
             return lambda: None
-        from playwright.sync_api import sync_playwright
-        pw = sync_playwright().start()
-        try:
-            context = pw.chromium.launch_persistent_context(
-                str(profile_dir), headless=False)
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        except Exception:
-            pw.stop()
-            raise
-
-        def close():
-            try:
-                context.close()
-            finally:
-                pw.stop()
-        return close
+        return open_profile_for_curator(
+            profile_dir, url, browser_mode=config.browser_mode,
+            chrome_path=config.chrome_path)
 
     def persist(targets, posts, profiles):
         target_of_post = {}
@@ -347,7 +336,9 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
         store.record_instagram_capture(crawl_id, targets, posts, target_of_post)
 
     def rendered_pass(urls: list[str]) -> int:
-        return _instagram_rendered_pass(row, config, output_dir, urls)
+        # The session as it stands now, after any sign-in during the run.
+        current = getattr(client, "_session", None) or session
+        return _instagram_rendered_pass(row, config, output_dir, urls, current)
 
     known = {}
     for url in config.targets:
@@ -365,19 +356,21 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
 
 
 def _instagram_rendered_pass(row: dict, config, output_dir: Path,
-                             urls: list[str]) -> int:
+                             urls: list[str], session: dict | None) -> int:
     """Record how Instagram presents the captured posts, into a WARC.
 
-    Runs headless over the same signed-in profile, after the collection is
-    safe on disk. Secrets are redacted on the way to the WARC exactly as for
-    Facebook. Returns the number of WARC files written.
+    Runs headless after the collection is safe on disk, carrying the job's
+    session as cookies and its exact user agent -- a headless launch is a
+    fresh context, so the profile directory alone would be signed out.
+    Secrets are redacted on the way to the WARC exactly as for Facebook.
+    Returns the number of WARC files written.
     """
     from .browser import BrowserDriver
     from .crawler import PageCapture
     from .facebook import FacebookWarcSession
 
     browser = BrowserConfig(mode="headless",
-                            user_data_dir=config.browser_profile_dir)
+                            user_agent=(session or {}).get("user_agent"))
     behavior = BehaviorConfig(scroll=True, mouse_jitter=False,
                               dismiss_consent=True, obey_robots=False)
     warc = FacebookWarcSession(
@@ -392,6 +385,12 @@ def _instagram_rendered_pass(row: dict, config, output_dir: Path,
     written = 0
     try:
         with BrowserDriver(browser, behavior) as driver:
+            cookies = (session or {}).get("cookies") or {}
+            if cookies and driver._context is not None:
+                driver._context.add_cookies([
+                    {"name": name, "value": value, "domain": ".instagram.com",
+                     "path": "/", "secure": True}
+                    for name, value in cookies.items()])
             capture = PageCapture(warc, driver)
             page = driver.new_page(capture.on_response)
             page.on("requestfinished", capture.on_request_finished)

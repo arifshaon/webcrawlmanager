@@ -448,6 +448,18 @@ class InstagramApiTests(StorageTestCase):
         self.assertTrue(stored["instagram"]["browser_profile_dir"].endswith(
             str(Path("browser-profiles") / "instagram")))
 
+    def test_the_browser_choice_is_stored_with_the_job(self):
+        made = self.create(browser="native").json()
+        stored = json.loads(srv._store().get_crawl(made["id"])["config_json"])
+
+        self.assertEqual(stored["instagram"]["browser"]["mode"], "native")
+
+    def test_an_unknown_browser_is_refused(self):
+        response = self.create(browser="firefox")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("headed", response.text)
+
     def test_the_capability_is_reported(self):
         capabilities = self.client.get("/api/capabilities").json()
 

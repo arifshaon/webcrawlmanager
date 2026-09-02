@@ -312,6 +312,12 @@ class InstagramCaptureConfig:
     continuation_of: Optional[int] = None
     operator: str = "webarc"
     browser_profile_dir: Optional[str] = None
+    # "headed" is SWM's managed Chrome with a dedicated profile; "native" is
+    # the system's own Chrome with a dedicated profile, attached over CDP.
+    # Either way the profile is where the curator signs in and where the
+    # session is read from.
+    browser_mode: str = "headed"
+    chrome_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, raw: dict) -> "InstagramCaptureConfig":
@@ -329,6 +335,10 @@ class InstagramCaptureConfig:
         mode = str(raw.get("mode") or "latest_n")
         if mode not in INSTAGRAM_MODES:
             raise ValueError(f"Unsupported Instagram capture mode: {mode}")
+        browser_mode = str((raw.get("browser") or {}).get("mode")
+                           or raw.get("browser_mode") or "headed")
+        if browser_mode not in ("headed", "native"):
+            raise ValueError("browser must be 'headed' or 'native'")
         from_date = _date_bound(raw.get("from_date"))
         to_date = _date_bound(raw.get("to_date"), end=True)
         if from_date and to_date and from_date > to_date:
@@ -377,7 +387,11 @@ class InstagramCaptureConfig:
             prior_newest=dict(prior),
             continuation_of=raw.get("continuation_of"),
             operator=str(raw.get("operator") or "webarc"),
-            browser_profile_dir=raw.get("browser_profile_dir"),
+            browser_profile_dir=(raw.get("browser_profile_dir")
+                                 or (raw.get("browser") or {}).get("user_data_dir")),
+            browser_mode=(str((raw.get("browser") or {}).get("mode")
+                              or raw.get("browser_mode") or "headed")),
+            chrome_path=(raw.get("browser") or {}).get("chrome_path"),
         )
 
 
@@ -1358,34 +1372,198 @@ class InstagramCaptureSession:
 _SESSION_COOKIES = ("sessionid", "csrftoken", "ds_user_id", "mid", "ig_did")
 
 
+def _session_from_context(context) -> Optional[dict]:
+    page = context.pages[0] if context.pages else context.new_page()
+    try:
+        user_agent = page.evaluate("navigator.userAgent")
+    except Exception:
+        user_agent = None
+    cookies = {c["name"]: c["value"]
+               for c in context.cookies("https://www.instagram.com/")
+               if c.get("name") in _SESSION_COOKIES}
+    if not cookies.get("sessionid"):
+        return None
+    return {"cookies": cookies, "user_agent": user_agent}
+
+
+def _free_port() -> int:
+    import socket
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _launch_managed_profile(pw, user_data_dir: str | Path, headless: bool):
+    """SWM's managed Chrome on the dedicated profile.
+
+    The profile is written by Google Chrome when one is installed, so it is
+    read with the same channel where possible; the bundled Chromium is the
+    fallback on a machine without Chrome.
+    """
+    try:
+        return pw.chromium.launch_persistent_context(
+            str(user_data_dir), headless=headless, channel="chrome")
+    except Exception:
+        return pw.chromium.launch_persistent_context(
+            str(user_data_dir), headless=headless)
+
+
+def _launch_native_chrome(user_data_dir: str | Path, headless: bool,
+                          chrome_path: Optional[str], url: str = "about:blank"):
+    """The system's own Chrome on the dedicated profile, attached over CDP.
+
+    Returns (process, cdp_port). Chrome ignores --remote-debugging-port on
+    its default profile, so a dedicated one is always used; the port is
+    chosen fresh so an Instagram job never collides with a recording or a
+    Facebook capture that owns another.
+    """
+    import subprocess
+
+    from .browser import _CAPTURE_ARGS, _find_chrome
+
+    chrome = _find_chrome(chrome_path)
+    port = _free_port()
+    Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+    args = [chrome, f"--remote-debugging-port={port}",
+            f"--user-data-dir={user_data_dir}",
+            "--no-first-run", "--no-default-browser-check", *_CAPTURE_ARGS]
+    if headless:
+        args.append("--headless=new")
+    try:
+        import os
+        if os.name == "posix" and os.geteuid() == 0:
+            # Chrome exits at once as root without this; a container is the
+            # one place SWM runs as root, and the only place it is needed.
+            args.append("--no-sandbox")
+    except AttributeError:
+        pass
+    args.append(url)
+    process = subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+    return process, port
+
+
+def _close_native_chrome(port: int, process, browser=None) -> None:
+    """Shut the system's Chrome down the way it shuts itself down.
+
+    A terminated Chrome has not necessarily written its cookies: they are
+    flushed on an orderly shutdown, and a SIGTERM is not one. Killing it after
+    the curator signed in would lose the very session the sign-in was for, so
+    Chrome is asked to close over CDP and given time to finish before force
+    is used.
+    """
+    from playwright.sync_api import sync_playwright
+
+    try:
+        if browser is not None:
+            browser.new_browser_cdp_session().send("Browser.close")
+        else:
+            with sync_playwright() as pw:
+                attached = pw.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{port}")
+                attached.new_browser_cdp_session().send("Browser.close")
+    except Exception:
+        pass
+    try:
+        process.wait(timeout=15)
+        return
+    except Exception:
+        pass
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except Exception:
+        process.kill()
+
+
+def _wait_for_cdp(port: int, process, timeout: float = 20.0) -> None:
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(
+                f"Chrome exited immediately (code {process.returncode}); "
+                "is the profile already in use by another Chrome?")
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/json/version", timeout=1.0):
+                return
+        except Exception:
+            time.sleep(0.25)
+    raise RuntimeError(f"Chrome's CDP endpoint did not come up on port {port}.")
+
+
 def read_session_from_profile(user_data_dir: str | Path,
-                              headless: bool = True) -> Optional[dict]:
+                              headless: bool = True,
+                              browser_mode: str = "headed",
+                              chrome_path: Optional[str] = None) -> Optional[dict]:
     """Read the Instagram session out of the dedicated browser profile.
 
-    The curator signed in once, in Chrome. This opens that profile without a
-    window, copies the session cookies and the exact user agent, and closes it
-    again: the cookies live in this process for the job and are written
-    nowhere. Returns None when the profile holds no session.
+    The curator signed in once, in that browser. This opens the profile
+    without a window -- SWM's managed Chrome, or the system's own Chrome over
+    CDP, whichever the job chose -- copies the session cookies and the exact
+    user agent, and closes it again. The cookies live in this process for the
+    job and are written nowhere. Returns None when the profile holds no
+    session.
     """
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as pw:
-        context = pw.chromium.launch_persistent_context(
-            str(user_data_dir), headless=headless)
-        try:
-            page = context.pages[0] if context.pages else context.new_page()
+        if browser_mode == "native":
+            process, port = _launch_native_chrome(user_data_dir, headless,
+                                                  chrome_path)
+            browser = None
             try:
-                user_agent = page.evaluate("navigator.userAgent")
-            except Exception:
-                user_agent = None
-            cookies = {c["name"]: c["value"]
-                       for c in context.cookies("https://www.instagram.com/")
-                       if c.get("name") in _SESSION_COOKIES}
+                _wait_for_cdp(port, process)
+                browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+                context = (browser.contexts[0] if browser.contexts
+                           else browser.new_context())
+                return _session_from_context(context)
+            finally:
+                _close_native_chrome(port, process, browser)
+        context = _launch_managed_profile(pw, user_data_dir, headless)
+        try:
+            return _session_from_context(context)
         finally:
             context.close()
-    if not cookies.get("sessionid"):
-        return None
-    return {"cookies": cookies, "user_agent": user_agent}
+
+
+def open_profile_for_curator(user_data_dir: str | Path, url: str,
+                             browser_mode: str = "headed",
+                             chrome_path: Optional[str] = None) -> Callable[[], None]:
+    """Show the dedicated profile to the curator on one page.
+
+    Returns what closes the window again. In native mode the window is the
+    system's own Chrome, which the curator may prefer for signing in; in
+    headed mode it is SWM's managed Chrome.
+    """
+    if browser_mode == "native":
+        process, port = _launch_native_chrome(user_data_dir, False,
+                                              chrome_path, url)
+        _wait_for_cdp(port, process)
+
+        def close_native():
+            _close_native_chrome(port, process)
+        return close_native
+
+    from playwright.sync_api import sync_playwright
+
+    pw = sync_playwright().start()
+    try:
+        context = _launch_managed_profile(pw, user_data_dir, headless=False)
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+    except Exception:
+        pw.stop()
+        raise
+
+    def close_managed():
+        try:
+            context.close()
+        finally:
+            pw.stop()
+    return close_managed
 
 
 def _make_rate_controller(instaloader_module):
@@ -1443,11 +1621,15 @@ class InstaloaderClient:
     """
 
     def __init__(self, session: Optional[dict] = None,
-                 profile_dir: Optional[str | Path] = None):
+                 profile_dir: Optional[str | Path] = None,
+                 browser_mode: str = "headed",
+                 chrome_path: Optional[str] = None):
         import instaloader
         self._instaloader = instaloader
         self.version = getattr(instaloader, "__version__", "unknown")
         self.profile_dir = profile_dir
+        self.browser_mode = browser_mode
+        self.chrome_path = chrome_path
         self._session = session
         self.loader = None
         self._build()
@@ -1475,7 +1657,9 @@ class InstaloaderClient:
     def refresh(self) -> None:
         """Re-read the session after the curator signed in or resolved a hold."""
         if self.profile_dir:
-            self._session = read_session_from_profile(self.profile_dir)
+            self._session = read_session_from_profile(
+                self.profile_dir, browser_mode=self.browser_mode,
+                chrome_path=self.chrome_path)
         self._build()
 
     # -- translation ----------------------------------------------------------
