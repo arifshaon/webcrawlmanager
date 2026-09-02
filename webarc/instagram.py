@@ -318,6 +318,10 @@ class InstagramCaptureConfig:
     # session is read from.
     browser_mode: str = "headed"
     chrome_path: Optional[str] = None
+    # "browser": collect through the signed-in browser, which Instagram
+    # serves as its own client. "instaloader": background extraction, which
+    # Instagram recognises and often refuses on sight; kept as an option.
+    collector: str = "browser"
 
     @classmethod
     def from_dict(cls, raw: dict) -> "InstagramCaptureConfig":
@@ -339,6 +343,9 @@ class InstagramCaptureConfig:
                            or raw.get("browser_mode") or "headed")
         if browser_mode not in ("headed", "native"):
             raise ValueError("browser must be 'headed' or 'native'")
+        collector = str(raw.get("collector") or "browser")
+        if collector not in ("browser", "instaloader"):
+            raise ValueError("collector must be 'browser' or 'instaloader'")
         from_date = _date_bound(raw.get("from_date"))
         to_date = _date_bound(raw.get("to_date"), end=True)
         if from_date and to_date and from_date > to_date:
@@ -392,6 +399,7 @@ class InstagramCaptureConfig:
             browser_mode=(str((raw.get("browser") or {}).get("mode")
                               or raw.get("browser_mode") or "headed")),
             chrome_path=(raw.get("browser") or {}).get("chrome_path"),
+            collector=collector,
         )
 
 
@@ -845,7 +853,8 @@ class InstagramCaptureSession:
             "oldest_post": min(dates) if dates else None,
             "rate_limit_waits": self.counters.get("rate_limit_waits", 0),
             "pagination_failures": self.counters.get("pagination_failures", 0),
-            "warc_files": self.counters.get("warc_files", 0),
+            "warc_files": self.counters.get("warc_files") or len(
+                list(self.archive.out_dir.glob("*.warc.gz"))),
             "targets": list(self.target_status.values()),
         }
 
@@ -1330,7 +1339,9 @@ class InstagramCaptureSession:
                     "selection_exclusions": dict(self.exclusions),
                 },
                 "web_context": {
-                    "warc": "*.warc.gz" if self.counters.get("warc_files") else None,
+                    "warc": "*.warc.gz" if (self.counters.get("warc_files")
+                                            or any(self.archive.out_dir.glob("*.warc.gz")))
+                    else None,
                     "meaning": "Optional rendered capture of the same posts, "
                                "for how Instagram presented them. A rendering "
                                "requests only what it needs, so it is context, "
@@ -1339,6 +1350,8 @@ class InstagramCaptureSession:
                 "fixity": "checksums.sha256",
             },
             "counts": dict(self.counters) | {
+                "warc_files": self.counters.get("warc_files") or len(
+                    list(self.archive.out_dir.glob("*.warc.gz"))),
                 "posts_exported": len(self.archive.posts),
                 "comments_exported": collected,
                 "media_captured": len(self.archive.media_index),

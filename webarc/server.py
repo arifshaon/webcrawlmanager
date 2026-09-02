@@ -675,6 +675,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "include_replies": bool(payload.get("include_replies", False)),
             "max_replies_per_comment": payload.get("max_replies_per_comment", 10),
             "write_warc": bool(payload.get("write_warc", False)),
+            "collector": str(payload.get("collector") or "browser"),
             "operator": operator,
             "browser_profile_dir": str(profile_dir),
         }

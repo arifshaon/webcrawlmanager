@@ -281,15 +281,43 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
     profile_dir = config.browser_profile_dir
 
     session = None
-    if profile_dir:
-        try:
-            session = read_session_from_profile(
-                profile_dir, browser_mode=config.browser_mode,
-                chrome_path=config.chrome_path)
-        except Exception as exc:
-            log.warning("Could not read the Instagram browser profile: %s", exc)
-    client = InstaloaderClient(session, profile_dir, config.browser_mode,
-                               config.chrome_path)
+    warc = None
+    browser_client = None
+    if config.collector == "browser":
+        # Instagram served to its own client: a signed-in Chrome, scrolled the
+        # way a person scrolls it. The WARC, when asked for, is that browser's
+        # own traffic written as it happens -- no separate rendered pass.
+        from .facebook import FacebookWarcSession
+        from .instagram_browser import InstagramBrowserClient
+
+        if config.write_warc:
+            warc = FacebookWarcSession(
+                output_dir, row["name"], config.targets[0], 1, config.operator,
+                WarcConfig(),
+                info_extra={
+                    "robots": "none",
+                    "description": ("Instagram capture through the signed-in "
+                                    "browser: how Instagram presented what was "
+                                    "collected. The media files, raw payloads "
+                                    "and normalised records beside it are the "
+                                    "primary record."),
+                })
+        browser_client = InstagramBrowserClient(
+            BrowserConfig(mode=config.browser_mode, user_data_dir=profile_dir,
+                          chrome_path=config.chrome_path),
+            warc=warc)
+        browser_client.start()
+        client = browser_client
+    else:
+        if profile_dir:
+            try:
+                session = read_session_from_profile(
+                    profile_dir, browser_mode=config.browser_mode,
+                    chrome_path=config.chrome_path)
+            except Exception as exc:
+                log.warning("Could not read the Instagram browser profile: %s", exc)
+        client = InstaloaderClient(session, profile_dir, config.browser_mode,
+                                   config.chrome_path)
 
     def control_poll():
         command = store.get_control(crawl_id)
@@ -321,6 +349,8 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
 
     def open_browser(url: str):
         """Show the profile to the curator; return what closes it again."""
+        if browser_client is not None:
+            return browser_client.show(url)      # the window is already open
         if not profile_dir:
             return lambda: None
         return open_profile_for_curator(
@@ -351,8 +381,21 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
         crawl_id=crawl_id, crawl_name=row["name"], known_ids=known,
         control_poll=control_poll, on_progress=on_progress, persist=persist,
         open_browser=open_browser,
-        rendered_pass=rendered_pass if config.write_warc else None)
-    return capture.run()
+        rendered_pass=(rendered_pass if config.write_warc
+                       and browser_client is None else None))
+    try:
+        result = capture.run()
+    finally:
+        if warc is not None:
+            try:
+                warc.close()
+            except Exception:
+                pass
+        if browser_client is not None:
+            browser_client.close()
+    if warc is not None:
+        result["warc_files"] = len(list(output_dir.glob("*.warc.gz")))
+    return result
 
 
 def _instagram_rendered_pass(row: dict, config, output_dir: Path,
