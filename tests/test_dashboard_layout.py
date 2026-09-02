@@ -112,6 +112,26 @@ class NavigationTests(DashboardTestCase):
             else self.markup[start:]
 
 
+class DisabledJobTabTests(DashboardTestCase):
+    """A disabled tab has to say why where it can be seen."""
+
+    def test_the_reason_goes_to_a_note_outside_the_hidden_forms(self):
+        self.assertIn('id="job-cap-note"', self.markup)
+        tabs = self.markup.index('class="mode-tabs job-tabs"')
+        note = self.markup.index('id="job-cap-note"')
+        first_form = self.markup.index('id="new-form"')
+        self.assertLess(tabs, note)
+        self.assertLess(note, first_form)
+
+    def test_every_job_type_is_covered(self):
+        start = self.script.index("function switchJob(")
+        body = self.script[start:self.script.index("\n}", start)]
+        for job in ("record", "facebook", "instagram"):
+            with self.subTest(job=job):
+                self.assertIn(f"{job}:", body)
+        self.assertIn('$("#job-cap-note")', body)
+
+
 class StorageFieldTests(DashboardTestCase):
     def test_every_job_form_can_name_its_own_location(self):
         fields = re.findall(r'id="([a-z-]+)" class="storage-dir"', self.markup)

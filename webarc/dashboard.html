@@ -306,6 +306,7 @@
     <button type="button" class="mode-tab" id="job-tab-instagram"
       data-job="instagram" role="tab" aria-selected="false">Instagram</button>
   </div>
+  <div class="mode-note mode-explanation hidden" id="job-cap-note" role="status"></div>
   <form id="new-form" onsubmit="return false">
     <div class="editor-head">
       <div class="mode-tabs" role="tablist" aria-label="Configuration editor mode">
@@ -1059,18 +1060,19 @@ async function loadCapabilities() {
   }
 }
 function switchJob(job) {
-  if (job === "record" && recordingCapability && !recordingCapability.available) {
-    $("#record-cap-note").textContent = recordingCapability.reason || "";
+  // A disabled tab has to say why where it can be seen: the form it belongs
+  // to is hidden, so a note inside that form is a note nobody reads.
+  const refused = {
+    record: recordingCapability, facebook: facebookCapability,
+    instagram: instagramCapability,
+  }[job];
+  const note = $("#job-cap-note");
+  if (refused && !refused.available) {
+    note.textContent = refused.reason || "This job type is unavailable here.";
+    note.classList.remove("hidden");
     return;
   }
-  if (job === "facebook" && facebookCapability && !facebookCapability.available) {
-    $("#facebook-cap-note").textContent = facebookCapability.reason || "";
-    return;
-  }
-  if (job === "instagram" && instagramCapability && !instagramCapability.available) {
-    $("#instagram-cap-note").textContent = instagramCapability.reason || "";
-    return;
-  }
+  note.classList.add("hidden");
   $$(".job-tabs .mode-tab").forEach(tab => {
     const active = tab.dataset.job === job;
     tab.classList.toggle("active", active);
