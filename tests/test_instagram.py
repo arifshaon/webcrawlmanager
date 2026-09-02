@@ -371,6 +371,30 @@ class WhenInstagramPushesBackTests(EngineTestCase):
         self.assertTrue(any("limiting requests" in str(p["details"]["message"])
                             for p in self.progress))
 
+    def test_repeated_limits_back_off_and_a_success_resets_them(self):
+        self.fake.add_profile("qnl", [post(str(n), day(n)) for n in range(9, 0, -1)])
+        self.fake.rate_limit_after = 2
+        self.fake.rate_limit_once = False       # every call limited...
+        calls = {"n": 0}
+        original = self.fake._tick
+
+        def sometimes(what):
+            calls["n"] += 1
+            if calls["n"] in (3, 4, 5, 9):       # ...only these times
+                self.fake.calls[what] += 1
+                self.fake.calls["total"] += 1
+                from webarc.instagram import RateLimited
+                raise RateLimited(60.0, "limited")
+            self.fake.rate_limit_after = None
+            original(what)
+        self.fake._tick = sometimes
+
+        self.session(["qnl"]).run()
+
+        waits = [e["wait_seconds"] for e in self.read_jsonl("instagram-events.jsonl")
+                 if e["event"] == "rate_limited"]
+        self.assertEqual(waits, [60.0, 120.0, 240.0, 60.0])
+
     def test_stop_is_answered_during_a_rate_limit_wait(self):
         self.fake.add_profile("qnl", [post(str(n), day(n)) for n in range(9, 0, -1)])
         self.fake.rate_limit_after = 2
@@ -500,6 +524,33 @@ class InstaloaderAdapterTests(unittest.TestCase):
             import instaloader  # noqa: F401
         except ImportError:                                # pragma: no cover
             raise unittest.SkipTest("instaloader is not installed")
+
+    def test_a_signed_in_viewer_is_read_from_the_cookie_not_asked_for(self):
+        """test_login() hits a retired endpoint that 401s valid sessions."""
+        from unittest import mock
+        from webarc.instagram import InstaloaderClient
+
+        client = InstaloaderClient({"cookies": {"sessionid": "1%3Aabc",
+                                                "ds_user_id": "424242"},
+                                    "user_agent": "ua"})
+        with mock.patch.object(client.loader, "test_login",
+                               side_effect=AssertionError("must not be called")):
+            self.assertEqual(client.viewer(), "424242")
+
+    def test_a_short_cooldown_and_a_429_are_not_ten_minute_waits(self):
+        import instaloader
+        from webarc.instagram import InstaloaderClient, RateLimited
+
+        client = InstaloaderClient(None)
+        with self.assertRaises(RateLimited) as short:
+            client._guard(lambda: (_ for _ in ()).throw(
+                instaloader.exceptions.ConnectionException(
+                    "401 Unauthorized - Please wait a few minutes before you try again.")))
+        with self.assertRaises(RateLimited) as many:
+            client._guard(lambda: (_ for _ in ()).throw(
+                instaloader.exceptions.TooManyRequestsException("429")))
+        self.assertLessEqual(short.exception.wait_seconds, 120)
+        self.assertLessEqual(many.exception.wait_seconds, 300)
 
     def test_no_session_means_no_request_to_learn_the_viewer(self):
         from webarc.instagram import InstaloaderClient

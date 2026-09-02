@@ -665,6 +665,7 @@ class InstagramCaptureSession:
             for t in self.targets}
         self.current_target: Optional[InstagramTarget] = None
         self._stop_requested = False
+        self._rate_limit_streak = 0
         self._last_report = 0.0
         self.viewer_username: Optional[str] = None
         self.newest_by_target: dict[str, dict] = {}
@@ -737,9 +738,16 @@ class InstagramCaptureSession:
 
     def _wait_out_rate_limit(self, exc: RateLimited) -> bool:
         """Sit out a rate limit, still answering Stop. False on stop."""
-        wait = max(30.0, min(float(exc.wait_seconds), 1800.0))
+        # The first limit is waited out briefly; each one that follows without
+        # a successful request in between doubles the wait. A run that keeps
+        # being limited is asking too fast, and a run that was limited once is
+        # not made to pay for it for ten minutes.
+        self._rate_limit_streak += 1
+        wait = float(exc.wait_seconds) * (2 ** (self._rate_limit_streak - 1))
+        wait = max(20.0, min(wait, 900.0))
         self.counters["rate_limit_waits"] += 1
-        self.archive.event("rate_limited", wait_seconds=wait, detail=str(exc))
+        self.archive.event("rate_limited", wait_seconds=wait,
+                           streak=self._rate_limit_streak, detail=str(exc))
         remaining = wait
         while remaining > 0:
             self.phase_detail = (f"Instagram is limiting requests. Waiting "
@@ -761,7 +769,9 @@ class InstagramCaptureSession:
             if self._stop_requested:
                 raise TargetUnavailable("stopped")
             try:
-                return action()
+                result = action()
+                self._rate_limit_streak = 0
+                return result
             except RateLimited as exc:
                 if not self._wait_out_rate_limit(exc):
                     raise TargetUnavailable("stopped") from exc
@@ -1649,9 +1659,13 @@ class InstaloaderClient:
             save_metadata=False, compress_json=False, iphone_support=True,
             max_connection_attempts=1,
             rate_controller=lambda context: _HandBackRateController(context))
-        cookies = (self._session or {}).get("cookies") or {}
+        cookies = dict((self._session or {}).get("cookies") or {})
         self.signed_in = bool(cookies.get("sessionid"))
         if self.signed_in:
+            # load_session indexes csrftoken unconditionally; a profile that
+            # holds a session but no CSRF cookie yet would crash the job here
+            # instead of getting one on its first request.
+            cookies.setdefault("csrftoken", "")
             self.loader.load_session(cookies.get("ds_user_id") or "", cookies)
 
     def refresh(self) -> None:
@@ -1668,7 +1682,7 @@ class InstaloaderClient:
         try:
             return action()
         except ex.TooManyRequestsException as exc:
-            raise RateLimited(600.0, str(exc)) from exc
+            raise RateLimited(180.0, str(exc)) from exc
         except ex.LoginRequiredException as exc:
             raise LoginRequired(str(exc)) from exc
         except ex.TwoFactorAuthRequiredException as exc:
@@ -1690,8 +1704,11 @@ class InstaloaderClient:
             raise InstagramError(str(exc)) from exc
         except ex.ConnectionException as exc:
             text = str(exc).lower()
-            if "wait a few minutes" in text or "429" in text or "401" in text:
-                raise RateLimited(600.0, str(exc)) from exc
+            if "429" in text:
+                raise RateLimited(180.0, str(exc)) from exc
+            if "wait a few minutes" in text or "401" in text:
+                # Instagram's short cooldown; minutes, not tens of minutes.
+                raise RateLimited(90.0, str(exc)) from exc
             if "checkpoint" in text or "challenge" in text:
                 raise CheckpointRequired(str(exc)) from exc
             if "login" in text and "required" in text:
@@ -1702,11 +1719,19 @@ class InstaloaderClient:
 
     # -- the protocol ---------------------------------------------------------
     def viewer(self) -> Optional[str]:
+        """Who the session belongs to, without asking Instagram.
+
+        Instaloader's test_login() queries a retired query_hash endpoint that
+        answers 401 "please wait a few minutes" to valid sessions too; read
+        as a rate limit, that cost a first capture ten minutes before its
+        first real request. The session cookie already names the account,
+        and a session that has in fact expired shows itself on the first
+        content request, which is handled.
+        """
         if not self.signed_in:
-            # An anonymous test_login is a request Instagram answers with
-            # "please wait a few minutes": there is nothing to learn from it.
             return None
-        return self._guard(lambda: self.loader.test_login())  # type: ignore[return-value]
+        cookies = (self._session or {}).get("cookies") or {}
+        return str(cookies.get("ds_user_id") or "signed-in")
 
     def profile(self, username: str) -> InstagramProfile:
         il = self._instaloader
