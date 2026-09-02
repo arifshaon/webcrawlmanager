@@ -841,13 +841,14 @@ class InstagramCaptureSession:
         self.archive.event("capture_created", mode=self.config.mode,
                            targets=[t.url for t in self.targets],
                            continuation_of=self.config.continuation_of)
-        try:
-            self.viewer_username = self.client.viewer()
-        except InstagramError as exc:
-            log.info("Viewer unknown: %s", exc)
-        self.archive.event("viewer", username=self.viewer_username,
-                           signed_in=bool(self.viewer_username))
-        self._report(force=True)
+        if not self._establish_viewer():
+            self.state = STOPPED
+            self.phase_detail = self._closing_summary()
+            self.archive.finalise(self.manifest_document(final=True),
+                                  self._checkpoint_document())
+            self._report(force=True)
+            return {"stop_reason": self.stop_reason, "stop_rule": self.stop_rule,
+                    "posts": 0, "comments": 0, "media": 0}
 
         for target in self.targets:
             if self._stop_requested:
@@ -917,6 +918,44 @@ class InstagramCaptureSession:
                 "posts": len(self.archive.posts),
                 "comments": len(self.archive.comments),
                 "media": len(self.archive.media_index)}
+
+    def _establish_viewer(self) -> bool:
+        """Make sure there is a signed-in session before asking anything.
+
+        Instagram answers an anonymous client with 401 "please wait a few
+        minutes" and 429, not with "login required", so waiting for it to
+        say sign in would mean waiting for a rate limit instead. The browser
+        opens for the curator first, on Instagram's own sign-in page, and the
+        session is read from the profile once they continue. A curator who
+        continues still signed out has decided; the run goes on, and the
+        manifest says what that bounds. Returns False on Stop.
+        """
+        for attempt in range(3):
+            try:
+                self.viewer_username = self.client.viewer()
+            except InstagramError as exc:
+                log.info("Viewer unknown: %s", exc)
+                self.viewer_username = None
+            if self.viewer_username:
+                break
+            still = " still" if attempt else ""
+            held = self._hold_for_curator(
+                f"The capture browser is{still} not signed in to Instagram. "
+                "Sign in in the window that has opened -- use a dedicated "
+                "institutional account, not a personal one -- then select "
+                "\u201cI have resolved it \u2014 continue\u201d. SWM reads "
+                "the session from that browser profile; it never sees the "
+                "password.",
+                "https://www.instagram.com/accounts/login/")
+            if not held:
+                return False
+            self._refresh_client()
+            if attempt == 2:
+                self.archive.event("proceeding_signed_out")
+        self.archive.event("viewer", username=self.viewer_username,
+                           signed_in=bool(self.viewer_username))
+        self._report(force=True)
+        return True
 
     def _closing_summary(self) -> str:
         posts = len(self.archive.posts)
@@ -1349,6 +1388,32 @@ def read_session_from_profile(user_data_dir: str | Path,
     return {"cookies": cookies, "user_agent": user_agent}
 
 
+def _make_rate_controller(instaloader_module):
+    base = instaloader_module.RateController
+
+    class HandBack(base):  # type: ignore[misc, valid-type]
+        """Never sleep out a 429 inside the library; raise it instead."""
+
+        def handle_429(self, query_type: str) -> None:
+            raise instaloader_module.exceptions.TooManyRequestsException(
+                "Instagram responded with HTTP 429 (too many requests).")
+
+        def sleep(self, secs: float) -> None:
+            # Pacing between queries stays, but bounded: a long sleep here is
+            # invisible to the dashboard and deaf to Stop.
+            super().sleep(min(float(secs), 15.0))
+
+    return HandBack
+
+
+class _HandBackRateController:
+    """Placeholder resolved at build time, once instaloader is imported."""
+
+    def __new__(cls, context):
+        import instaloader
+        return _make_rate_controller(instaloader)(context)
+
+
 class _RetryingIterator:
     """An iterator whose next() can be asked again after it raised."""
 
@@ -1390,13 +1455,21 @@ class InstaloaderClient:
     def _build(self) -> None:
         il = self._instaloader
         user_agent = (self._session or {}).get("user_agent")
+        # Instaloader's own rate controller sleeps for many minutes inside
+        # the library when Instagram answers 429, where Stop cannot reach it
+        # and the dashboard cannot say what is happening. This one hands the
+        # condition back to the engine, which waits it out while still
+        # answering Stop and reporting the countdown.
         self.loader = il.Instaloader(
             sleep=True, quiet=True, user_agent=user_agent,
             download_pictures=False, download_videos=False,
             download_video_thumbnails=False, download_comments=False,
-            save_metadata=False, compress_json=False, iphone_support=True)
+            save_metadata=False, compress_json=False, iphone_support=True,
+            max_connection_attempts=1,
+            rate_controller=lambda context: _HandBackRateController(context))
         cookies = (self._session or {}).get("cookies") or {}
-        if cookies.get("sessionid"):
+        self.signed_in = bool(cookies.get("sessionid"))
+        if self.signed_in:
             self.loader.load_session(cookies.get("ds_user_id") or "", cookies)
 
     def refresh(self) -> None:
@@ -1445,6 +1518,10 @@ class InstaloaderClient:
 
     # -- the protocol ---------------------------------------------------------
     def viewer(self) -> Optional[str]:
+        if not self.signed_in:
+            # An anonymous test_login is a request Instagram answers with
+            # "please wait a few minutes": there is nothing to learn from it.
+            return None
         return self._guard(lambda: self.loader.test_login())  # type: ignore[return-value]
 
     def profile(self, username: str) -> InstagramProfile:

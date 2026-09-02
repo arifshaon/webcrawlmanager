@@ -418,6 +418,7 @@ class WhenInstagramPushesBackTests(EngineTestCase):
     def test_a_private_profile_the_viewer_cannot_see_is_reported_not_crashed(self):
         self.fake = FakeInstagram(signed_in=None)
         self.fake.add_profile("qnl", [post("a", day(5))], private=True)
+        self.commands.extend(["resume", "resume", "resume"])   # stays signed out
 
         self.session(["qnl"]).run()
 
@@ -433,6 +434,104 @@ class WhenInstagramPushesBackTests(EngineTestCase):
         targets = {t["url"]: t["status"] for t in self.manifest()["capture"]["targets"]}
         self.assertEqual(targets["https://www.instagram.com/nobody_here/"], "unavailable")
         self.assertEqual(targets["https://www.instagram.com/qnl/"], "done")
+
+
+class SignInFirstTests(EngineTestCase):
+    """Instagram answers an anonymous client with "please wait a few minutes"
+    and 429, never with "login required". Waiting for it to ask for a sign-in
+    means waiting for a rate limit instead, so the browser opens for the
+    curator before anything is asked of Instagram."""
+
+    def test_with_no_session_the_browser_opens_before_any_request(self):
+        self.fake = FakeInstagram(signed_in=None)
+        self.fake.add_profile("qnl", [post("a", day(5))])
+        self.fake.sign_in_on_refresh = "curator"
+        self.commands.extend(["resume"])
+
+        self.session(["qnl"]).run()
+
+        self.assertEqual(self.opened, ["https://www.instagram.com/accounts/login/"])
+        self.assertEqual(self.fake.calls["profile"], 1)
+        first_hold = next(p for p in self.progress if p["state"] == BLOCKED)
+        self.assertIn("not signed in", first_hold["details"]["message"])
+
+    def test_the_session_is_read_again_once_the_curator_continues(self):
+        self.fake = FakeInstagram(signed_in=None)
+        self.fake.add_profile("qnl", [post("a", day(5))])
+        self.fake.sign_in_on_refresh = "curator"
+        self.commands.extend(["resume"])
+
+        session = self.session(["qnl"])
+        session.run()
+
+        self.assertEqual(session.viewer_username, "curator")
+        self.assertEqual(self.manifest()["capture"]["viewer"], "signed_in")
+        self.assertEqual(self.fake.refreshed, 1)
+
+    def test_a_curator_who_stops_at_the_sign_in_gets_a_manifest_not_a_crash(self):
+        self.fake = FakeInstagram(signed_in=None)
+        self.fake.add_profile("qnl", [post("a", day(5))])
+        self.commands.extend(["stop"])
+
+        result = self.session(["qnl"]).run()
+
+        self.assertEqual(result["stop_reason"], "curator_stop")
+        self.assertEqual(self.fake.calls["profile"], 0)
+        self.assertTrue((self.tmp / "instagram-manifest.json").exists())
+
+    def test_continuing_signed_out_is_recorded_as_the_curators_decision(self):
+        self.fake = FakeInstagram(signed_in=None)
+        self.fake.add_profile("qnl", [post("a", day(5))])
+        self.commands.extend(["resume", "resume", "resume"])
+
+        self.session(["qnl"]).run()
+
+        events = [e["event"] for e in self.read_jsonl("instagram-events.jsonl")]
+        self.assertIn("proceeding_signed_out", events)
+        self.assertEqual(self.manifest()["capture"]["viewer"], "signed_out")
+
+
+class InstaloaderAdapterTests(unittest.TestCase):
+    """The pieces of the adapter that decide whether Stop can reach a run."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            import instaloader  # noqa: F401
+        except ImportError:                                # pragma: no cover
+            raise unittest.SkipTest("instaloader is not installed")
+
+    def test_no_session_means_no_request_to_learn_the_viewer(self):
+        from webarc.instagram import InstaloaderClient
+
+        client = InstaloaderClient(None)
+
+        self.assertFalse(client.signed_in)
+        self.assertIsNone(client.viewer())
+
+    def test_a_429_is_handed_to_the_engine_not_slept_out_in_the_library(self):
+        """Instaloader's own controller sleeps for many minutes where Stop
+        cannot reach it; that is the 'retried in 666 seconds' a run showed."""
+        import instaloader
+        from webarc.instagram import InstaloaderClient, RateLimited
+
+        client = InstaloaderClient(None)
+        controller = client.loader.context._rate_controller
+        with self.assertRaises(instaloader.exceptions.TooManyRequestsException):
+            controller.handle_429("anything")
+        with self.assertRaises(RateLimited):
+            client._guard(lambda: controller.handle_429("anything"))
+        self.assertEqual(client.loader.context.max_connection_attempts, 1)
+
+    def test_pacing_sleeps_are_bounded(self):
+        from unittest import mock
+        from webarc.instagram import InstaloaderClient
+
+        client = InstaloaderClient(None)
+        controller = client.loader.context._rate_controller
+        with mock.patch("time.sleep") as slept:
+            controller.sleep(600)
+        self.assertLessEqual(slept.call_args[0][0], 15.0)
 
 
 class ControlTests(EngineTestCase):
@@ -467,8 +566,10 @@ class ManifestTests(EngineTestCase):
         self.assertIn("does not claim", claim)
 
     def test_a_signed_out_capture_says_what_bounds_it(self):
+        """The curator continued three times without signing in: their call."""
         self.fake = FakeInstagram(signed_in=None)
         self.fake.add_profile("qnl", [post("a", day(5))])
+        self.commands.extend(["resume", "resume", "resume"])
 
         self.session(["qnl"]).run()
 

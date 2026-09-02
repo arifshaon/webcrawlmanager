@@ -105,21 +105,30 @@ class FakeInstagram:
     def _tick(self, what: str) -> None:
         self.calls[what] += 1
         self.calls["total"] += 1
-        if self.login_wall:
-            raise LoginRequired("Login required.")
-        if self.checkpoint:
-            raise CheckpointRequired("checkpoint_required")
+        # A wall or a checkpoint is something Instagram raises on a content
+        # request after the session was accepted -- the session check itself
+        # answers. That is the shape of a session expiring mid-run.
+        if what != "viewer":
+            if self.login_wall:
+                raise LoginRequired("Login required.")
+            if self.checkpoint:
+                raise CheckpointRequired("checkpoint_required")
         if (self.rate_limit_after is not None
                 and self.calls["total"] > self.rate_limit_after
                 and not (self.rate_limit_once and self._rate_limited)):
             self._rate_limited = True
             raise RateLimited(60.0, "Please wait a few minutes.")
 
+    # what the curator does in the window when the engine holds for sign-in
+    sign_in_on_refresh: Optional[str] = None
+
     def refresh(self) -> None:
         """What the engine calls after the curator resolved a hold."""
         self.refreshed += 1
         self.login_wall = False
         self.checkpoint = False
+        if self.sign_in_on_refresh:
+            self.signed_in = self.sign_in_on_refresh
 
     # -- the protocol ---------------------------------------------------------
     def viewer(self) -> Optional[str]:
