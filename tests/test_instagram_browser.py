@@ -1,7 +1,6 @@
 """The browser collector, against a site in Instagram's own shape.
 
-Instagram refuses Instaloader's requests on sight; what it cannot refuse is
-its own client. These tests drive real Chromium against a local site that
+Instagram refuses other clients on sight; what it cannot refuse is its own. These tests drive real Chromium against a local site that
 serves what Instagram's web client serves -- posts embedded in the profile
 page, more over GraphQL on scroll, a post page with its comments -- and
 check that collection, ordering, media, comments and the optional WARC all
@@ -97,6 +96,8 @@ class BrowserCollectorTestCase(unittest.TestCase):
             from playwright.sync_api import sync_playwright  # noqa: F401
         except ImportError:                                # pragma: no cover
             raise unittest.SkipTest("playwright is not installed")
+        from tests.chrome_for_tests import find_chrome
+        cls.chrome = find_chrome()
         cls.server, cls.host = serve.start()
 
     @classmethod
@@ -112,7 +113,8 @@ class BrowserCollectorTestCase(unittest.TestCase):
 
     def client(self, warc=None, signed_in=True):
         client = InstagramBrowserClient(
-            BrowserConfig(mode="headed", user_data_dir=self._profile.name),
+            BrowserConfig(mode="headed", user_data_dir=self._profile.name,
+                          chrome_path=self.chrome),
             warc=warc, sleep=lambda s: None, stall_rounds=2,
             base_url=f"http://{self.host}", headless=True, settle=(0.25, 0.4))
         client.start()
@@ -236,6 +238,25 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         for record in records:
             if record.rec_type == "request":
                 self.assertIsNone(record.http_headers.get_header("Cookie"))
+
+    def test_a_background_run_opens_a_window_when_a_person_is_needed(self):
+        """Chrome will not open a profile twice, so the same profile is
+        relaunched visibly; what was observed so far is kept."""
+        from tests.chrome_for_tests import ensure_display
+        close_display = ensure_display()
+        if close_display is None:                          # pragma: no cover
+            raise unittest.SkipTest("no display for a visible browser")
+        self.addCleanup(close_display)
+        client = self.client()
+        client.profile("qnl")
+        before = len(client.observed.posts)
+        self.assertTrue(client.headless)
+
+        client.show(f"http://{self.host}/accounts/login/")
+
+        self.assertFalse(client.headless)
+        self.assertEqual(len(client.observed.posts), before)
+        self.assertTrue(client._page.url.endswith("/accounts/login/"))
 
     def test_no_warc_is_written_when_not_asked(self):
         client = self.client()

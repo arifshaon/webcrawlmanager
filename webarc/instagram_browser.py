@@ -1,14 +1,15 @@
 """Collecting Instagram through the browser Instagram is served to.
 
-Instagram recognises Instaloader's requests and refuses them on sight -- a
-fresh, signed-in session is answered with "please wait a few minutes" before
-it has asked for anything. What Instagram cannot refuse is its own client:
-a real Chrome, signed in, scrolling a profile the way a person does. This
-module drives that browser and collects from what it loads.
+Instagram recognises and refuses other clients on sight -- a fresh,
+signed-in session from a scraping library is answered with "please wait a
+few minutes" before it has asked for anything. What Instagram cannot refuse
+is its own client: a real Chrome, signed in, scrolling a profile the way a
+person does. This module drives that browser and collects from what it
+loads, with a window or without one.
 
-It answers the same client protocol as the Instaloader adapter, so the
-capture engine -- stopping rules, media fixity, comment caps, holds, the
-manifest -- is unchanged. The difference is where records come from:
+It answers the client protocol the capture engine is written against --
+stopping rules, media fixity, comment caps, holds, the manifest live there,
+and are exercised with a stand-in. Where records come from:
 
 * a profile page carries its first posts as JSON embedded in the HTML, and
   loads the rest through GraphQL as the page is scrolled; both are read off
@@ -397,12 +398,7 @@ class InstagramBrowserClient:
             }
             if self.browser.proxy:
                 launch_kwargs["proxy"] = {"server": self.browser.proxy}
-            try:
-                self._context = self._pw.chromium.launch_persistent_context(
-                    profile, channel="chrome", **launch_kwargs)
-            except Exception:
-                self._context = self._pw.chromium.launch_persistent_context(
-                    profile, **launch_kwargs)
+            self._context = self._launch_managed(profile, launch_kwargs)
         self._context.on("response", self._on_response)
         self._page = (self._context.pages[0] if self._context.pages
                       else self._context.new_page())
@@ -412,6 +408,27 @@ class InstagramBrowserClient:
             self.user_agent = None
         self.refresh()
         return self
+
+    def _launch_managed(self, profile: str, launch_kwargs: dict):
+        """Open the profile in a Chrome Playwright manages.
+
+        A Chrome the curator pointed at is used as it is; otherwise the
+        installed Google Chrome, and failing that Playwright's own Chromium.
+        """
+        attempts: list[dict] = []
+        if self.browser.chrome_path:
+            attempts.append({"executable_path": self.browser.chrome_path})
+        attempts += [{"channel": "chrome"}, {}]
+        failures: list[Exception] = []
+        for extra in attempts:
+            try:
+                return self._pw.chromium.launch_persistent_context(
+                    profile, **extra, **launch_kwargs)
+            except Exception as exc:
+                failures.append(exc)
+        for later in failures[1:]:
+            log.debug("Fallback Chrome launch also failed: %s", later)
+        raise failures[0]
 
     def close(self) -> None:
         try:
@@ -531,7 +548,17 @@ class InstagramBrowserClient:
             raise RateLimited(90.0, "Instagram asked to wait a few minutes.")
 
     def show(self, url: str) -> Callable[[], None]:
-        """Bring the curator to a page; the window stays, so nothing closes."""
+        """Bring the curator to a page in a window they can see.
+
+        A run without a window opens one here: the same profile is relaunched
+        visibly, since Chrome will not open a profile twice. The window then
+        stays for the rest of the run -- the curator is present, and reopening
+        headless would only cost another sign-in check. The window is not
+        closed on continue, so the closer returned does nothing.
+        """
+        if self.headless:
+            self.headless = False
+            self._relaunch()
         try:
             self.current_url = url
             self._page.goto(url, wait_until="domcontentloaded",
@@ -540,6 +567,17 @@ class InstagramBrowserClient:
         except Exception as exc:
             log.warning("Could not show %s: %s", url, exc)
         return lambda: None
+
+    def _relaunch(self) -> None:
+        """Close the current browser and open the same profile again."""
+        observed = self.observed
+        self.close()
+        self._pw = None
+        self._context = None
+        self._native = None
+        self._page = None
+        self.start()
+        self.observed = observed
 
     def _scroll(self) -> dict:
         """Scroll to the bottom, where Instagram loads the next page.

@@ -15,7 +15,6 @@ dependencies = [
     "playwright>=1.44",
     "warcio>=1.7.4",
     "PyYAML>=6.0",
-    "instaloader>=4.14",
 ]
 
 [project.optional-dependencies]

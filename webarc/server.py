@@ -180,19 +180,14 @@ def _crawl_dir(row: dict) -> Path:
 
 
 def _instagram_capability() -> dict:
-    """Instagram capture runs in the background; a display is needed only to
-    sign in, and the dashboard says so rather than refusing outright."""
-    try:
-        import instaloader  # noqa: F401
-    except ImportError:
-        return {"available": False,
-                "reason": "Instagram capture needs the instaloader package. "
-                          "Install it with: pip install instaloader"}
+    """Instagram capture drives a browser; it can run without a window, and a
+    display is needed only to sign in or clear a checkpoint. The dashboard
+    says so rather than refusing outright."""
     visible = _recording_capability()
     note = None if visible["available"] else (
-        "No graphical desktop: the capture can run, but signing in to "
-        "Instagram or clearing a checkpoint needs a browser window, which "
-        "cannot open here.")
+        "No graphical desktop: a capture can run in the background, but "
+        "signing in to Instagram or clearing a checkpoint needs a browser "
+        "window, which cannot open here.")
     return {"available": True, "reason": None, "note": note}
 
 
@@ -675,7 +670,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "include_replies": bool(payload.get("include_replies", False)),
             "max_replies_per_comment": payload.get("max_replies_per_comment", 10),
             "write_warc": bool(payload.get("write_warc", False)),
-            "collector": str(payload.get("collector") or "browser"),
+            "headless": bool(payload.get("headless", False)),
             "operator": operator,
             "browser_profile_dir": str(profile_dir),
         }

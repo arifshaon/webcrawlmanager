@@ -674,12 +674,12 @@
             <span class="help">Stored in the capture manifest.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="ig-collector">Collection method</label>
-            <select id="ig-collector">
-              <option value="browser">Browser — scroll the signed-in Chrome like Facebook capture (recommended)</option>
-              <option value="instaloader">Instaloader — background requests; Instagram often refuses these on sight</option>
-            </select>
-            <span class="help">Instagram serves its own browser what it refuses to other clients. The browser method opens the profile, scrolls it, and collects from what Instagram loads; with the WARC option on, every exchange is written as it happens.</span>
+            <label class="field-label">How it runs</label>
+            <label class="check-row">
+              <input type="checkbox" id="ig-headless">
+              <span class="check-copy"><strong>Run in the background</strong><span>No window: the same signed-in Chrome scrolls the profile unseen. A window opens only if Instagram needs you to sign in or clear a verification, and then stays for the run.</span></span>
+            </label>
+            <span class="help">Instagram serves its own browser what it refuses to other clients. Either way SWM opens the profile in Chrome, scrolls it, and collects from what Instagram loads; with the WARC option on, every exchange is written as it happens.</span>
           </div>
           <div class="field">
             <label class="field-label" for="ig-browser">Browser</label>
@@ -1261,7 +1261,7 @@ async function startInstagram() {
   const body = {
     targets, mode, surfaces,
     browser: $("#ig-browser").value,
-    collector: $("#ig-collector").value,
+    headless: $("#ig-headless").checked,
     from_date: $("#ig-from").value || null,
     to_date: $("#ig-to").value || null,
     latest_n: Number($("#ig-latest-n").value || 100),

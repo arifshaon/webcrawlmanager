@@ -454,17 +454,14 @@ class InstagramApiTests(StorageTestCase):
 
         self.assertEqual(stored["instagram"]["browser"]["mode"], "native")
 
-    def test_the_browser_is_the_default_collector(self):
-        made = self.create().json()
-        stored = json.loads(srv._store().get_crawl(made["id"])["config_json"])
+    def test_a_run_is_visible_unless_asked_to_be_background(self):
+        visible = self.create().json()
+        background = self.create(headless=True).json()
+        stored = lambda made: json.loads(  # noqa: E731
+            srv._store().get_crawl(made["id"])["config_json"])["instagram"]
 
-        self.assertEqual(stored["instagram"]["collector"], "browser")
-
-    def test_an_unknown_collector_is_refused(self):
-        response = self.create(collector="scraper9000")
-
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("collector", response.text)
+        self.assertFalse(stored(visible)["headless"])
+        self.assertTrue(stored(background)["headless"])
 
     def test_an_unknown_browser_is_refused(self):
         response = self.create(browser="firefox")

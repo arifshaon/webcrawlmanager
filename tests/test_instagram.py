@@ -515,76 +515,6 @@ class SignInFirstTests(EngineTestCase):
         self.assertEqual(self.manifest()["capture"]["viewer"], "signed_out")
 
 
-class InstaloaderAdapterTests(unittest.TestCase):
-    """The pieces of the adapter that decide whether Stop can reach a run."""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            import instaloader  # noqa: F401
-        except ImportError:                                # pragma: no cover
-            raise unittest.SkipTest("instaloader is not installed")
-
-    def test_a_signed_in_viewer_is_read_from_the_cookie_not_asked_for(self):
-        """test_login() hits a retired endpoint that 401s valid sessions."""
-        from unittest import mock
-        from webarc.instagram import InstaloaderClient
-
-        client = InstaloaderClient({"cookies": {"sessionid": "1%3Aabc",
-                                                "ds_user_id": "424242"},
-                                    "user_agent": "ua"})
-        with mock.patch.object(client.loader, "test_login",
-                               side_effect=AssertionError("must not be called")):
-            self.assertEqual(client.viewer(), "424242")
-
-    def test_a_short_cooldown_and_a_429_are_not_ten_minute_waits(self):
-        import instaloader
-        from webarc.instagram import InstaloaderClient, RateLimited
-
-        client = InstaloaderClient(None)
-        with self.assertRaises(RateLimited) as short:
-            client._guard(lambda: (_ for _ in ()).throw(
-                instaloader.exceptions.ConnectionException(
-                    "401 Unauthorized - Please wait a few minutes before you try again.")))
-        with self.assertRaises(RateLimited) as many:
-            client._guard(lambda: (_ for _ in ()).throw(
-                instaloader.exceptions.TooManyRequestsException("429")))
-        self.assertLessEqual(short.exception.wait_seconds, 120)
-        self.assertLessEqual(many.exception.wait_seconds, 300)
-
-    def test_no_session_means_no_request_to_learn_the_viewer(self):
-        from webarc.instagram import InstaloaderClient
-
-        client = InstaloaderClient(None)
-
-        self.assertFalse(client.signed_in)
-        self.assertIsNone(client.viewer())
-
-    def test_a_429_is_handed_to_the_engine_not_slept_out_in_the_library(self):
-        """Instaloader's own controller sleeps for many minutes where Stop
-        cannot reach it; that is the 'retried in 666 seconds' a run showed."""
-        import instaloader
-        from webarc.instagram import InstaloaderClient, RateLimited
-
-        client = InstaloaderClient(None)
-        controller = client.loader.context._rate_controller
-        with self.assertRaises(instaloader.exceptions.TooManyRequestsException):
-            controller.handle_429("anything")
-        with self.assertRaises(RateLimited):
-            client._guard(lambda: controller.handle_429("anything"))
-        self.assertEqual(client.loader.context.max_connection_attempts, 1)
-
-    def test_pacing_sleeps_are_bounded(self):
-        from unittest import mock
-        from webarc.instagram import InstaloaderClient
-
-        client = InstaloaderClient(None)
-        controller = client.loader.context._rate_controller
-        with mock.patch("time.sleep") as slept:
-            controller.sleep(600)
-        self.assertLessEqual(slept.call_args[0][0], 15.0)
-
-
 class ControlTests(EngineTestCase):
     def test_pause_holds_between_posts_and_resume_continues(self):
         self.fake.add_profile("qnl", [post(str(n), day(n)) for n in range(5, 0, -1)])
@@ -649,113 +579,49 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class SessionFromProfileTests(unittest.TestCase):
-    """The session is read from the browser profile, never written elsewhere."""
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            from playwright.sync_api import sync_playwright  # noqa: F401
-        except ImportError:                                # pragma: no cover
-            raise unittest.SkipTest("playwright is not installed")
-
-    def profile(self, cookies):
-        from playwright.sync_api import sync_playwright
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        with sync_playwright() as pw:
-            context = pw.chromium.launch_persistent_context(tmp.name, headless=True)
-            if cookies:
-                context.add_cookies(cookies)
-            context.close()
-        return tmp.name
-
-    def test_a_profile_with_no_session_yields_none(self):
-        from webarc.instagram import read_session_from_profile
-
-        self.assertIsNone(read_session_from_profile(self.profile([])))
-
-    def test_only_the_session_cookies_are_taken_with_the_exact_user_agent(self):
-        from webarc.instagram import read_session_from_profile
-        far = 4102444800
-        found = read_session_from_profile(self.profile([
-            {"name": "sessionid", "value": "1%3Aabc", "domain": ".instagram.com",
-             "path": "/", "expires": far, "secure": True, "httpOnly": True},
-            {"name": "ds_user_id", "value": "1", "domain": ".instagram.com",
-             "path": "/", "expires": far},
-            {"name": "ig_unrelated", "value": "x", "domain": ".instagram.com",
-             "path": "/", "expires": far},
-        ]))
-
-        self.assertEqual(sorted(found["cookies"]), ["ds_user_id", "sessionid"])
-        self.assertTrue(found["user_agent"].startswith("Mozilla/5.0"))
-
-
 class NativeChromeSessionTests(unittest.TestCase):
-    """The system's own Chrome, attached over CDP, read without a window."""
+    """The system's own Chrome, attached over CDP, with and without a window."""
 
     @classmethod
     def setUpClass(cls):
-        try:
-            from playwright.sync_api import sync_playwright
-        except ImportError:                                # pragma: no cover
-            raise unittest.SkipTest("playwright is not installed")
-        import glob
-        import shutil
-        with sync_playwright() as pw:
-            candidates = [pw.chromium.executable_path]
-        candidates += [shutil.which(n) or "" for n in
-                       ("google-chrome", "google-chrome-stable", "chromium")]
-        candidates += sorted(glob.glob(
-            "/opt/pw-browsers/chromium-*/chrome-linux*/chrome"), reverse=True)
-        cls.chrome = next((c for c in candidates if c and Path(c).exists()), None)
+        from tests.chrome_for_tests import find_chrome
+        cls.chrome = find_chrome()
         if not cls.chrome:                                   # pragma: no cover
             raise unittest.SkipTest("no Chrome binary to drive natively")
 
-    def native_profile(self, cookies):
-        """Sign a profile in the way native mode would: through CDP."""
-        from playwright.sync_api import sync_playwright
-        from webarc.instagram import (_close_native_chrome,
-                                      _launch_native_chrome, _wait_for_cdp)
+    def native_client(self, cookies):
+        from webarc.config import BrowserConfig
+        from webarc.instagram_browser import InstagramBrowserClient
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        process, port = _launch_native_chrome(tmp.name, True, self.chrome)
-        _wait_for_cdp(port, process)
-        with sync_playwright() as pw:
-            browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-            context = browser.contexts[0]
-            if cookies:
-                context.add_cookies(cookies)
-            # the way the sign-in window is closed for a real curator
-            _close_native_chrome(port, process, browser)
-        return tmp.name
+        client = InstagramBrowserClient(
+            BrowserConfig(mode="native", user_data_dir=tmp.name,
+                          chrome_path=self.chrome),
+            sleep=lambda s: None, headless=True, settle=(0.1, 0.2))
+        client.start()
+        self.addCleanup(client.close)
+        if cookies:
+            client._context.add_cookies(cookies)
+            client.refresh()
+        return client
 
-    def test_a_signed_in_native_profile_yields_the_session(self):
-        from webarc.instagram import read_session_from_profile
+    def test_a_signed_in_native_profile_yields_the_viewer(self):
         far = 4102444800
-        profile = self.native_profile([
+        client = self.native_client([
             {"name": "sessionid", "value": "7%3Axyz", "domain": ".instagram.com",
              "path": "/", "expires": far, "secure": True, "httpOnly": True},
-            {"name": "csrftoken", "value": "t", "domain": ".instagram.com",
-             "path": "/", "expires": far},
-        ])
+            {"name": "ds_user_id", "value": "77", "domain": ".instagram.com",
+             "path": "/", "expires": far}])
 
-        found = read_session_from_profile(profile, browser_mode="native",
-                                          chrome_path=self.chrome)
+        self.assertEqual(client.viewer(), "77")
+        self.assertTrue(client.user_agent.startswith("Mozilla/5.0"))
 
-        self.assertEqual(sorted(found["cookies"]), ["csrftoken", "sessionid"])
-        self.assertTrue(found["user_agent"].startswith("Mozilla/5.0"))
-
-    def test_an_empty_native_profile_yields_none(self):
-        from webarc.instagram import read_session_from_profile
-
-        self.assertIsNone(read_session_from_profile(
-            self.native_profile([]), browser_mode="native",
-            chrome_path=self.chrome))
+    def test_an_empty_native_profile_has_no_viewer(self):
+        self.assertIsNone(self.native_client([]).viewer())
 
     def test_each_native_launch_takes_a_port_of_its_own(self):
         """So an Instagram job never collides with a recording's CDP port."""
-        from webarc.instagram import _launch_native_chrome
+        from webarc.instagram import _close_native_chrome, _launch_native_chrome
         tmp_a = tempfile.TemporaryDirectory(); self.addCleanup(tmp_a.cleanup)
         tmp_b = tempfile.TemporaryDirectory(); self.addCleanup(tmp_b.cleanup)
         first, port_a = _launch_native_chrome(tmp_a.name, True, self.chrome)
@@ -764,9 +630,9 @@ class NativeChromeSessionTests(unittest.TestCase):
             try:
                 self.assertNotEqual(port_a, port_b)
             finally:
-                second.terminate(); second.wait(timeout=10)
+                _close_native_chrome(port_b, second)
         finally:
-            first.terminate(); first.wait(timeout=10)
+            _close_native_chrome(port_a, first)
 
 
 class BrowserChoiceTests(unittest.TestCase):
@@ -780,10 +646,17 @@ class BrowserChoiceTests(unittest.TestCase):
         self.assertEqual(config.browser_profile_dir, "/tmp/p")
         self.assertEqual(config.chrome_path, "/opt/chrome")
 
-    def test_headed_is_the_default(self):
+    def test_headed_with_a_window_is_the_default(self):
         config = InstagramCaptureConfig.from_dict({"targets": ["qnl"]})
 
         self.assertEqual(config.browser_mode, "headed")
+        self.assertFalse(config.headless)
+
+    def test_a_run_can_be_asked_to_have_no_window(self):
+        config = InstagramCaptureConfig.from_dict({"targets": ["qnl"],
+                                                   "headless": True})
+
+        self.assertTrue(config.headless)
 
     def test_anything_else_is_refused(self):
         with self.assertRaises(ValueError):
@@ -791,100 +664,3 @@ class BrowserChoiceTests(unittest.TestCase):
                 "targets": ["qnl"], "browser": {"mode": "firefox"}})
 
 
-class RenderedPassTests(unittest.TestCase):
-    """The optional rendered WARC: headless, after collection, signed in.
-
-    The sign-in window closes once the session is read; it is not where the
-    WARC comes from. The WARC is made by a headless pass at the end of the
-    run, carrying the job's session, over the posts that were collected.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        import http.server
-        import threading
-        try:
-            from playwright.sync_api import sync_playwright  # noqa: F401
-        except ImportError:                                # pragma: no cover
-            raise unittest.SkipTest("playwright is not installed")
-        cls.site = tempfile.TemporaryDirectory()
-        root = Path(cls.site.name)
-        (root / "p1.html").write_text(
-            '<!doctype html><title>Post one</title><h1>Rendered</h1>'
-            '<img src="/pic.png">')
-        (root / "pic.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        handler = lambda *a, **k: http.server.SimpleHTTPRequestHandler(  # noqa: E731
-            *a, directory=str(root), **k)
-        cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        cls.port = cls.server.server_address[1]
-        threading.Thread(target=cls.server.serve_forever, daemon=True).start()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.site.cleanup()
-
-    def test_the_pass_writes_a_warc_of_the_captured_posts(self):
-        from warcio.archiveiterator import ArchiveIterator
-        from webarc.worker import _instagram_rendered_pass
-
-        out = tempfile.TemporaryDirectory()
-        self.addCleanup(out.cleanup)
-        config = InstagramCaptureConfig.from_dict({"targets": ["qnl"],
-                                                   "write_warc": True})
-        session = {"cookies": {"sessionid": "1%3Aabc"},
-                   "user_agent": "Mozilla/5.0 SWM-rendered-pass"}
-
-        written = _instagram_rendered_pass(
-            {"name": "ig-demo"}, config, Path(out.name),
-            [f"http://127.0.0.1:{self.port}/p1.html"], session)
-
-        self.assertEqual(written, 1)
-        warcs = list(Path(out.name).glob("*.warc.gz"))
-        self.assertEqual(len(warcs), 1)
-        with warcs[0].open("rb") as handle:
-            records = list(ArchiveIterator(handle))
-        uris = {r.rec_headers.get_header("WARC-Target-URI") for r in records}
-        self.assertIn(f"http://127.0.0.1:{self.port}/p1.html", uris)
-        self.assertIn(f"http://127.0.0.1:{self.port}/pic.png", uris)
-        agents = {r.http_headers.get_header("User-Agent")
-                  for r in records if r.rec_type == "request"}
-        # the job's session travels with the pass, user agent included
-        self.assertEqual(agents, {"Mozilla/5.0 SWM-rendered-pass"})
-
-    def test_the_session_cookies_are_placed_in_the_context(self):
-        from unittest import mock
-        from webarc import worker
-
-        seen = {}
-
-        class _Ctx:
-            def add_cookies(self, cookies):
-                seen["cookies"] = cookies
-
-        class _Driver:
-            _context = _Ctx()
-
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def new_page(self, _cb):
-                class _Page:
-                    def on(self, *_a): pass
-                return _Page()
-            def visit(self, page, url): return None
-
-        out = tempfile.TemporaryDirectory()
-        self.addCleanup(out.cleanup)
-        config = InstagramCaptureConfig.from_dict({"targets": ["qnl"],
-                                                   "write_warc": True})
-        with mock.patch.object(worker, "_instagram_rendered_pass",
-                               wraps=worker._instagram_rendered_pass), \
-                mock.patch("webarc.browser.BrowserDriver", _Driver):
-            worker._instagram_rendered_pass(
-                {"name": "x"}, config, Path(out.name), ["https://www.instagram.com/p/C1/"],
-                {"cookies": {"sessionid": "s", "csrftoken": "c"}, "user_agent": "ua"})
-
-        names = {c["name"] for c in seen["cookies"]}
-        self.assertEqual(names, {"sessionid", "csrftoken"})
-        self.assertTrue(all(c["domain"] == ".instagram.com" for c in seen["cookies"]))

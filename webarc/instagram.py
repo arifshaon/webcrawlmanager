@@ -1,32 +1,29 @@
-"""Background Instagram capture for SWM.
+"""Instagram capture for SWM.
 
 Instagram is captured as a preservation package, in this order of primacy:
 
 1. original media at the highest resolution Instagram serves;
 2. the untouched structured payloads Instagram returned, under ``raw/``;
 3. normalised posts, profiles and comments as JSONL/CSV;
-4. optionally, a rendered WARC of the same posts, for how Instagram presented
-   them;
+4. optionally, a WARC of every exchange the browser made, for how Instagram
+   presented what was collected;
 5. a manifest stating what was asked for, what was reached, what failed and
    what was not attempted; and SHA-256 fixity for every file written.
 
-A browser-driven WARC is deliberately not the primary record here. A browser
-requests only what its rendering happened to need -- a thumbnail size, the
-first video segment, ten comments -- which makes it a sample of the raw
-layer rather than the raw layer itself.
+Collection happens through the browser Instagram is served to: a real
+Chrome, signed in once by the curator in a dedicated profile, scrolling a
+profile the way a person does. Instagram recognises and refuses other
+clients on sight; it cannot refuse its own. The browser can run without a
+window -- same Chrome, same profile, same fingerprint -- and opens one only
+when Instagram needs a person, for a sign-in or a checkpoint. See
+``instagram_browser`` for the collector; this module holds the engine --
+targets, stopping rules, the package on disk, the manifest -- written
+against a client protocol so the collector can be exercised with a stand-in.
 
-Extraction runs in the background through Instaloader over a session the
-curator created once, by signing in to the dedicated Instagram browser
-profile. That session is read from the profile when a job starts and handed
-to the client in memory; it is never written anywhere else. The visible
-browser opens only when a person is needed: to sign in, or to clear a
-checkpoint.
-
-The account, not the tool, is what Instagram's automation detection acts on.
-Every request here goes through Instaloader's rate controller, targets are
-worked one at a time, and a run is built to be interrupted by Instagram --
-held on a rate limit, held for the curator on a checkpoint -- and resumed,
-not restarted.
+The account, not the tool, is what Instagram's automation detection acts
+on. Targets are worked one at a time, and a run is built to be interrupted
+by Instagram -- held on a rate limit, held for the curator on a checkpoint --
+and resumed, not restarted.
 """
 from __future__ import annotations
 
@@ -196,7 +193,7 @@ class InstagramPost:
     media: list[MediaItem] = field(default_factory=list)
     is_pinned: bool = False
     surface: str = "posts"        # posts | reels | direct
-    source: str = "instaloader"
+    source: str = "browser"
     raw: dict = field(default_factory=dict)
 
 
@@ -318,10 +315,9 @@ class InstagramCaptureConfig:
     # session is read from.
     browser_mode: str = "headed"
     chrome_path: Optional[str] = None
-    # "browser": collect through the signed-in browser, which Instagram
-    # serves as its own client. "instaloader": background extraction, which
-    # Instagram recognises and often refuses on sight; kept as an option.
-    collector: str = "browser"
+    # Run without a window. Same Chrome, same profile, same fingerprint; a
+    # window opens only when Instagram needs a person, and stays for the run.
+    headless: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict) -> "InstagramCaptureConfig":
@@ -343,9 +339,7 @@ class InstagramCaptureConfig:
                            or raw.get("browser_mode") or "headed")
         if browser_mode not in ("headed", "native"):
             raise ValueError("browser must be 'headed' or 'native'")
-        collector = str(raw.get("collector") or "browser")
-        if collector not in ("browser", "instaloader"):
-            raise ValueError("collector must be 'browser' or 'instaloader'")
+
         from_date = _date_bound(raw.get("from_date"))
         to_date = _date_bound(raw.get("to_date"), end=True)
         if from_date and to_date and from_date > to_date:
@@ -399,7 +393,7 @@ class InstagramCaptureConfig:
             browser_mode=(str((raw.get("browser") or {}).get("mode")
                               or raw.get("browser_mode") or "headed")),
             chrome_path=(raw.get("browser") or {}).get("chrome_path"),
-            collector=collector,
+            headless=bool(raw.get("headless", False)),
         )
 
 
@@ -645,7 +639,6 @@ class InstagramCaptureSession:
                  on_progress: Optional[Callable[..., None]] = None,
                  persist: Optional[Callable[..., None]] = None,
                  open_browser: Optional[Callable[[str], Callable[[], None]]] = None,
-                 rendered_pass: Optional[Callable[[list[str]], int]] = None,
                  sleep: Callable[[float], None] = time.sleep):
         self.config = config
         self.client = client
@@ -657,7 +650,6 @@ class InstagramCaptureSession:
         self.on_progress = on_progress or (lambda **_kw: None)
         self.persist = persist or (lambda **_kw: None)
         self.open_browser = open_browser
-        self.rendered_pass = rendered_pass
         self.sleep = sleep
 
         self.state = RECORDING
@@ -916,22 +908,6 @@ class InstagramCaptureSession:
             finally:
                 self._checkpoint()
         self.current_target = None
-        if (self.config.write_warc and self.rendered_pass is not None
-                and self.archive.posts and not self._stop_requested):
-            # Context, not the record: how Instagram presented what was
-            # collected, captured after the collection itself is safe.
-            self.phase_detail = "Recording how Instagram presents the captured posts."
-            self._report(force=True)
-            urls = [t.url for t in self.targets if t.kind == "profile"] + [
-                (p.permalink_url if isinstance(p, InstagramPost)
-                 else p.get("permalink_url")) for p in self.archive.posts.values()]
-            try:
-                self.counters["warc_files"] = int(self.rendered_pass(
-                    [u for u in urls if u]) or 0)
-            except Exception as exc:
-                self.counters["rendered_pass_failed"] += 1
-                self.archive.event("rendered_pass_failed", error=str(exc))
-                log.warning("Rendered pass failed: %s", exc)
         if not self._stop_requested:
             self.stop_reason = self.stop_reason or "targets_complete"
             self.stop_rule = self.stop_rule or "every_target_worked"
@@ -1389,46 +1365,14 @@ class InstagramCaptureSession:
 
 
 # ---------------------------------------------------------------------------
-# Instaloader adapter
+# The system's own Chrome over CDP, for the browser collector's native mode
 # ---------------------------------------------------------------------------
-
-_SESSION_COOKIES = ("sessionid", "csrftoken", "ds_user_id", "mid", "ig_did")
-
-
-def _session_from_context(context) -> Optional[dict]:
-    page = context.pages[0] if context.pages else context.new_page()
-    try:
-        user_agent = page.evaluate("navigator.userAgent")
-    except Exception:
-        user_agent = None
-    cookies = {c["name"]: c["value"]
-               for c in context.cookies("https://www.instagram.com/")
-               if c.get("name") in _SESSION_COOKIES}
-    if not cookies.get("sessionid"):
-        return None
-    return {"cookies": cookies, "user_agent": user_agent}
-
 
 def _free_port() -> int:
     import socket
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
-
-
-def _launch_managed_profile(pw, user_data_dir: str | Path, headless: bool):
-    """SWM's managed Chrome on the dedicated profile.
-
-    The profile is written by Google Chrome when one is installed, so it is
-    read with the same channel where possible; the bundled Chromium is the
-    fallback on a machine without Chrome.
-    """
-    try:
-        return pw.chromium.launch_persistent_context(
-            str(user_data_dir), headless=headless, channel="chrome")
-    except Exception:
-        return pw.chromium.launch_persistent_context(
-            str(user_data_dir), headless=headless)
 
 
 def _launch_native_chrome(user_data_dir: str | Path, headless: bool,
@@ -1515,362 +1459,3 @@ def _wait_for_cdp(port: int, process, timeout: float = 20.0) -> None:
         except Exception:
             time.sleep(0.25)
     raise RuntimeError(f"Chrome's CDP endpoint did not come up on port {port}.")
-
-
-def read_session_from_profile(user_data_dir: str | Path,
-                              headless: bool = True,
-                              browser_mode: str = "headed",
-                              chrome_path: Optional[str] = None) -> Optional[dict]:
-    """Read the Instagram session out of the dedicated browser profile.
-
-    The curator signed in once, in that browser. This opens the profile
-    without a window -- SWM's managed Chrome, or the system's own Chrome over
-    CDP, whichever the job chose -- copies the session cookies and the exact
-    user agent, and closes it again. The cookies live in this process for the
-    job and are written nowhere. Returns None when the profile holds no
-    session.
-    """
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as pw:
-        if browser_mode == "native":
-            process, port = _launch_native_chrome(user_data_dir, headless,
-                                                  chrome_path)
-            browser = None
-            try:
-                _wait_for_cdp(port, process)
-                browser = pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
-                context = (browser.contexts[0] if browser.contexts
-                           else browser.new_context())
-                return _session_from_context(context)
-            finally:
-                _close_native_chrome(port, process, browser)
-        context = _launch_managed_profile(pw, user_data_dir, headless)
-        try:
-            return _session_from_context(context)
-        finally:
-            context.close()
-
-
-def open_profile_for_curator(user_data_dir: str | Path, url: str,
-                             browser_mode: str = "headed",
-                             chrome_path: Optional[str] = None) -> Callable[[], None]:
-    """Show the dedicated profile to the curator on one page.
-
-    Returns what closes the window again. In native mode the window is the
-    system's own Chrome, which the curator may prefer for signing in; in
-    headed mode it is SWM's managed Chrome.
-    """
-    if browser_mode == "native":
-        process, port = _launch_native_chrome(user_data_dir, False,
-                                              chrome_path, url)
-        _wait_for_cdp(port, process)
-
-        def close_native():
-            _close_native_chrome(port, process)
-        return close_native
-
-    from playwright.sync_api import sync_playwright
-
-    pw = sync_playwright().start()
-    try:
-        context = _launch_managed_profile(pw, user_data_dir, headless=False)
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-    except Exception:
-        pw.stop()
-        raise
-
-    def close_managed():
-        try:
-            context.close()
-        finally:
-            pw.stop()
-    return close_managed
-
-
-def _make_rate_controller(instaloader_module):
-    base = instaloader_module.RateController
-
-    class HandBack(base):  # type: ignore[misc, valid-type]
-        """Never sleep out a 429 inside the library; raise it instead."""
-
-        def handle_429(self, query_type: str) -> None:
-            raise instaloader_module.exceptions.TooManyRequestsException(
-                "Instagram responded with HTTP 429 (too many requests).")
-
-        def sleep(self, secs: float) -> None:
-            # Pacing between queries stays, but bounded: a long sleep here is
-            # invisible to the dashboard and deaf to Stop.
-            super().sleep(min(float(secs), 15.0))
-
-    return HandBack
-
-
-class _HandBackRateController:
-    """Placeholder resolved at build time, once instaloader is imported."""
-
-    def __new__(cls, context):
-        import instaloader
-        return _make_rate_controller(instaloader)(context)
-
-
-class _RetryingIterator:
-    """An iterator whose next() can be asked again after it raised."""
-
-    def __init__(self, start: Callable[[], Iterator], guard: Callable,
-                 convert: Callable):
-        self._start = start
-        self._guard = guard
-        self._convert = convert
-        self._inner: Optional[Iterator] = None
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        if self._inner is None:
-            self._inner = self._start()
-        item = self._guard(lambda: next(self._inner))
-        return self._convert(item)
-
-
-class InstaloaderClient:
-    """Instaloader behind the engine's client protocol.
-
-    Errors are translated into the engine's own conditions. Every record
-    carries Instaloader's node dict as ``raw`` -- that is Instagram's
-    payload, not Instaloader's interpretation of it.
-    """
-
-    def __init__(self, session: Optional[dict] = None,
-                 profile_dir: Optional[str | Path] = None,
-                 browser_mode: str = "headed",
-                 chrome_path: Optional[str] = None):
-        import instaloader
-        self._instaloader = instaloader
-        self.version = getattr(instaloader, "__version__", "unknown")
-        self.profile_dir = profile_dir
-        self.browser_mode = browser_mode
-        self.chrome_path = chrome_path
-        self._session = session
-        self.loader = None
-        self._build()
-
-    def _build(self) -> None:
-        il = self._instaloader
-        user_agent = (self._session or {}).get("user_agent")
-        # Instaloader's own rate controller sleeps for many minutes inside
-        # the library when Instagram answers 429, where Stop cannot reach it
-        # and the dashboard cannot say what is happening. This one hands the
-        # condition back to the engine, which waits it out while still
-        # answering Stop and reporting the countdown.
-        self.loader = il.Instaloader(
-            sleep=True, quiet=True, user_agent=user_agent,
-            download_pictures=False, download_videos=False,
-            download_video_thumbnails=False, download_comments=False,
-            save_metadata=False, compress_json=False, iphone_support=True,
-            max_connection_attempts=1,
-            rate_controller=lambda context: _HandBackRateController(context))
-        cookies = dict((self._session or {}).get("cookies") or {})
-        self.signed_in = bool(cookies.get("sessionid"))
-        if self.signed_in:
-            # load_session indexes csrftoken unconditionally; a profile that
-            # holds a session but no CSRF cookie yet would crash the job here
-            # instead of getting one on its first request.
-            cookies.setdefault("csrftoken", "")
-            self.loader.load_session(cookies.get("ds_user_id") or "", cookies)
-
-    def refresh(self) -> None:
-        """Re-read the session after the curator signed in or resolved a hold."""
-        if self.profile_dir:
-            self._session = read_session_from_profile(
-                self.profile_dir, browser_mode=self.browser_mode,
-                chrome_path=self.chrome_path)
-        self._build()
-
-    # -- translation ----------------------------------------------------------
-    def _guard(self, action: Callable[[], object]) -> object:
-        ex = self._instaloader.exceptions
-        try:
-            return action()
-        except ex.TooManyRequestsException as exc:
-            raise RateLimited(180.0, str(exc)) from exc
-        except ex.LoginRequiredException as exc:
-            raise LoginRequired(str(exc)) from exc
-        except ex.TwoFactorAuthRequiredException as exc:
-            raise CheckpointRequired(str(exc)) from exc
-        except ex.PrivateProfileNotFollowedException as exc:
-            raise TargetUnavailable(
-                "This profile is private and the signed-in account does not "
-                "follow it.") from exc
-        except ex.ProfileNotExistsException as exc:
-            raise TargetUnavailable("This profile does not exist.") from exc
-        except ex.QueryReturnedNotFoundException as exc:
-            raise TargetUnavailable("Instagram reports it does not exist.") from exc
-        except ex.QueryReturnedForbiddenException as exc:
-            raise LoginRequired(str(exc)) from exc
-        except ex.QueryReturnedBadRequestException as exc:
-            text = str(exc).lower()
-            if "checkpoint" in text or "challenge" in text:
-                raise CheckpointRequired(str(exc)) from exc
-            raise InstagramError(str(exc)) from exc
-        except ex.ConnectionException as exc:
-            text = str(exc).lower()
-            if "429" in text:
-                raise RateLimited(180.0, str(exc)) from exc
-            if "wait a few minutes" in text or "401" in text:
-                # Instagram's short cooldown; minutes, not tens of minutes.
-                raise RateLimited(90.0, str(exc)) from exc
-            if "checkpoint" in text or "challenge" in text:
-                raise CheckpointRequired(str(exc)) from exc
-            if "login" in text and "required" in text:
-                raise LoginRequired(str(exc)) from exc
-            raise InstagramError(str(exc)) from exc
-        except ex.InstaloaderException as exc:
-            raise InstagramError(str(exc)) from exc
-
-    # -- the protocol ---------------------------------------------------------
-    def viewer(self) -> Optional[str]:
-        """Who the session belongs to, without asking Instagram.
-
-        Instaloader's test_login() queries a retired query_hash endpoint that
-        answers 401 "please wait a few minutes" to valid sessions too; read
-        as a rate limit, that cost a first capture ten minutes before its
-        first real request. The session cookie already names the account,
-        and a session that has in fact expired shows itself on the first
-        content request, which is handled.
-        """
-        if not self.signed_in:
-            return None
-        cookies = (self._session or {}).get("cookies") or {}
-        return str(cookies.get("ds_user_id") or "signed-in")
-
-    def profile(self, username: str) -> InstagramProfile:
-        il = self._instaloader
-
-        def read():
-            profile = il.Profile.from_username(self.loader.context, username)
-            node = dict(getattr(profile, "_node", {}) or {})
-            return InstagramProfile(
-                user_id=str(profile.userid), username=profile.username,
-                full_name=profile.full_name, biography=profile.biography,
-                is_private=bool(profile.is_private),
-                is_verified=bool(profile.is_verified),
-                followers_count=profile.followers,
-                following_count=profile.followees,
-                posts_count=profile.mediacount,
-                profile_pic_url=profile.profile_pic_url,
-                external_url=profile.external_url, raw=node)
-        return self._guard(read)  # type: ignore[return-value]
-
-    def _iterate(self, make_iterator: Callable[[], Iterable]) -> Iterator[InstagramPost]:
-        # Not a generator: a generator that raises is finished, and the engine
-        # retries next() after a rate limit or a hold. Instaloader's
-        # NodeIterator fetches lazily in __next__, so asking it again is a
-        # fresh request rather than a dead end.
-        return _RetryingIterator(
-            lambda: iter(self._guard(make_iterator)),   # type: ignore[arg-type]
-            self._guard, self._post_record)
-
-    def profile_posts(self, username: str) -> Iterator[InstagramPost]:
-        il = self._instaloader
-        return self._iterate(lambda: il.Profile.from_username(
-            self.loader.context, username).get_posts())
-
-    def profile_reels(self, username: str) -> Iterator[InstagramPost]:
-        il = self._instaloader
-        return self._iterate(lambda: il.Profile.from_username(
-            self.loader.context, username).get_reels())
-
-    def post(self, shortcode: str) -> InstagramPost:
-        il = self._instaloader
-        return self._post_record(self._guard(
-            lambda: il.Post.from_shortcode(self.loader.context, shortcode)))
-
-    def _post_record(self, post) -> InstagramPost:
-        typename = str(getattr(post, "typename", "") or "")
-        is_video = bool(getattr(post, "is_video", False))
-        media: list[MediaItem] = []
-        kind = "image"
-        if typename == "GraphSidecar":
-            kind = "carousel"
-            for index, node in enumerate(self._guard(
-                    lambda: list(post.get_sidecar_nodes()))):  # type: ignore[union-attr]
-                media.append(MediaItem(
-                    url=node.video_url if node.is_video else node.display_url,
-                    kind="video" if node.is_video else "image",
-                    position=index,
-                    thumbnail_url=node.display_url if node.is_video else None))
-        elif is_video:
-            kind = "reel" if "clips" in json.dumps(
-                getattr(post, "_node", {}) or {}).lower() else "video"
-            media.append(MediaItem(url=post.video_url, kind="video",
-                                   thumbnail_url=post.url))
-        else:
-            media.append(MediaItem(url=post.url, kind="image"))
-        when = getattr(post, "date_utc", None)
-        created = (when.replace(tzinfo=timezone.utc).isoformat(
-            timespec="seconds").replace("+00:00", "Z")
-            if isinstance(when, datetime) else None)
-        node = dict(getattr(post, "_node", {}) or {})
-        return InstagramPost(
-            media_id=str(post.mediaid), shortcode=post.shortcode,
-            owner_username=getattr(post, "owner_username", None),
-            owner_id=str(getattr(post, "owner_id", "") or "") or None,
-            kind=kind, created_time=created,
-            caption=getattr(post, "caption", None),
-            permalink_url=f"https://www.instagram.com/p/{post.shortcode}/",
-            likes_count=getattr(post, "likes", None),
-            comments_count=getattr(post, "comments", None),
-            video_view_count=(getattr(post, "video_view_count", None)
-                              if is_video else None),
-            media=media, raw=node)
-
-    def comments(self, shortcode: str,
-                 include_replies: bool) -> Iterator[InstagramComment]:
-        il = self._instaloader
-        post = self._guard(lambda: il.Post.from_shortcode(
-            self.loader.context, shortcode))
-        iterator = iter(self._guard(lambda: post.get_comments()))  # type: ignore[union-attr]
-        while True:
-            try:
-                comment = self._guard(lambda: next(iterator))
-            except StopIteration:
-                return
-            yield self._comment_record(comment, shortcode, None, 0)
-            if include_replies and getattr(comment, "answers", None):
-                answers = iter(comment.answers)
-                while True:
-                    try:
-                        answer = self._guard(lambda: next(answers))
-                    except StopIteration:
-                        break
-                    yield self._comment_record(answer, shortcode,
-                                               str(comment.id), 1)
-
-    def _comment_record(self, comment, shortcode: str,
-                        parent: Optional[str], depth: int) -> InstagramComment:
-        owner = getattr(comment, "owner", None)
-        when = getattr(comment, "created_at_utc", None)
-        created = (when.replace(tzinfo=timezone.utc).isoformat(
-            timespec="seconds").replace("+00:00", "Z")
-            if isinstance(when, datetime) else None)
-        return InstagramComment(
-            comment_id=str(comment.id), post_shortcode=shortcode,
-            parent_comment_id=parent,
-            author_id=str(getattr(owner, "userid", "") or "") or None,
-            author_username=getattr(owner, "username", None),
-            text=getattr(comment, "text", None), created_time=created,
-            likes_count=getattr(comment, "likes_count", None), depth=depth,
-            raw={"id": comment.id, "text": getattr(comment, "text", None),
-                 "created_at_utc": created,
-                 "owner": getattr(owner, "username", None),
-                 "likes_count": getattr(comment, "likes_count", None),
-                 "parent_comment_id": parent})
-
-    def fetch(self, url: str) -> tuple[bytes, str]:
-        def read():
-            response = self.loader.context.get_raw(url)
-            return response.content, response.headers.get("Content-Type", "")
-        return self._guard(read)  # type: ignore[return-value]

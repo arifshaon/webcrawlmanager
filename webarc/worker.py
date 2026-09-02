@@ -261,63 +261,46 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
 
 
 def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
-    """Run a background Instagram capture, opening a browser only for a person.
+    """Run an Instagram capture through the signed-in browser.
 
-    The session comes from the dedicated Instagram browser profile, read
-    without a window when the job starts and handed to the client in memory.
-    A login wall or a checkpoint opens that profile visibly on the page that
-    needs the curator, and the session is read again once they continue.
+    The browser is Chrome on the dedicated Instagram profile, headed or
+    native as the job chose, and with a window or without one. Instagram is
+    served to it as its own client. A sign-in or a checkpoint is shown in
+    that browser -- a window is opened for it when the run had none -- and
+    the session is read from it again once the curator continues. With the
+    WARC option on, every exchange the browser makes is written as it
+    happens, credentials redacted.
     """
     import json
 
+    from .facebook import FacebookWarcSession
     from .instagram import (BLOCKED as IG_BLOCKED, InstagramCaptureConfig,
-                            InstagramCaptureSession, InstaloaderClient,
-                            open_profile_for_curator, read_session_from_profile)
+                            InstagramCaptureSession, parse_instagram_target)
+    from .instagram_browser import InstagramBrowserClient
 
     raw = json.loads(row["config_json"])
-    ig_raw = raw.get("instagram", {})
-    config = InstagramCaptureConfig.from_dict(ig_raw)
+    config = InstagramCaptureConfig.from_dict(raw.get("instagram", {}))
     output_dir = Path(row["output_dir"])
-    profile_dir = config.browser_profile_dir
 
-    session = None
     warc = None
-    browser_client = None
-    if config.collector == "browser":
-        # Instagram served to its own client: a signed-in Chrome, scrolled the
-        # way a person scrolls it. The WARC, when asked for, is that browser's
-        # own traffic written as it happens -- no separate rendered pass.
-        from .facebook import FacebookWarcSession
-        from .instagram_browser import InstagramBrowserClient
-
-        if config.write_warc:
-            warc = FacebookWarcSession(
-                output_dir, row["name"], config.targets[0], 1, config.operator,
-                WarcConfig(),
-                info_extra={
-                    "robots": "none",
-                    "description": ("Instagram capture through the signed-in "
-                                    "browser: how Instagram presented what was "
-                                    "collected. The media files, raw payloads "
-                                    "and normalised records beside it are the "
-                                    "primary record."),
-                })
-        browser_client = InstagramBrowserClient(
-            BrowserConfig(mode=config.browser_mode, user_data_dir=profile_dir,
-                          chrome_path=config.chrome_path),
-            warc=warc)
-        browser_client.start()
-        client = browser_client
-    else:
-        if profile_dir:
-            try:
-                session = read_session_from_profile(
-                    profile_dir, browser_mode=config.browser_mode,
-                    chrome_path=config.chrome_path)
-            except Exception as exc:
-                log.warning("Could not read the Instagram browser profile: %s", exc)
-        client = InstaloaderClient(session, profile_dir, config.browser_mode,
-                                   config.chrome_path)
+    if config.write_warc:
+        warc = FacebookWarcSession(
+            output_dir, row["name"], config.targets[0], 1, config.operator,
+            WarcConfig(),
+            info_extra={
+                "robots": "none",
+                "description": ("Instagram capture through the signed-in "
+                                "browser: how Instagram presented what was "
+                                "collected. The media files, raw payloads and "
+                                "normalised records beside it are the primary "
+                                "record."),
+            })
+    client = InstagramBrowserClient(
+        BrowserConfig(mode=config.browser_mode,
+                      user_data_dir=config.browser_profile_dir,
+                      chrome_path=config.chrome_path),
+        warc=warc, headless=config.headless)
+    client.start()
 
     def control_poll():
         command = store.get_control(crawl_id)
@@ -347,32 +330,15 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
             elif state == "recording":
                 store.set_status(crawl_id, RUNNING)
 
-    def open_browser(url: str):
-        """Show the profile to the curator; return what closes it again."""
-        if browser_client is not None:
-            return browser_client.show(url)      # the window is already open
-        if not profile_dir:
-            return lambda: None
-        return open_profile_for_curator(
-            profile_dir, url, browser_mode=config.browser_mode,
-            chrome_path=config.chrome_path)
-
     def persist(targets, posts, profiles):
-        target_of_post = {}
         for key, newest in targets.items():
             newest.setdefault("url", next(
                 (u for u in config.targets if key.endswith("@" + str(
                     newest.get("username") or ""))), ""))
-        store.record_instagram_capture(crawl_id, targets, posts, target_of_post)
-
-    def rendered_pass(urls: list[str]) -> int:
-        # The session as it stands now, after any sign-in during the run.
-        current = getattr(client, "_session", None) or session
-        return _instagram_rendered_pass(row, config, output_dir, urls, current)
+        store.record_instagram_capture(crawl_id, targets, posts, {})
 
     known = {}
     for url in config.targets:
-        from .instagram import parse_instagram_target
         target = parse_instagram_target(url)
         known[target.key] = store.get_instagram_media_ids(target.key)
 
@@ -380,9 +346,7 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
         config=config, client=client, output_dir=output_dir,
         crawl_id=crawl_id, crawl_name=row["name"], known_ids=known,
         control_poll=control_poll, on_progress=on_progress, persist=persist,
-        open_browser=open_browser,
-        rendered_pass=(rendered_pass if config.write_warc
-                       and browser_client is None else None))
+        open_browser=client.show)
     try:
         result = capture.run()
     finally:
@@ -391,62 +355,10 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
                 warc.close()
             except Exception:
                 pass
-        if browser_client is not None:
-            browser_client.close()
+        client.close()
     if warc is not None:
         result["warc_files"] = len(list(output_dir.glob("*.warc.gz")))
     return result
-
-
-def _instagram_rendered_pass(row: dict, config, output_dir: Path,
-                             urls: list[str], session: dict | None) -> int:
-    """Record how Instagram presents the captured posts, into a WARC.
-
-    Runs headless after the collection is safe on disk, carrying the job's
-    session as cookies and its exact user agent -- a headless launch is a
-    fresh context, so the profile directory alone would be signed out.
-    Secrets are redacted on the way to the WARC exactly as for Facebook.
-    Returns the number of WARC files written.
-    """
-    from .browser import BrowserDriver
-    from .crawler import PageCapture
-    from .facebook import FacebookWarcSession
-
-    browser = BrowserConfig(mode="headless",
-                            user_agent=(session or {}).get("user_agent"))
-    behavior = BehaviorConfig(scroll=True, mouse_jitter=False,
-                              dismiss_consent=True, obey_robots=False)
-    warc = FacebookWarcSession(
-        output_dir, row["name"], urls[0] if urls else "https://www.instagram.com/",
-        1, config.operator, WarcConfig(),
-        info_extra={
-            "robots": "none",
-            "description": ("Rendered context for an Instagram capture: how "
-                            "Instagram presented the posts collected in this "
-                            "package. Not the primary record."),
-        })
-    written = 0
-    try:
-        with BrowserDriver(browser, behavior) as driver:
-            cookies = (session or {}).get("cookies") or {}
-            if cookies and driver._context is not None:
-                driver._context.add_cookies([
-                    {"name": name, "value": value, "domain": ".instagram.com",
-                     "path": "/", "secure": True}
-                    for name, value in cookies.items()])
-            capture = PageCapture(warc, driver)
-            page = driver.new_page(capture.on_response)
-            page.on("requestfinished", capture.on_request_finished)
-            page.on("requestfailed", capture.on_request_failed)
-            for url in urls:
-                try:
-                    driver.visit(page, url)
-                    written += 1
-                except Exception as exc:
-                    log.warning("Rendered pass could not open %s: %s", url, exc)
-    finally:
-        warc.close()
-    return len(list(output_dir.glob("*.warc.gz"))) if written else 0
 
 
 def main(argv: list[str] | None = None) -> int:

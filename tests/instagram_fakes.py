@@ -1,6 +1,6 @@
 """A stand-in for Instagram, so the engine can be exercised without it.
 
-The fake answers the same protocol the Instaloader adapter does, from data a
+The fake answers the client protocol the engine is written against, from data a
 test lays out: profiles, their posts in the order Instagram would show them
 (pinned first), comments with replies, media bytes, and the conditions
 Instagram imposes -- a rate limit after so many calls, a login wall, a
