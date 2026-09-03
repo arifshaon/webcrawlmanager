@@ -89,6 +89,49 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(profiles, [])
         self.assertEqual(len(comments), 1)
 
+    def test_the_routes_parameters_are_not_a_post(self):
+        posts, _, _ = extract_instagram_records([{"initialRouteInfo": {"route": {
+            "params": {**serve.ROUTE_PARAMS, "shortcode": "Cabc01"}}}}])
+
+        self.assertEqual(posts, [])
+
+    def test_carousel_components_are_parts_of_the_post_not_posts(self):
+        posts, _, _ = extract_instagram_records([self.fixture(serve.TIMELINE[1])])
+
+        self.assertEqual([p.shortcode for p in posts], [serve.TIMELINE[1]["code"]])
+        self.assertEqual(len(posts[0].media), 3)
+
+    def test_the_caption_is_not_a_comment(self):
+        _, comments, _ = extract_instagram_records([self.fixture(serve.TIMELINE[3])])
+
+        self.assertEqual(comments, [])
+
+    def test_the_fullest_representation_of_a_post_is_kept(self):
+        full = self.fixture(serve.TIMELINE[1])
+        sparse = {"pk": full["pk"], "id": full["id"], "code": full["code"],
+                  "media_type": 8, "user": {"pk": "100", "username": "qnl"}}
+
+        posts, _, _ = extract_instagram_records([{"a": sparse, "b": full}])
+
+        self.assertEqual(len(posts), 1)
+        self.assertEqual(len(posts[0].media), 3)
+        self.assertEqual(posts[0].caption, "Caption 1")
+
+    def test_a_reply_names_its_parent_by_field_when_loaded_alone(self):
+        _, comments, _ = extract_instagram_records([{"data": {
+            "xdt_api__v1__media__media_id__comments__parent_comment_id__child_comments__connection": {
+                "edges": [{"node": serve.MORE_COMMENTS[1]}]}}}], shortcode_hint="Cx")
+
+        self.assertEqual(comments[0].parent_comment_id, "9003")
+        self.assertEqual(comments[0].depth, 1)
+
+    def test_a_grid_item_pinned_by_the_account_is_pinned(self):
+        node = {**self.fixture(serve.TIMELINE[3]), "timeline_pinned_user_ids": ["100"]}
+
+        posts, _, _ = extract_instagram_records([node])
+
+        self.assertTrue(posts[0].is_pinned)
+
     def test_every_record_says_which_document_and_path_it_was_read_from(self):
         docs = [{"unrelated": True},
                 {"data": {"xdt_api__v1__feed__user_timeline_graphql_connection": {

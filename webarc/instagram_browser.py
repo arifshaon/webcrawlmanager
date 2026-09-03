@@ -72,8 +72,8 @@ _LISTING_QUERY_RE = re.compile(
 _PER_USER_API_RE = re.compile(
     r"/api/v1/(?:feed/user/(?P<user>[^/?]+)(?:/username)?/?|clips/user/?)", re.I)
 _PROFILE_LISTING_KEYS = (
-    "user_timeline", "edge_owner_to_timeline_media", "clips__user",
-    "edge_felix_video_timeline", "profile_posts", "profile_reels",
+    "user_timeline", "profile_timeline", "edge_owner_to_timeline_media",
+    "clips__user", "edge_felix_video_timeline", "profile_posts", "profile_reels",
 )
 _USER_VARIABLE_KEYS = ("username", "user_id", "target_user_id", "userid",
                        "id", "userID")
@@ -166,6 +166,15 @@ def document_names_listing(document: object, budget: int = 50_000) -> bool:
         elif isinstance(value, list):
             stack.extend(value)
     return False
+
+
+def _richer(candidate: InstagramPost, current: InstagramPost) -> bool:
+    """Whether a later representation of a post says more than the kept one."""
+    def score(post: InstagramPost) -> tuple:
+        return (len(post.media), post.caption is not None,
+                post.created_time is not None, post.owner_username is not None,
+                post.comments_count is not None, len(post.raw))
+    return score(candidate) > score(current)
 
 
 def _connection_in(path) -> Optional[str]:
@@ -274,23 +283,46 @@ def _media_of(node: dict) -> tuple[str, list[MediaItem]]:
 
 
 def _looks_like_post(obj: dict) -> bool:
+    """A media record: a shortcode, an id, and a media or time signal.
+
+    A page also carries other things that name a shortcode -- the route's
+    parameters, a caption URL parameter -- so a shortcode beside a caption
+    is not enough; the record must have Instagram's media id and something
+    only a media record carries.
+    """
     code = obj.get("code") or obj.get("shortcode")
     if not isinstance(code, str) or not code:
         return False
+    if not (obj.get("pk") or obj.get("id")):
+        return False
     return any(key in obj for key in (
         "taken_at", "taken_at_timestamp", "media_type", "image_versions2",
-        "carousel_media", "video_versions", "display_url", "caption"))
+        "carousel_media", "video_versions", "display_url"))
+
+
+def _is_carousel_child(obj: dict, ancestors) -> bool:
+    """A carousel's components carry their own code and id; they are
+    parts of the post above them, not posts."""
+    if obj.get("carousel_parent_id"):
+        return True
+    return any(isinstance(a, dict) and _looks_like_post(a) for a in ancestors)
 
 
 def _looks_like_comment(obj: dict) -> bool:
+    """A comment names its author; a caption, which Instagram shapes the
+    same way (pk, text, created_at), does not."""
     if "code" in obj or "shortcode" in obj:
         return False
     if not isinstance(obj.get("text"), str):
         return False
     if not (obj.get("pk") or obj.get("id")):
         return False
-    return any(key in obj for key in ("created_at", "created_at_utc", "user",
-                                      "owner", "comment_like_count"))
+    author = obj.get("user") or obj.get("owner")
+    if not isinstance(author, dict):
+        return False
+    return any(key in obj for key in ("created_at", "created_at_utc",
+                                      "comment_like_count", "child_comment_count",
+                                      "parent_comment_id"))
 
 
 def _looks_like_profile(obj: dict) -> bool:
@@ -335,6 +367,7 @@ def post_from_node(node: dict, source_path: str = "") -> InstagramPost:
         comments = node["edge_media_to_comment"].get("count")
     views = node.get("play_count") or node.get("view_count") \
         or node.get("video_view_count")
+    pinned_by = node.get("timeline_pinned_user_ids")
     return InstagramPost(
         media_id=str(node.get("pk") or node.get("id") or code),
         shortcode=code, owner_username=owner_name, owner_id=owner_id,
@@ -346,6 +379,7 @@ def post_from_node(node: dict, source_path: str = "") -> InstagramPost:
         likes_count=likes if isinstance(likes, int) else None,
         comments_count=comments if isinstance(comments, int) else None,
         video_view_count=views if isinstance(views, int) else None,
+        is_pinned=bool(pinned_by) if isinstance(pinned_by, list) else False,
         media=media, source="browser", raw=node)
 
 
@@ -421,10 +455,17 @@ def extract_instagram_records(documents, shortcode_hint: Optional[str] = None,
         for obj, path, ancestors in _walk(document):
             if not isinstance(obj, dict):
                 continue
+            if path and path[-1] == "caption":
+                continue           # a caption is shaped like a comment
             if _looks_like_post(obj):
+                if _is_carousel_child(obj, ancestors):
+                    continue
                 record = post_from_node(obj, ".".join(path))
                 record.provenance = origin(index, path)
-                if record.shortcode not in posts:
+                current = posts.get(record.shortcode)
+                if current is None or _richer(record, current):
+                    # a page embeds several representations of one post;
+                    # keep the fullest, not the first
                     posts[record.shortcode] = record
                 continue
             if _looks_like_comment(obj):
@@ -435,6 +476,8 @@ def extract_instagram_records(documents, shortcode_hint: Optional[str] = None,
                 parent = next(
                     (str(a.get("pk") or a.get("id")) for a in reversed(ancestors)
                      if isinstance(a, dict) and _looks_like_comment(a)), None)
+                if not parent and obj.get("parent_comment_id"):
+                    parent = str(obj["parent_comment_id"])
                 depth = 1 if parent else 0
                 record = comment_from_node(
                     obj, enclosing_post or shortcode_hint, parent, depth)

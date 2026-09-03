@@ -26,15 +26,22 @@ PROFILE = {"pk": "100", "username": "qnl", "full_name": "Qatar National Library"
 def node(n: int, taken_at: int, kind: str = "image", user: str = "qnl",
          user_pk: str = "100") -> dict:
     code = f"C{n:05d}ab" if user == "qnl" else f"D{n:05d}{user[:2]}"
+    # the caption is shaped like a comment (pk, text, created_at) but names
+    # no author, as Instagram's is
     base = {"pk": str(1000 + n), "id": f"{1000 + n}_{user_pk}", "code": code,
             "taken_at": taken_at, "media_type": 1,
-            "caption": {"text": f"Caption {n}"},
+            "caption": {"pk": f"cap{n}", "text": f"Caption {n}", "created_at": taken_at},
             "like_count": n, "comment_count": 3 if n == 1 else 0,
             "user": {"pk": user_pk, "username": user}}
     if kind == "carousel":
         base["media_type"] = 8
+        base["product_type"] = "carousel_container"
+        # components carry their own code, id and time, as Instagram's do
         base["carousel_media"] = [
-            {"pk": f"{1000 + n}_{i}", "media_type": 1,
+            {"pk": f"{1000 + n}0{i}", "id": f"{1000 + n}0{i}_{user_pk}",
+             "code": f"{code}x{i}", "carousel_parent_id": str(1000 + n),
+             "taken_at": taken_at, "media_type": 1,
+             "user": {"pk": user_pk, "username": user},
              "image_versions2": {"candidates": [
                  {"url": f"http://HOST/pic/{code}-{i}-s.jpg", "width": 320, "height": 320},
                  {"url": f"http://HOST/pic/{code}-{i}-l.jpg", "width": 1080, "height": 1080}]}}
@@ -99,6 +106,11 @@ def _prefetch(query: str, data: dict) -> dict:
         ["RelayPrefetchedStreamCache", "next", [],
          [f"adp_{query}relayprovider_0", {"__bbox": {"result": {"data": data}}}]]]}}]]]}
 
+# what the route carries beside the post: its parameters name the shortcode
+# and a caption parameter, and are not a post
+ROUTE_PARAMS = {"shortcode": "PLACEHOLDER", "caption": "", "username": "qnl",
+                "img_index": "1", "igsh": "abc"}
+
 COMMENTS = [
     {"pk": "9001", "text": "Lovely", "created_at": 1_700_000_100,
      "user": {"pk": "7", "username": "reader"}, "comment_like_count": 2,
@@ -112,6 +124,9 @@ COMMENTS = [
 MORE_COMMENTS = [
     {"pk": "9003", "text": "Third comment", "created_at": 1_700_000_400,
      "user": {"pk": "9", "username": "late"}},
+    # a reply loaded on its own names its parent by field, not by nesting
+    {"pk": "9003_1", "text": "Reply by field", "created_at": 1_700_000_500,
+     "parent_comment_id": "9003", "user": {"pk": "9", "username": "late"}},
 ]
 
 
@@ -207,8 +222,9 @@ class Handler(BaseHTTPRequestHandler):
                        "xdt_api__v1__media__media_id__comments__connection": {
                            "edges": [{"node": c} for c in self._fix(COMMENTS)],
                            "page_info": {"has_next_page": True, "end_cursor": "k1"}},
-                       "xdt_api__v1__media__more_posts_from_user": {
-                           "edges": [{"node": n} for n in self._fix(others)]}}}
+                       "xdt_api__v1__profile_timeline": {
+                           "profile_grid_items": [{"media": n} for n in self._fix(others)]},
+                       "initialRouteInfo": {"route": {"params": {**ROUTE_PARAMS, "shortcode": code}}}}}
             thumbnails = "".join(
                 f"<img src='http://{self.host}/pic/{n['code']}-s.jpg' alt=''>"
                 for n in others)
