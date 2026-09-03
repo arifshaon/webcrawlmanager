@@ -1108,23 +1108,53 @@ class InstagramBrowserClient:
                 self._cdn_page = self._context.new_page()
                 self._cdn_origin = None
             if self._cdn_origin != origin:
+                attempts = []
                 for landing in (f"{origin}/swm-origin-probe", url):
+                    problem = None
                     try:
                         self._cdn_page.goto(landing, wait_until="commit",
                                             timeout=int(self.page_timeout * 1000))
                     except Exception as exc:
-                        log.debug("Standing on %s via %s: %s", origin, landing, exc)
-                    landed = urlsplit(self._cdn_page.url)
-                    if f"{landed.scheme}://{landed.netloc}" == origin:
+                        problem = str(exc).split("\n")[0]
+                    where = self._landed_origin(origin)
+                    if where == origin:
                         break
+                    attempts.append(f"{landing[:60]}: landed on {where or 'nothing'}"
+                                    + (f" ({problem})" if problem else ""))
                 else:
-                    self._last_fetch_error = f"could not stand on {origin}"
+                    self._last_fetch_error = (f"could not stand on {origin}: "
+                                              + "; ".join(attempts))
                     return None
                 self._cdn_origin = origin
             return self._cdn_page
         except Exception as exc:
             self._last_fetch_error = str(exc)
             return None
+
+    def _landed_origin(self, wanted: str, settle: float = 3.0) -> Optional[str]:
+        """The origin the helper tab is on, asked of the page itself.
+
+        The page's own location is the fact; the driver's record of the URL
+        is a bookkeeping of events that can lag it. Both are consulted, for
+        a moment, since a commit can arrive just after the navigation call
+        returns.
+        """
+        deadline = time.monotonic() + settle
+        seen: Optional[str] = None
+        while True:
+            try:
+                seen = self._cdn_page.evaluate("location.origin")
+            except Exception:
+                seen = None
+            if not seen or seen == "null":
+                parts = urlsplit(self._cdn_page.url or "")
+                seen = f"{parts.scheme}://{parts.netloc}" if parts.netloc else None
+            if seen == wanted or time.monotonic() >= deadline:
+                return seen
+            try:
+                self._cdn_page.wait_for_timeout(150)
+            except Exception:
+                time.sleep(0.15)
 
     def _await_hook(self, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout
