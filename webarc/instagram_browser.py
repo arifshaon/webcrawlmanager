@@ -1091,9 +1091,13 @@ class InstagramBrowserClient:
     def _cdn_tab_for(self, url: str):
         """A tab standing on the URL's own origin, opened or moved there.
 
-        The origin's root usually answers with an error page; that is fine,
-        since only the origin matters for a same-origin fetch. Media hosts
-        vary, so the tab moves whenever the host does.
+        Only the origin matters for a same-origin fetch, so the tab is sent
+        to a path that cannot exist: Instagram's media hosts answer such a
+        path with a small 403 page, which commits a document on the origin,
+        whereas their root answers 204 No Content, which commits nothing and
+        leaves the tab where it was. Failing that, the media URL itself is
+        the second way to land. Media hosts vary, so the tab moves whenever
+        the host does.
         """
         parts = urlsplit(url)
         if not parts.scheme or not parts.netloc:
@@ -1104,13 +1108,16 @@ class InstagramBrowserClient:
                 self._cdn_page = self._context.new_page()
                 self._cdn_origin = None
             if self._cdn_origin != origin:
-                try:
-                    self._cdn_page.goto(origin + "/", wait_until="commit",
-                                        timeout=int(self.page_timeout * 1000))
-                except Exception as exc:
-                    log.debug("Standing on %s: %s", origin, exc)
-                landed = urlsplit(self._cdn_page.url)
-                if f"{landed.scheme}://{landed.netloc}" != origin:
+                for landing in (f"{origin}/swm-origin-probe", url):
+                    try:
+                        self._cdn_page.goto(landing, wait_until="commit",
+                                            timeout=int(self.page_timeout * 1000))
+                    except Exception as exc:
+                        log.debug("Standing on %s via %s: %s", origin, landing, exc)
+                    landed = urlsplit(self._cdn_page.url)
+                    if f"{landed.scheme}://{landed.netloc}" == origin:
+                        break
+                else:
                     self._last_fetch_error = f"could not stand on {origin}"
                     return None
                 self._cdn_origin = origin

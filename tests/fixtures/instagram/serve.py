@@ -273,15 +273,22 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class CdnHandler(Handler):
-    """Instagram's media host: serves the files, answers nothing else, and
-    sets no CORS header, so a page on the site cannot read them."""
+    """Instagram's media host, as it really answers: the files themselves
+    with no CORS header, so a page on the site cannot read them; its root
+    with 204 No Content, which commits no document; any other path with a
+    small 403 page."""
     cors_media = False
 
     def do_GET(self):
         segs = [s for s in self.path.split("/") if s]
         if segs[:1] == ["pic"]:
             return super().do_GET()
-        return self._send(b"not found", status=404)
+        if not segs:
+            self.send_response(204)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            return None
+        return self._send(b"Bad URL hash", "text/plain", status=403)
 
 
 class _Site(ThreadingHTTPServer):
