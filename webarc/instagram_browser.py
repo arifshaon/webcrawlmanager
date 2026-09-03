@@ -1,10 +1,12 @@
 """Collecting Instagram through the browser Instagram is served to.
 
-Instagram recognises and refuses other clients on sight -- a fresh,
-signed-in session from a scraping library is answered with "please wait a
-few minutes" before it has asked for anything. What Instagram cannot refuse
-is its own client: a real Chrome, signed in, scrolling a profile the way a
-person does. This module drives that browser and collects from what it
+A fresh session from a scraping library is often answered with "please wait
+a few minutes" before it has asked for anything: Instagram recognises
+clients that are not its own. Letting Instagram's own web application build
+the requests in a real Chrome, signed in, scrolling a profile the way a
+person does, keeps such failures to a minimum. Instagram can still
+rate-limit or challenge the account, session or network, and the engine
+treats those as the conditions they are. This module drives that browser and collects from what it
 loads, with a window or without one.
 
 It answers the client protocol the capture engine is written against --

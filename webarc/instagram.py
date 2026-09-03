@@ -2,7 +2,7 @@
 
 Instagram is captured as a preservation package, in this order of primacy:
 
-1. original media at the highest resolution Instagram serves;
+1. media at the highest resolution available to the capture;
 2. the untouched structured payloads Instagram returned, under ``raw/``;
 3. normalised posts, profiles and comments as JSONL/CSV;
 4. optionally, a WARC of every exchange the browser made, for how Instagram
@@ -12,8 +12,10 @@ Instagram is captured as a preservation package, in this order of primacy:
 
 Collection happens through the browser Instagram is served to: a real
 Chrome, signed in once by the curator in a dedicated profile, scrolling a
-profile the way a person does. Instagram recognises and refuses other
-clients on sight; it cannot refuse its own. The browser can run without a
+profile the way a person does. Letting Instagram's own web application
+build the requests in a real browser keeps client-compatibility failures to
+a minimum; Instagram can still rate-limit or challenge the account, session
+or network. The browser can run without a
 window -- same Chrome, same profile, same fingerprint -- and opens one only
 when Instagram needs a person, for a sign-in or a checkpoint. See
 ``instagram_browser`` for the collector; this module holds the engine --
@@ -1055,6 +1057,9 @@ class InstagramCaptureSession:
         record_listings = getattr(self.client, "record_listings_to", None)
         if callable(record_listings):
             record_listings(self.archive.open_listing_evidence)
+        attach_controls = getattr(self.client, "attach_engine_controls", None)
+        if callable(attach_controls):
+            attach_controls(self._check_control, lambda: self._stop_requested)
         if not self._establish_viewer():
             self.state = STOPPED
             self.phase_detail = self._closing_summary()
@@ -1605,8 +1610,10 @@ class InstagramCaptureSession:
             "layers": {
                 "media": {
                     "path": "media/",
-                    "meaning": "Original files at the highest resolution "
-                               "Instagram served, content-addressed by "
+                    "meaning": "Media files at the highest resolution "
+                               "available to the capture -- the CDN "
+                               "derivative Instagram served, not shown to be "
+                               "the uploader's master -- content-addressed by "
                                "SHA-256; every carousel component in order.",
                 },
                 "raw": {

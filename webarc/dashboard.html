@@ -679,7 +679,7 @@
               <input type="checkbox" id="ig-headless">
               <span class="check-copy"><strong>Run in the background</strong><span>No window: the same signed-in Chrome scrolls the profile unseen. A window opens only if Instagram needs you to sign in or clear a verification, and then stays for the run.</span></span>
             </label>
-            <span class="help">Instagram serves its own browser what it refuses to other clients. Either way SWM opens the profile in Chrome, scrolls it, and collects from what Instagram loads; with the WARC option on, every exchange is written as it happens.</span>
+            <span class="help">Letting Instagram's own web application build the requests in a real Chrome keeps client-compatibility failures to a minimum; Instagram can still rate-limit or challenge the account. Either way SWM opens the profile in Chrome, scrolls it, and collects from what Instagram loads; with the WARC option on, every exchange is written as it happens.</span>
           </div>
           <div class="field">
             <label class="field-label" for="ig-listing">Profile listing</label>
@@ -748,7 +748,7 @@
             <label class="field-label">Capture options</label>
             <label class="check-row">
               <input type="checkbox" id="ig-media" checked>
-              <span class="check-copy"><strong>Download original media</strong><span>Every image, video and carousel component at the highest resolution Instagram serves, with SHA-256 fixity.</span></span>
+              <span class="check-copy"><strong>Download original media</strong><span>Every image, video and carousel component at the highest resolution available to the capture, with SHA-256 fixity.</span></span>
             </label>
             <label class="check-row">
               <input type="checkbox" id="ig-warc">

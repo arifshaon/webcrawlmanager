@@ -346,9 +346,12 @@ profile as sensitive local data.
 ## Instagram capture
 
 The dashboard's **Instagram** tab captures a profile's posts and reels, or a
-single post or reel, through a Chrome the curator has signed in to. Instagram
-refuses other clients on sight; what it cannot refuse is its own, so SWM
-collects from what Instagram serves that browser. Explore, hashtag and
+single post or reel, through a Chrome the curator has signed in to. SWM
+keeps client-compatibility failures to a minimum by letting Instagram's own
+web application build the requests in a real browser, and collects from what
+Instagram serves it. Instagram can still rate-limit or challenge the account,
+session or network; the capture treats those as conditions to wait out or
+hand to the curator, never as completeness. Explore, hashtag and
 location results are refused as targets: they are selected by Instagram's
 ranking and cannot be presented as an archive of anything.
 
@@ -382,9 +385,10 @@ and kept without consuming the count), until stopped, and since last capture.
 
 Every run writes:
 
-- `media/` — original files at the highest resolution Instagram served,
-  requested by the page itself, content-addressed by SHA-256, every carousel
-  component in order;
+- `media/` — media at the highest resolution available to the capture (the
+  CDN derivative Instagram served, which is not shown to be the uploader's
+  master), requested by the page itself, content-addressed by SHA-256, every
+  carousel component in order;
 - `raw/responses/` — every response a kept record was read from, verbatim
   but with the browser session's own bootstrap material removed, and
   `raw/posts/`, `raw/profiles/`, `raw/comments/` — the extracted nodes; every

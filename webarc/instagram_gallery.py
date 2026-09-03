@@ -29,6 +29,7 @@ import importlib.metadata
 import json
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -292,6 +293,8 @@ class _StreamingListing:
         self.commands: list[list[str]] = []
         self.outcome: Optional[str] = None
         self._deferred_status: Optional[int] = None
+        self._lines: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._stdout_thread: Optional[threading.Thread] = None
 
     # -- the process --------------------------------------------------------
     def _start(self) -> None:
@@ -306,9 +309,11 @@ class _StreamingListing:
             root.mkdir(parents=True, exist_ok=True)
             self._scratch = root / f"{SCRATCH_PREFIX}{os.getpid()}-{int(time.time() * 1000)}"
             self._scratch.mkdir(mode=0o700)
-            cookies = lend_cookies(self.client.inner.cookie_jar()
-                                   if hasattr(self.client.inner, "cookie_jar") else [])
-            write_netscape_cookies(cookies, self._scratch / "cookies.txt")
+        # The cookies are lent afresh for every start: after a sign-in the
+        # curator made, or a wait, the browser's session is not what it was.
+        cookies = lend_cookies(self.client.inner.cookie_jar()
+                               if hasattr(self.client.inner, "cookie_jar") else [])
+        write_netscape_cookies(cookies, self._scratch / "cookies.txt")
         command = gallery_command(self._scratch / "cookies.txt", self.url,
                                   self.client.limit, self.cursor, self.client.module)
         self.commands.append(command)
@@ -318,8 +323,23 @@ class _StreamingListing:
         self._stderr_thread = threading.Thread(
             target=self._drain_stderr, args=(self.process,), daemon=True)
         self._stderr_thread.start()
+        self._lines = queue.Queue()
+        self._stdout_thread = threading.Thread(
+            target=self._drain_stdout, args=(self.process, self._lines), daemon=True)
+        self._stdout_thread.start()
         self._note("started", command=_elide_cookie_path(command),
                    resumed_from_cursor=self.cursor)
+
+    def _drain_stdout(self, process: subprocess.Popen, lines: "queue.Queue") -> None:
+        # Read on a thread so the pull can keep answering the curator's
+        # controls while gallery-dl is waiting on Instagram.
+        try:
+            for line in process.stdout:
+                lines.put(line)
+        except Exception:
+            pass
+        finally:
+            lines.put(None)
 
     def _drain_stderr(self, process: subprocess.Popen) -> None:
         try:
@@ -345,6 +365,8 @@ class _StreamingListing:
             status = process.wait()
         if self._stderr_thread is not None:
             self._stderr_thread.join(timeout=5)
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=5)
         return status
 
     def _stop_process(self) -> None:
@@ -368,11 +390,24 @@ class _StreamingListing:
 
     # -- reading ------------------------------------------------------------
     def _read_message(self) -> Optional[list]:
-        """The next message from gallery-dl, or None at the end of output."""
-        assert self.process is not None and self.process.stdout is not None
+        """The next message from gallery-dl, or None at the end of output.
+
+        While gallery-dl is waiting on Instagram, the curator's controls are
+        consulted every half second: a pause holds here, a stop ends the
+        listing and the program at once.
+        """
+        assert self.process is not None
         while True:
-            line = self.process.stdout.readline()
-            if not line:
+            try:
+                line = self._lines.get(timeout=0.5)
+            except queue.Empty:
+                self.client.tick()
+                if self.client.stopping():
+                    self._stop_process()
+                    self.outcome = "stopped_by_curator"
+                    raise TargetUnavailable("stopped")
+                continue
+            if line is None:
                 return None
             self.lines += 1
             if self.evidence is not None:
@@ -539,6 +574,9 @@ class GalleryListingClient:
         self._evidence_opener: Optional[Callable[[str], object]] = None
         self.commands: list[list[str]] = []
         self._active: Optional[_StreamingListing] = None
+        # the engine's controls, consulted while a pull waits on gallery-dl
+        self.tick: Callable[[], None] = lambda: None
+        self.stopping: Callable[[], bool] = lambda: False
 
     def __getattr__(self, name):
         return getattr(self.inner, name)
@@ -547,6 +585,13 @@ class GalleryListingClient:
         forward = getattr(self.inner, "record_responses_to", None)
         if callable(forward):
             forward(sink)
+
+    def attach_engine_controls(self, tick: Callable[[], None],
+                               stopping: Callable[[], bool]) -> None:
+        """``tick()`` honours pause and stop between units of work;
+        ``stopping()`` says whether a stop was requested."""
+        self.tick = tick
+        self.stopping = stopping
 
     def record_listings_to(self, opener: Callable[[str], object]) -> None:
         """``opener(tool)`` gives a place in the package for one listing's

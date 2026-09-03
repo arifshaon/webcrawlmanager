@@ -10,6 +10,9 @@ FAKE_GALLERY_DL_DELAY      seconds to sleep before each post (streaming proof)
 FAKE_GALLERY_DL_FAIL_AFTER fail with a 429 after this many posts, once
 FAKE_GALLERY_DL_FAIL_FLAG  a file whose absence means "fail this run"; it is
                            created after failing so the resumed run succeeds
+FAKE_GALLERY_DL_REJECT_SESSION
+                           a sessionid value the lent cookie file must not
+                           carry: with it, the run answers 401 like Instagram
 """
 import json
 import os
@@ -34,6 +37,18 @@ def main(argv):
     fail_after = int(os.environ.get("FAKE_GALLERY_DL_FAIL_AFTER") or 0)
     flag = os.environ.get("FAKE_GALLERY_DL_FAIL_FLAG")
     should_fail = bool(fail_after) and (not flag or not Path(flag).exists())
+
+    rejected = os.environ.get("FAKE_GALLERY_DL_REJECT_SESSION")
+    if rejected and "-C" in argv:
+        cookie_file = Path(argv[argv.index("-C") + 1])
+        for line in cookie_file.read_text(encoding="utf-8").splitlines():
+            fields = line.split("\t")
+            if len(fields) == 7 and fields[5] == "sessionid" and fields[6] == rejected:
+                sys.stderr.write("[instagram][error] HttpError: '401 Unauthorized' "
+                                 "for 'https://www.instagram.com/api/v1/feed/user/1/' "
+                                 "(login required)\n")
+                sys.stderr.flush()
+                return 1
 
     posts_seen = 0
     for line in FIXTURE.read_text(encoding="utf-8").splitlines():

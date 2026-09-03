@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - feature/record-session
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install SWM and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install -e ".[dashboard]" httpx
+          python -m playwright install --with-deps chromium
+
+      - name: Install a virtual display for the visible-browser tests
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Run the test suite
+        run: python -m unittest discover tests
+        env:
+          PYTHONUNBUFFERED: "1"

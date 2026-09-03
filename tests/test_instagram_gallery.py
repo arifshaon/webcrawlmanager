@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 from webarc.instagram import (InstagramCaptureConfig, InstagramCaptureSession,
-                              RateLimited)
+                              LoginRequired, RateLimited, TargetUnavailable)
 from webarc.instagram_gallery import (SCRATCH_PREFIX, GalleryListingClient,
                                       clear_stale_scratch, discovery_limit,
                                       gallery_command, lend_cookies,
@@ -117,8 +117,10 @@ class CommandTests(unittest.TestCase):
 class _Inner(FakeInstagram):
     """The browser client's part: everything but the listing."""
 
+    session_value = "1%3Aabc"        # what the browser's sessionid cookie holds now
+
     def cookie_jar(self):
-        return [{"name": "sessionid", "value": "1%3Aabc", "domain": ".instagram.com",
+        return [{"name": "sessionid", "value": self.session_value, "domain": ".instagram.com",
                  "path": "/", "secure": True},
                 {"name": "datr", "value": "not lent", "domain": ".instagram.com"}]
 
@@ -220,6 +222,63 @@ class StreamingTests(StreamingTestCase):
         self.assertEqual(list(session.archive.posts), FIXTURE_CODES)
         self.assertGreaterEqual(session.counters["rate_limit_waits"], 1)
         self.assertEqual(len(client.commands), 2)
+
+
+class RecoveryTests(StreamingTestCase):
+    def test_a_sign_in_the_curator_made_reaches_the_next_gallery_dl_run(self):
+        """The first run is refused as signed out; the curator signs in,
+        the browser's session changes; the next run is lent the new one."""
+        self.inner.session_value = "old-session"
+        self.env(FAKE_GALLERY_DL_REJECT_SESSION="old-session")
+        listing = self.client().profile_posts("qatarballers")
+
+        with self.assertRaises(LoginRequired):
+            next(listing)
+        self.inner.session_value = "new-session"           # the curator signed in
+        codes = [p.shortcode for p in listing]
+
+        self.assertEqual(codes, FIXTURE_CODES)
+        self.assertEqual(len(listing.commands), 2)
+
+    def test_the_engine_recovers_a_gallery_dl_sign_in_through_the_curator(self):
+        self.inner.session_value = "old-session"
+        self.env(FAKE_GALLERY_DL_REJECT_SESSION="old-session")
+        answers = iter(["resume"])
+        client = self.client()
+        cfg = InstagramCaptureConfig.from_dict({
+            "targets": ["qatarballers"], "mode": "until_stopped", "surfaces": ["posts"],
+            "listing": "gallery-dl", "capture_media": False})
+
+        def control_poll():
+            # the curator resolves the hold by signing in, then continues
+            answer = next(answers, None)
+            if answer:
+                self.inner.session_value = "new-session"
+            return answer
+        session = InstagramCaptureSession(config=cfg, client=client, output_dir=self.tmp / "out",
+                                          crawl_id=1, crawl_name="t", sleep=lambda _s: None,
+                                          control_poll=control_poll)
+
+        session.run()
+
+        self.assertEqual(list(session.archive.posts), FIXTURE_CODES)
+
+    def test_stop_is_honoured_while_gallery_dl_is_waiting_on_instagram(self):
+        self.env(FAKE_GALLERY_DL_DELAY="6")
+        client = self.client()
+        asked = {"at": time.monotonic()}
+        client.attach_engine_controls(lambda: None,
+                                      lambda: time.monotonic() - asked["at"] > 1.0)
+        listing = client.profile_posts("qatarballers")
+
+        started = time.monotonic()
+        with self.assertRaises(TargetUnavailable) as stopped:
+            next(listing)
+
+        self.assertEqual(str(stopped.exception), "stopped")
+        self.assertLess(time.monotonic() - started, 4.0)
+        self.assertIsNone(listing.process)
+        self.assertEqual(listing.outcome, "stopped_by_curator")
 
 
 class EvidenceTests(StreamingTestCase):
