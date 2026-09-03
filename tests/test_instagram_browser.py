@@ -220,6 +220,38 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         for record in media_requests:
             self.assertIn("Chrome", record.http_headers.get_header("User-Agent") or "")
 
+    def test_a_single_post_capture_holds_that_post_alone(self):
+        """A post page also carries more posts from the account and loads
+        their thumbnails; none of that is the post asked for."""
+        client = self.client()
+        code = serve.TIMELINE[3]["code"]
+        config = InstagramCaptureConfig.from_dict({
+            "targets": [f"https://www.instagram.com/p/{code}/"], "mode": "latest_n",
+            "include_comments": True})
+        session = InstagramCaptureSession(
+            config=config, client=client, output_dir=self.out, crawl_id=1,
+            crawl_name="t", sleep=lambda s: None)
+
+        session.run()
+
+        self.assertGreater(len(client.observed.posts), 1)     # the page carried more
+        rows = [json.loads(l) for l in (self.out / "instagram-posts.jsonl").read_text().splitlines()]
+        self.assertEqual([r["shortcode"] for r in rows], [code])
+        index = json.loads((self.out / "instagram-media.json").read_text())
+        self.assertEqual(list(index), [f"http://{self.host}/pic/{code}-l.jpg"])
+        self.assertEqual([p.name for p in (self.out / "raw" / "posts").iterdir()],
+                         [f"{code}.json"])
+        comments = [json.loads(l) for l in (self.out / "instagram-comments.jsonl").read_text().splitlines()]
+        self.assertTrue(comments)
+        self.assertTrue(all(c["post_shortcode"] == code for c in comments))
+        manifest = json.loads((self.out / "instagram-manifest.json").read_text())
+        self.assertEqual(manifest["counts"]["posts_exported"], 1)
+        # every response kept is one a kept record was read from
+        kept = {r["provenance"]["response"] for r in rows + comments}
+        saved = {f"raw/responses/{p.name}"
+                 for p in (self.out / "raw" / "responses").iterdir()}
+        self.assertEqual(saved, kept)
+
     def test_a_second_profile_sees_only_its_own_posts(self):
         """What one page loaded is not the next page's: a listing hands over
         only what its own navigation observed."""

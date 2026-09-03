@@ -587,6 +587,44 @@ class InstagramArchive:
         self._checksums[str(path.relative_to(self.out_dir)).replace(
             "\\", "/")] = digest
 
+    def _referenced_responses(self) -> set[str]:
+        refs: set[str] = set()
+        for records in (self.posts.values(), self.comments.values(),
+                        self.profiles.values()):
+            for record in records:
+                origin = (record.get("provenance") if isinstance(record, dict)
+                          else getattr(record, "provenance", None)) or {}
+                if isinstance(origin, dict) and origin.get("response"):
+                    refs.add(str(origin["response"]))
+        return refs
+
+    def prune_unreferenced_responses(self) -> int:
+        """Drop saved responses no kept record was read from.
+
+        A page carries more than what was asked for -- a post page brings
+        more posts from the account, a profile page brings suggestions --
+        and every mined response is saved as it arrives, since what will be
+        kept is not known yet. At the end, only the responses that kept
+        records point at are the package's evidence; the rest would present
+        other people's posts as part of the capture.
+        """
+        if not self.responses_dir.is_dir():
+            return 0
+        keep = self._referenced_responses()
+        removed = 0
+        for saved in sorted(self.responses_dir.glob("response-*.json")):
+            ref = f"raw/responses/{saved.name}"
+            if ref in keep:
+                continue
+            try:
+                saved.unlink()
+            except OSError:
+                continue
+            self._checksums.pop(ref, None)
+            removed += 1
+        self.responses_saved = len(list(self.responses_dir.glob("response-*.json")))
+        return removed
+
     def finalise(self, manifest: dict, checkpoint: dict) -> None:
         """Write everything that is derived from the run's state."""
         _atomic_json(self.media_path, self.media_index)
@@ -915,6 +953,7 @@ class InstagramCaptureSession:
         if not self._establish_viewer():
             self.state = STOPPED
             self.phase_detail = self._closing_summary()
+            self.archive.prune_unreferenced_responses()
             self.archive.finalise(self.manifest_document(final=True),
                                   self._checkpoint_document())
             self._report(force=True)
@@ -959,6 +998,7 @@ class InstagramCaptureSession:
             self.stop_rule = self.stop_rule or "every_target_worked"
         self.state = STOPPED
         self.phase_detail = self._closing_summary()
+        self.archive.prune_unreferenced_responses()
         manifest = self.manifest_document(final=True)
         self.archive.finalise(manifest, self._checkpoint_document())
         self._report(force=True)
@@ -1354,10 +1394,11 @@ class InstagramCaptureSession:
                     "responses_saved": self.archive.responses_saved,
                     "meaning": "Instagram's own payloads as received, before "
                                "any normalisation. The primary evidence: "
-                               "each response a record was read from is "
+                               "each response a kept record was read from is "
                                "kept verbatim under raw/responses/, and each "
                                "record's provenance names that response and "
-                               "the path of its node inside it.",
+                               "the path of its node inside it. Responses "
+                               "nothing was kept from are not retained.",
                 },
                 "normalised": {
                     "posts": ["instagram-posts.jsonl", "instagram-posts.csv"],

@@ -610,6 +610,25 @@ class RawResponseTests(unittest.TestCase):
 
         self.assertEqual(ref, "raw/responses/response-000002.json")
 
+    def test_responses_nothing_was_kept_from_are_dropped_at_the_end(self):
+        from webarc.instagram import InstagramArchive, InstagramPost
+        archive = InstagramArchive(self.tmp)
+        used = archive.save_response({"url": "a"}, b"{}")
+        unused = archive.save_response({"url": "b"}, b"{}")
+        archive.add_post(InstagramPost(media_id="1", shortcode="Cabc01",
+                                       provenance={"response": used}))
+
+        removed = archive.prune_unreferenced_responses()
+        archive.finalise({}, {})
+
+        self.assertEqual(removed, 1)
+        self.assertTrue((self.tmp / used).exists())
+        self.assertFalse((self.tmp / unused).exists())
+        self.assertEqual(archive.responses_saved, 1)
+        checksums = (self.tmp / "checksums.sha256").read_text()
+        self.assertIn(used, checksums)
+        self.assertNotIn(unused, checksums)
+
     def test_the_engine_hands_the_store_to_a_client_that_reads_responses(self):
         fake = FakeInstagram()
         fake.add_profile("qnl", [post("Cabc01", "2026-03-01T00:00:00Z")])

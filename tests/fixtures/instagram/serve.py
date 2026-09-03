@@ -96,9 +96,9 @@ MORE_COMMENTS = [
 ]
 
 
-def _page(title: str, payload: dict, script: str) -> bytes:
+def _page(title: str, payload: dict, script: str, extra_html: str = "") -> bytes:
     return (f"<!doctype html><html><head><title>{title}</title></head><body>"
-            f"<h1>{title}</h1><div style='height:2400px'>scroll me</div>"
+            f"<h1>{title}</h1><div style='height:2400px'>scroll me</div>{extra_html}"
             f'<script type="application/json" data-sjs>{json.dumps(payload)}</script>'
             f"<script>{script}</script></body></html>").encode()
 
@@ -169,12 +169,21 @@ class Handler(BaseHTTPRequestHandler):
                           if n["code"] == code), None)
             if match is None:
                 return self._send(b"<html><body>Sorry, this page isn't available.</body></html>", status=404)
+            # the post, its first comments, and -- as Instagram's post pages
+            # do -- more posts from the same account, with their thumbnails
+            others = [n for n in TIMELINE if n["code"] != code][:3]
             payload = {"data": {"xdt_api__v1__media__shortcode__web_info": {"items": [self._fix(match)]},
                        "xdt_api__v1__media__media_id__comments__connection": {
                            "edges": [{"node": c} for c in self._fix(COMMENTS)],
-                           "page_info": {"has_next_page": True, "end_cursor": "k1"}}}}
+                           "page_info": {"has_next_page": True, "end_cursor": "k1"}},
+                       "xdt_api__v1__media__more_posts_from_user": {
+                           "edges": [{"node": n} for n in self._fix(others)]}}}
+            thumbnails = "".join(
+                f"<img src='http://{self.host}/pic/{n['code']}-s.jpg' alt=''>"
+                for n in others)
             return self._send(_page(code, payload, SCROLL_JS % {
-                "cursor": json.dumps("k1"), "name": "PolarisPostCommentsPaginationQuery"}))
+                "cursor": json.dumps("k1"), "name": "PolarisPostCommentsPaginationQuery"},
+                thumbnails))
         if segs[:1] == ["accounts"]:
             return self._send(b"<html><head><title>Login</title></head><body>Log in</body></html>")
         if segs[:1] == ["pic"]:
