@@ -177,6 +177,22 @@ def _richer(candidate: InstagramPost, current: InstagramPost) -> bool:
     return score(candidate) > score(current)
 
 
+def comments_page_state(documents) -> Optional[bool]:
+    """Whether the last comments page in these documents says more follow.
+
+    None when no comments connection with page info is present.
+    """
+    state: Optional[bool] = None
+    for document in documents:
+        for obj, path, _ancestors in _walk(document):
+            if not isinstance(obj, dict) or "comment" not in ".".join(path).lower():
+                continue
+            info = obj.get("page_info")
+            if isinstance(info, dict) and isinstance(info.get("has_next_page"), bool):
+                state = info["has_next_page"]
+    return state
+
+
 def _connection_in(path) -> Optional[str]:
     for segment in path:
         lowered = str(segment).lower()
@@ -515,6 +531,9 @@ class _Observed:
         # what each navigation asked Instagram for, for saying why a listing
         # came back empty
         self.queries_by_navigation: dict[int, list[str]] = {}
+        # has_next_page of the last comments page seen, per navigation: a
+        # later page's answer replaces an earlier one's
+        self.comment_pages: dict[int, Optional[bool]] = {}
         self.responses = 0
         self.api_responses = 0
 
@@ -769,6 +788,9 @@ class InstagramBrowserClient:
             hint = _shortcode_in(self.current_url or url)
             self.observed.take(
                 *extract_instagram_records(documents, hint, origin), navigation)
+            more = comments_page_state(documents)
+            if more is not None:
+                self.observed.comment_pages[navigation] = more
         except Exception as exc:
             log.debug("Response handling failed: %s", exc)
 
@@ -922,6 +944,11 @@ class InstagramBrowserClient:
             self._goto(url)
         return _ScrollingComments(self, self.navigation, shortcode,
                                   include_replies)
+
+    def comments_page_open(self) -> Optional[bool]:
+        """Whether the last comments page seen on the open page said more
+        follow; None when Instagram said nothing either way."""
+        return self.observed.comment_pages.get(self.navigation)
 
     def fetch(self, url: str) -> tuple[bytes, str]:
         """Media, requested by the page the browser has open.

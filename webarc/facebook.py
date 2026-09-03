@@ -34,6 +34,7 @@ from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .browser import _CAPTURE_ARGS
 from .capture import WarcSession
+from .redaction import redact_body
 from .config import BehaviorConfig, BrowserConfig
 from .recorder import (CMD_PAUSE, CMD_RESUME, CMD_STOP, PAUSED, RECORDING,
                        STOPPED, RecordingSession, _is_closed_error)
@@ -446,10 +447,18 @@ class FacebookWarcSession(WarcSession):
         if redacted:
             safe_request_headers["X-SWM-Redacted"] = (
                 "authentication or session fields omitted")
+        # The page's bootstrap data carries the session's own tokens and the
+        # capturing account's ids; they are not part of the target.
+        content_type = next((v for k, v in safe_response_headers.items()
+                             if k.lower() == "content-type"), "")
+        safe_body, body_fields = redact_body(body, content_type)
+        if body_fields:
+            safe_response_headers["X-SWM-Redacted"] = (
+                "session material removed from body: " + ", ".join(body_fields))
         super().write_exchange(
             url=url, method=method, req_headers=safe_request_headers,
             post_data=safe_post_data, status=status, status_text=status_text,
-            resp_headers=safe_response_headers, body=body,
+            resp_headers=safe_response_headers, body=safe_body,
             http_version=http_version,
         )
 

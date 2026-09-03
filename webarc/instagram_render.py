@@ -146,6 +146,26 @@ def _notice(has_warc: bool) -> str:
             'like it.' + replay + '</div>')
 
 
+_GRADES = {
+    "reported_count_reached": "complete against Instagram's reported count",
+    "partial": "partial",
+    "capped": "limited by the capture's comment cap",
+    "no_comments_reported": "none reported",
+    "exhausted_unverified": "all Instagram exposed; count unverified",
+    "stopped_by_curator": "stopped by the curator",
+}
+
+
+def _comment_grade(post: dict) -> str:
+    capture = post.get("comment_capture") or {}
+    status = capture.get("status")
+    if not status:
+        return ""
+    reported = capture.get("reported")
+    said = f" of {reported} reported" if isinstance(reported, int) else ""
+    return f"{said}; {_GRADES.get(status, status)}"
+
+
 def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
     capture_dir = Path(capture_dir).resolve()
     site_dir = Path(site_dir) if site_dir else capture_dir / SITE_DIR_NAME
@@ -194,7 +214,7 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
             f'<div class="body">{caption}</div>'
             f'{_post_media_markup(post, media_index, "../../media/")}'
             f'{_counts_markup(post)}</div>'
-            + f"<h2>Comments ({len(thread)} captured)</h2>{thread_markup}"
+            + f"<h2>Comments ({len(thread)} captured{_comment_grade(post)})</h2>{thread_markup}"
         ).replace("<style>", "<style>" + _EXTRA_STYLE, 1))
 
     heads = []

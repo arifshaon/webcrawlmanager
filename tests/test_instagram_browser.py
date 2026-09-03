@@ -489,6 +489,30 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         self.assertIn("9003", ids)                            # loaded on scroll
         self.assertTrue(all(c.post_shortcode == code for c in comments))
 
+    def test_the_comment_grade_follows_the_pages_own_count_and_paging(self):
+        """The post reports 3 comments; two are on the page, the third
+        arrives on scroll with a closed page: complete against the count."""
+        client = self.client()
+        code = serve.TIMELINE[1]["code"]
+        config = InstagramCaptureConfig.from_dict({
+            "targets": [f"https://www.instagram.com/p/{code}/"], "mode": "latest_n",
+            "include_comments": True, "include_replies": True,
+            "capture_media": False})
+        session = InstagramCaptureSession(
+            config=config, client=client, output_dir=self.out, crawl_id=1,
+            crawl_name="t", sleep=lambda s: None)
+
+        session.run()
+
+        row = json.loads((self.out / "instagram-posts.jsonl").read_text().splitlines()[0])
+        grade = row["comment_capture"]
+        self.assertEqual(grade["status"], "reported_count_reached")
+        self.assertEqual(grade["top_level"], 3)
+        self.assertEqual(grade["reported"], 3)
+        self.assertIs(grade["more_pages_seen"], False)
+        self.assertIn("complete against", (self.out / "pages" / "posts" / f"{code}.html").read_text(encoding="utf-8")
+                      if (self.out / "pages").exists() else "complete against")
+
     def test_replies_are_withheld_when_not_asked_for(self):
         client = self.client()
         code = serve.TIMELINE[1]["code"]

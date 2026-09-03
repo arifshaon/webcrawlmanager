@@ -42,6 +42,7 @@ from urllib.parse import urlsplit
 
 from .facebook import (_append_jsonl, _atomic_json, _date_bound, _iso_now,
                        _media_suffix, _normalise_datetime)
+from .redaction import redact_body
 
 log = logging.getLogger(__name__)
 
@@ -194,6 +195,8 @@ class InstagramPost:
     is_pinned: bool = False
     surface: str = "posts"        # posts | reels | direct
     source: str = "browser"
+    # what the comment collection for this post can support as evidence
+    comment_capture: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
     # where the raw node was read from: the saved response, the decoder,
     # the document index and the path inside it
@@ -541,10 +544,14 @@ class InstagramArchive:
         self._response_serial += 1
         target = self.responses_dir / name
         target.parent.mkdir(parents=True, exist_ok=True)
+        # what is preserved is the body with the session's own material
+        # removed; the hash is of what is preserved
+        safe_body, redacted = redact_body(body, str(meta.get("content_type") or ""))
         _atomic_json(target, {
-            **meta, "body_bytes": len(body),
-            "body_sha256": hashlib.sha256(body).hexdigest(),
-            "body": body.decode("utf-8", errors="replace")})
+            **meta, "body_bytes": len(safe_body),
+            "body_sha256": hashlib.sha256(safe_body).hexdigest(),
+            "redacted_fields": redacted,
+            "body": safe_body.decode("utf-8", errors="replace")})
         self._checksum(target)
         self.responses_saved += 1
         return f"raw/responses/{name}"
@@ -628,6 +635,14 @@ class InstagramArchive:
     def finalise(self, manifest: dict, checkpoint: dict) -> None:
         """Write everything that is derived from the run's state."""
         _atomic_json(self.media_path, self.media_index)
+        # rows were appended as posts arrived; what was learned about them
+        # since (media files, the comment collection's outcome) is written
+        # back so the export carries it
+        temporary = self.posts_path.with_name(self.posts_path.name + ".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            for post in self.posts.values():
+                handle.write(json.dumps(self._post_row(post), ensure_ascii=False) + "\n")
+        temporary.replace(self.posts_path)
         self._write_csv(self.out_dir / "instagram-posts.csv", self.POST_FIELDS,
                         (self._post_row(p) for p in self.posts.values()))
         self._write_csv(self.out_dir / "instagram-comments.csv",
@@ -932,6 +947,15 @@ class InstagramCaptureSession:
                 list(self.archive.out_dir.glob("*.warc.gz"))),
             "targets": list(self.target_status.values()),
         }
+
+    def _comment_statuses(self) -> dict:
+        statuses: Counter = Counter()
+        for post in self.archive.posts.values():
+            capture = (post.comment_capture if isinstance(post, InstagramPost)
+                       else post.get("comment_capture")) or {}
+            if capture.get("status"):
+                statuses[capture["status"]] += 1
+        return dict(statuses)
 
     def _comments_stated(self) -> Optional[int]:
         total = 0
@@ -1322,6 +1346,7 @@ class InstagramCaptureSession:
         top_level = 0
         replies_for: Counter = Counter()
         raw_payloads: list[dict] = []
+        stop_reason = "exhausted"
         try:
             iterator = self._with_retries(
                 lambda: self.client.comments(post.shortcode,
@@ -1334,6 +1359,7 @@ class InstagramCaptureSession:
                 if comment.depth == 0:
                     if top_level >= wanted:
                         self.exclusions["comment_limit_reached"] += 1
+                        stop_reason = "comment_limit_reached"
                         break
                     top_level += 1
                 else:
@@ -1350,16 +1376,63 @@ class InstagramCaptureSession:
                         raw_payloads.append(comment.raw)
         except TargetUnavailable as exc:
             if str(exc) == "stopped":
+                stop_reason = "stopped"
                 return
+            stop_reason = "failed"
             self.counters["comment_threads_failed"] += 1
             self.archive.event("comments_failed", shortcode=post.shortcode,
                                error=str(exc))
         except InstagramError as exc:
+            stop_reason = "failed"
             self.counters["comment_threads_failed"] += 1
             self.archive.event("comments_failed", shortcode=post.shortcode,
                                error=str(exc))
         finally:
             self.archive.save_raw_comments(post.shortcode, raw_payloads)
+            self._grade_comment_capture(post, stop_reason)
+
+    def _grade_comment_capture(self, post: InstagramPost, stop_reason: str) -> None:
+        """Say what the comment collection can support as evidence.
+
+        A thread that stopped yielding is not proof it was complete. The
+        grade weighs what Instagram reported for the post, whether the last
+        comments page seen said more follow, the curator's cap, and why the
+        collection stopped -- and says "unverified" where nothing
+        independent confirms the count.
+        """
+        observed = sum(1 for c in self.archive.comments.values()
+                       if (c.post_shortcode if isinstance(c, InstagramComment)
+                           else c.get("post_shortcode")) == post.shortcode)
+        top_level = sum(1 for c in self.archive.comments.values()
+                        if (c.post_shortcode if isinstance(c, InstagramComment)
+                            else c.get("post_shortcode")) == post.shortcode
+                        and not (c.depth if isinstance(c, InstagramComment)
+                                 else c.get("depth")))
+        reported = post.comments_count if isinstance(post.comments_count, int) else None
+        more_pages = getattr(self.client, "comments_page_open", lambda: None)()
+        if stop_reason == "stopped":
+            status = "stopped_by_curator"
+        elif stop_reason == "failed":
+            status = "partial"
+        elif reported == 0 and observed == 0:
+            status = "no_comments_reported"
+        elif stop_reason == "comment_limit_reached":
+            status = "capped"
+        elif more_pages is True:
+            status = "partial"
+        elif reported is not None and observed >= reported:
+            status = "reported_count_reached"
+        elif reported is not None:
+            status = "partial"
+        else:
+            status = "exhausted_unverified"
+        post.comment_capture = {
+            "status": status, "observed": observed, "top_level": top_level,
+            "reported": reported, "more_pages_seen": more_pages,
+            "stop_reason": stop_reason, "cap": self.config.max_comments_per_post,
+            "replies_requested": self.config.include_replies,
+        }
+        self.counters[f"comments_{status}"] += 1
 
     # -- checkpoint and manifest ------------------------------------------------
     def _checkpoint(self) -> None:
@@ -1456,6 +1529,7 @@ class InstagramCaptureSession:
                 "fixity": "checksums.sha256",
             },
             "counts": dict(self.counters) | {
+                "comment_statuses": self._comment_statuses(),
                 "warc_files": self.counters.get("warc_files") or len(
                     list(self.archive.out_dir.glob("*.warc.gz"))),
                 "posts_exported": len(self.archive.posts),

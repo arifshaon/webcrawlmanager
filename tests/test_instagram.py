@@ -635,6 +635,76 @@ class ForeignPostTests(unittest.TestCase):
         self.assertIn("client_anomaly", [e["event"] for e in events])
 
 
+class CommentGradeTests(unittest.TestCase):
+    """What the comment collection can support as evidence, per post."""
+
+    def run_with(self, reported, thread, **config):
+        fake = FakeInstagram()
+        fake.add_profile("qnl", [post("Cabc01", "2026-03-01T00:00:00Z",
+                                      comments_count=reported)])
+        fake.add_comments("Cabc01", thread)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = InstagramCaptureConfig.from_dict({
+            "targets": ["qnl"], "mode": "latest_n", "include_comments": True, **config})
+        session = InstagramCaptureSession(config=cfg, client=fake,
+                                          output_dir=Path(tmp.name), crawl_id=1,
+                                          crawl_name="t", sleep=lambda _s: None)
+        session.run()
+        rows = [json.loads(l) for l in
+                (Path(tmp.name) / "instagram-posts.jsonl").read_text().splitlines()]
+        manifest = json.loads((Path(tmp.name) / "instagram-manifest.json").read_text())
+        return rows[0]["comment_capture"], manifest
+
+    def test_meeting_the_reported_count_is_the_strongest_grade(self):
+        grade, manifest = self.run_with(2, [comment("c1", "Cabc01"), comment("c2", "Cabc01")])
+
+        self.assertEqual(grade["status"], "reported_count_reached")
+        self.assertEqual(grade["observed"], 2)
+        self.assertEqual(manifest["counts"]["comment_statuses"],
+                         {"reported_count_reached": 1})
+
+    def test_fewer_than_reported_is_partial(self):
+        grade, _ = self.run_with(5, [comment("c1", "Cabc01")])
+
+        self.assertEqual(grade["status"], "partial")
+
+    def test_the_curators_cap_is_named_when_it_stopped_the_collection(self):
+        grade, _ = self.run_with(3, [comment(f"c{n}", "Cabc01") for n in range(3)],
+                                 max_comments_per_post=1)
+
+        self.assertEqual(grade["status"], "capped")
+        self.assertEqual(grade["cap"], 1)
+
+    def test_no_reported_count_leaves_the_grade_unverified(self):
+        grade, _ = self.run_with(None, [comment("c1", "Cabc01")])
+
+        self.assertEqual(grade["status"], "exhausted_unverified")
+
+    def test_zero_reported_and_none_seen_is_no_comments(self):
+        grade, _ = self.run_with(0, [])
+
+        self.assertEqual(grade["status"], "no_comments_reported")
+
+    def test_a_page_that_says_more_follow_is_partial_even_at_the_count(self):
+        fake_more = FakeInstagram()
+        fake_more.comments_page_open = lambda: True
+        fake_more.add_profile("qnl", [post("Cabc01", "2026-03-01T00:00:00Z",
+                                           comments_count=1)])
+        fake_more.add_comments("Cabc01", [comment("c1", "Cabc01")])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = InstagramCaptureConfig.from_dict({
+            "targets": ["qnl"], "mode": "latest_n", "include_comments": True})
+        session = InstagramCaptureSession(config=cfg, client=fake_more,
+                                          output_dir=Path(tmp.name), crawl_id=1,
+                                          crawl_name="t", sleep=lambda _s: None)
+        session.run()
+
+        self.assertEqual(session.archive.posts["Cabc01"].comment_capture["status"],
+                         "partial")
+
+
 class RawResponseTests(unittest.TestCase):
     """The package keeps the responses records were read from."""
 
