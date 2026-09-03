@@ -276,11 +276,11 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         self.assertEqual(client.fallback_fetches, 0)
         self.assertEqual(next(iter(index.values()))["fetched_via"], "browser-page")
 
-    def test_cdn_media_is_fetched_from_a_tab_on_the_cdns_own_origin(self):
-        """The media host lets no page on the site read its files, as
-        Instagram's does not; a tab standing on the host's own origin can,
-        with Chrome's identity, and the WARC holds the exchange without a
-        second request from the driver."""
+    def test_cdn_media_is_fetched_by_the_page_without_credentials(self):
+        """Instagram's media host names the page's origin but never allows
+        credentials: a fetch that sends none is readable from the page
+        itself, with its own Origin and Referer, and the WARC holds the
+        exchange without a second request from the driver."""
         from warcio.archiveiterator import ArchiveIterator
         from webarc.config import WarcConfig
         from webarc.facebook import FacebookWarcSession
@@ -303,11 +303,11 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         self.assertEqual(len(index), 3)                      # the carousel
         for entry in index.values():
             self.assertTrue((self.out / "media" / entry["file"]).exists())
-        self.assertEqual(client.cdn_tab_fetches, 3)
-        self.assertEqual(client.page_fetches, 0)
+        self.assertEqual(client.page_fetches, 3)
+        self.assertEqual(client.cdn_tab_fetches, 0)
         self.assertEqual(client.fallback_fetches, 0)
         for entry in index.values():
-            self.assertEqual(entry["fetched_via"], "browser-cdn-tab")
+            self.assertEqual(entry["fetched_via"], "browser-page")
             self.assertEqual(entry["discovered_by"], "browser")
             self.assertFalse(entry["browser_fallback"])
         with next(self.out.glob("*.warc.gz")).open("rb") as handle:
@@ -350,6 +350,23 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         saved = {f"raw/responses/{p.name}"
                  for p in (self.out / "raw" / "responses").iterdir()}
         self.assertEqual(saved, kept)
+
+    def test_sealed_media_is_fetched_from_a_tab_on_the_cdns_own_origin(self):
+        """A file the host lets no page read cross-origin is read from a
+        tab standing on the host's own origin, still with Chrome's identity,
+        never by the driver."""
+        client = self.client()
+        code = serve.TIMELINE[2]["code"]                 # the reel
+        config = InstagramCaptureConfig.from_dict({
+            "targets": [f"https://www.instagram.com/p/{code}/"], "mode": "latest_n"})
+        InstagramCaptureSession(config=config, client=client, output_dir=self.out,
+                                crawl_id=1, crawl_name="t", sleep=lambda s: None).run()
+
+        index = json.loads((self.out / "instagram-media.json").read_text())
+        self.assertEqual(len(index), 1)                    # the video
+        self.assertEqual(client.cdn_tab_fetches, 1)
+        self.assertEqual(client.fallback_fetches, 0)
+        self.assertEqual(next(iter(index.values()))["fetched_via"], "browser-cdn-tab")
 
     def test_a_second_profile_sees_only_its_own_posts(self):
         """What one page loaded is not the next page's: a listing hands over

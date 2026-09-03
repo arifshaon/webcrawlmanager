@@ -52,8 +52,10 @@ def node(n: int, taken_at: int, kind: str = "image", user: str = "qnl",
         base["media_type"] = 2
         base["product_type"] = "clips"
         base["play_count"] = 999
-        base["video_versions"] = [{"url": f"http://HOST/pic/{code}.mp4", "width": 720, "height": 1280}]
-        base["image_versions2"] = {"candidates": [{"url": f"http://HOST/pic/{code}-poster.jpg", "width": 720, "height": 1280}]}
+        # the reel's files sit on the media host under a path it lets no
+        # page read at all
+        base["video_versions"] = [{"url": f"http://CDNHOST/sealed/{code}.mp4", "width": 720, "height": 1280}]
+        base["image_versions2"] = {"candidates": [{"url": f"http://CDNHOST/sealed/{code}-poster.jpg", "width": 720, "height": 1280}]}
     else:
         base["image_versions2"] = {"candidates": [
             {"url": f"http://HOST/pic/{code}-s.jpg", "width": 320, "height": 320},
@@ -174,11 +176,17 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, body: bytes, ctype: str = "text/html; charset=utf-8", status=200,
-              cors: bool = False):
+              cors: "bool | str" = False):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        if cors:      # Instagram's CDN lets the page read what it serves
+        if cors == "echo":
+            # as Instagram's image host answers a page: its origin named,
+            # credentials never allowed
+            origin = self.headers.get("Origin")
+            self.send_header("Access-Control-Allow-Origin", origin or "*")
+            self.send_header("Vary", "Origin")
+        elif cors:
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
@@ -273,16 +281,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class CdnHandler(Handler):
-    """Instagram's media host, as it really answers: the files themselves
-    with no CORS header, so a page on the site cannot read them; its root
-    with 204 No Content, which commits no document; any other path with a
-    small 403 page."""
-    cors_media = False
+    """Instagram's media host, as it really answers: a page's read of a
+    file is allowed for its origin but never with credentials; a sealed
+    path allows no page to read at all; its root answers 204 No Content,
+    which commits no document; any other path a small 403 page."""
+    cors_media = "echo"
 
     def do_GET(self):
         segs = [s for s in self.path.split("/") if s]
         if segs[:1] == ["pic"]:
             return super().do_GET()
+        if segs[:1] == ["sealed"] and len(segs) == 2:
+            name = segs[-1]
+            if name.endswith(".mp4"):
+                return self._send(b"\x00\x00\x00\x18ftypmp42" + name.encode(), "video/mp4")
+            return self._send(b"\x89PNG\r\n\x1a\n" + name.encode(), "image/png")
         if not segs:
             self.send_response(204)
             self.send_header("Content-Type", "text/plain")

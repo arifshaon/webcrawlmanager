@@ -1019,25 +1019,29 @@ class InstagramBrowserClient:
         media_netloc = (urlsplit(url).netloc or "").lower()
         self._media_hosts.add(media_netloc)     # its exchanges belong in the WARC
         same_origin = media_netloc == page_host
-        reason = None
-        if same_origin:
-            answer = self._fetch_in(self._page, url)
-            if answer is not None:
-                self.page_fetches += 1
-                self.last_fetch_via = "browser-page"
-                return answer
-            reason = self._last_fetch_error
-        else:
+        # A signed media URL needs no cookies, and Instagram's media hosts
+        # allow a page's cross-origin read only when no credentials are
+        # sent: they name the page's origin, or "*", and never allow
+        # credentials. So the open page asks without them, with its own
+        # Origin and Referer, as the closest thing to how it loads media.
+        answer = self._fetch_in(self._page, url,
+                                "same-origin" if same_origin else "omit")
+        if answer is not None:
+            self.page_fetches += 1
+            self.last_fetch_via = "browser-page"
+            return answer
+        reason = self._last_fetch_error
+        if not same_origin:
             helper = self._cdn_tab_for(url)
             if helper is not None:
-                answer = self._fetch_in(helper, url)
+                answer = self._fetch_in(helper, url, "same-origin")
                 if answer is not None:
                     self.cdn_tab_fetches += 1
                     self.last_fetch_via = "browser-cdn-tab"
                     return answer
-                reason = self._last_fetch_error
+                reason = f"{reason}; from the CDN tab: {self._last_fetch_error}"
             else:
-                reason = self._last_fetch_error or "no tab could stand on the media host's origin"
+                reason = f"{reason}; {self._last_fetch_error}"
         log.warning("The browser could not fetch %s (%s); using the driver's "
                     "HTTP client instead.", url, reason)
         self.fallback_fetches += 1
@@ -1064,11 +1068,12 @@ class InstagramBrowserClient:
 
     _last_fetch_error: Optional[str] = None
 
-    def _fetch_in(self, page, url: str) -> Optional[tuple[bytes, str]]:
+    def _fetch_in(self, page, url: str,
+                  credentials: str = "same-origin") -> Optional[tuple[bytes, str]]:
         """Fetch ``url`` from inside ``page``; None if the page could not."""
         self._awaited_url, self._awaited_seen = url, False
         try:
-            answer = page.evaluate(_PAGE_FETCH_JS, url)
+            answer = page.evaluate(_PAGE_FETCH_JS, {"url": url, "credentials": credentials})
         except Exception as exc:
             answer = {"error": str(exc)}
         if not (isinstance(answer, dict) and "status" in answer):
@@ -1171,9 +1176,9 @@ class InstagramBrowserClient:
 # failed read (network error, a cross-origin body the page may not see)
 # comes back as {"error"} rather than raising, so the caller can fall back.
 _PAGE_FETCH_JS = """
-async (url) => {
+async ({url, credentials}) => {
   try {
-    const response = await fetch(url, {credentials: 'include', cache: 'no-store'});
+    const response = await fetch(url, {credentials, cache: 'no-store'});
     const bytes = new Uint8Array(await response.arrayBuffer());
     let binary = '';
     for (let i = 0; i < bytes.length; i += 0x8000) {
