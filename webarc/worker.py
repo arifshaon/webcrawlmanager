@@ -301,6 +301,12 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
                       chrome_path=config.chrome_path),
         warc=warc, headless=config.headless)
     client.start()
+    if config.listing == "gallery-dl":
+        # the listing from gallery-dl on the browser's session; media,
+        # comments and evidence still through the browser
+        from .instagram_gallery import GalleryListingClient, discovery_limit
+        client = GalleryListingClient(
+            client, limit=discovery_limit(config.mode, config.latest_n))
 
     def control_poll():
         command = store.get_control(crawl_id)

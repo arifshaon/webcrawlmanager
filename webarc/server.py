@@ -188,7 +188,9 @@ def _instagram_capability() -> dict:
         "No graphical desktop: a capture can run in the background, but "
         "signing in to Instagram or clearing a checkpoint needs a browser "
         "window, which cannot open here.")
-    return {"available": True, "reason": None, "note": note}
+    from .instagram_gallery import gallery_dl_version
+    return {"available": True, "reason": None, "note": note,
+            "gallery_dl": gallery_dl_version()}
 
 
 def _store() -> Store:
@@ -654,10 +656,20 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         browser_mode = str(payload.get("browser") or "headed")
         if browser_mode not in ("headed", "native"):
             raise HTTPException(400, "browser must be 'headed' or 'native'")
+        listing = str(payload.get("listing") or "browser")
+        if listing not in ("browser", "gallery-dl"):
+            raise HTTPException(400, "listing must be 'browser' or 'gallery-dl'")
+        if listing == "gallery-dl":
+            from .instagram_gallery import gallery_dl_version
+            if not gallery_dl_version():
+                raise HTTPException(
+                    400, "gallery-dl is not installed. Install it with: "
+                         "pip install gallery-dl")
         profile_dir = Path(_store().db_path).resolve().parent / \
             "browser-profiles" / "instagram"
         instagram = {
             "browser": {"mode": browser_mode, "user_data_dir": str(profile_dir)},
+            "listing": listing,
             "targets": payload.get("targets"),
             "mode": str(payload.get("mode") or "latest_n"),
             "from_date": payload.get("from_date"),

@@ -682,6 +682,14 @@
             <span class="help">Instagram serves its own browser what it refuses to other clients. Either way SWM opens the profile in Chrome, scrolls it, and collects from what Instagram loads; with the WARC option on, every exchange is written as it happens.</span>
           </div>
           <div class="field">
+            <label class="field-label" for="ig-listing">Profile listing</label>
+            <select id="ig-listing">
+              <option value="browser">Browser — scroll the profile and read what Instagram serves its own client</option>
+              <option value="gallery-dl">gallery-dl — list the profile's posts through the per-user endpoint, on the browser's session</option>
+            </select>
+            <span class="help">gallery-dl lists exactly what the profile holds, with pinned flags and dates, the way Instaloader did, using the signed-in browser's cookies for one call. Media, comments and evidence still come through the browser. Needs <code>pip install gallery-dl</code>.</span>
+          </div>
+          <div class="field">
             <label class="field-label" for="ig-browser">Browser</label>
             <select id="ig-browser">
               <option value="headed">Headed — managed Chrome with a dedicated profile (recommended)</option>
@@ -1071,6 +1079,13 @@ async function loadCapabilities() {
     instagramTab.classList.add("disabled");
     instagramTab.title = instagramCapability.reason || "unavailable";
   }
+  if (instagramCapability) {
+    const option = document.querySelector('#ig-listing option[value="gallery-dl"]');
+    if (option && !instagramCapability.gallery_dl) {
+      option.disabled = true;
+      option.textContent += " — not installed on this server";
+    }
+  }
   if (instagramCapability && instagramCapability.note) {
     $("#instagram-cap-note").textContent = instagramCapability.note;
   }
@@ -1261,6 +1276,7 @@ async function startInstagram() {
   const body = {
     targets, mode, surfaces,
     browser: $("#ig-browser").value,
+    listing: $("#ig-listing").value,
     headless: $("#ig-headless").checked,
     from_date: $("#ig-from").value || null,
     to_date: $("#ig-to").value || null,

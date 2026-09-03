@@ -322,6 +322,7 @@ class InstagramCaptureConfig:
     # Either way the profile is where the curator signs in and where the
     # session is read from.
     browser_mode: str = "headed"
+    listing: str = "browser"          # browser | gallery-dl
     chrome_path: Optional[str] = None
     # Run without a window. Same Chrome, same profile, same fingerprint; a
     # window opens only when Instagram needs a person, and stays for the run.
@@ -347,6 +348,9 @@ class InstagramCaptureConfig:
                            or raw.get("browser_mode") or "headed")
         if browser_mode not in ("headed", "native"):
             raise ValueError("browser must be 'headed' or 'native'")
+        listing = str(raw.get("listing") or "browser")
+        if listing not in ("browser", "gallery-dl"):
+            raise ValueError("listing must be 'browser' or 'gallery-dl'")
 
         from_date = _date_bound(raw.get("from_date"))
         to_date = _date_bound(raw.get("to_date"), end=True)
@@ -373,6 +377,7 @@ class InstagramCaptureConfig:
         return cls(
             targets=targets,
             mode=mode,
+            listing=listing,
             requested_mode=mode,
             from_date=from_date,
             to_date=to_date,
@@ -1341,6 +1346,28 @@ class InstagramCaptureSession:
                 continue
             self.archive.save_media(item.url, body, content_type)
 
+    def _enrich_from_page(self, post: InstagramPost) -> None:
+        """Fill what the listing did not say from the post's own page,
+        which the comment collection has open: the reported comment count
+        above all, since the comment grade rests on it."""
+        observed_post = getattr(self.client, "observed_post", None)
+        if not callable(observed_post):
+            return
+        seen = observed_post(post.shortcode)
+        if not isinstance(seen, InstagramPost):
+            return
+        filled = []
+        for name in ("comments_count", "likes_count", "caption", "created_time",
+                     "owner_id", "owner_username", "video_view_count"):
+            if getattr(post, name) is None and getattr(seen, name) is not None:
+                setattr(post, name, getattr(seen, name))
+                filled.append(name)
+        if filled:
+            post.provenance = {**post.provenance,
+                               "filled_from_page": {"fields": filled,
+                                                    **{k: v for k, v in seen.provenance.items()
+                                                       if k in ("response", "document", "path")}}}
+
     def _collect_comments(self, post: InstagramPost) -> None:
         wanted = self.config.max_comments_per_post
         top_level = 0
@@ -1353,6 +1380,7 @@ class InstagramCaptureSession:
                                              self.config.include_replies),
                 post.permalink_url or "", f"reading comments on {post.shortcode}")
             assert isinstance(iterator, Iterator) or hasattr(iterator, "__iter__")
+            self._enrich_from_page(post)
             for comment in iterator:      # type: ignore[union-attr]
                 if self._stop_requested:
                     return
@@ -1468,6 +1496,8 @@ class InstagramCaptureSession:
                 "crawl_id": self.crawl_id,
                 "name": self.crawl_name,
                 "operator": self.config.operator,
+                "listing_source": self.config.listing,
+                "client": getattr(self.client, "version", None),
                 "targets": [
                     {"url": t.url, "kind": t.kind, **self.target_status[t.key]}
                     for t in self.targets],

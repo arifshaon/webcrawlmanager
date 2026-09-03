@@ -702,6 +702,21 @@ class InstagramBrowserClient:
     def session(self) -> Optional[dict]:
         return self._session
 
+    def cookie_jar(self) -> list[dict]:
+        """The browser's Instagram cookies, for lending to a listing tool."""
+        try:
+            cookies = self._context.cookies([self.base_url + "/"])
+        except Exception:
+            return []
+        host = urlsplit(self.base_url).hostname or ""
+        return [c for c in cookies
+                if host.endswith(str(c.get("domain") or "").lstrip("."))
+                or str(c.get("domain") or "").lstrip(".") in host]
+
+    def observed_post(self, shortcode: str) -> Optional[InstagramPost]:
+        """The post as the open page presented it, if it did."""
+        return self.observed.posts_in(self.navigation).get(shortcode)
+
     # -- what the browser loads ------------------------------------------------
     def _on_response(self, response) -> None:
         # The handler yields while it reads the body; a caller waiting for

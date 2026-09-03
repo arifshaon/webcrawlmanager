@@ -463,6 +463,31 @@ class InstagramApiTests(StorageTestCase):
         self.assertFalse(stored(visible)["headless"])
         self.assertTrue(stored(background)["headless"])
 
+    def test_the_listing_source_is_stored_and_checked(self):
+        from unittest import mock
+        default = self.create().json()
+        stored = lambda made: json.loads(  # noqa: E731
+            srv._store().get_crawl(made["id"])["config_json"])["instagram"]
+        self.assertEqual(stored(default)["listing"], "browser")
+
+        with mock.patch("webarc.instagram_gallery.gallery_dl_version", return_value="1.32.10"):
+            chosen = self.create(listing="gallery-dl").json()
+        self.assertEqual(stored(chosen)["listing"], "gallery-dl")
+
+        with mock.patch("webarc.instagram_gallery.gallery_dl_version", return_value=None):
+            refused = self.create(listing="gallery-dl")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("pip install gallery-dl", refused.text)
+
+        self.assertEqual(self.create(listing="instaloader").status_code, 400)
+
+    def test_the_capability_says_whether_gallery_dl_is_installed(self):
+        from unittest import mock
+        with mock.patch("webarc.instagram_gallery.gallery_dl_version", return_value="1.32.10"):
+            reported = self.client.get("/api/capabilities").json()["instagram"]
+
+        self.assertEqual(reported["gallery_dl"], "1.32.10")
+
     def test_an_unknown_browser_is_refused(self):
         response = self.create(browser="firefox")
 
