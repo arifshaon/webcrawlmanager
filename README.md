@@ -364,11 +364,18 @@ suggestions and other profiles' listings; none of that is the profile's.
 
 - **Browser** — scroll the profile and read what Instagram serves its own
   client, page by page.
-- **gallery-dl** — list the profile through the per-user endpoint, in
-  Instagram's order with pinned flags and dates, the way Instaloader did. The
-  signed-in browser's cookies are lent to gallery-dl in a temporary file for
-  one call; media, comments and evidence still come through the browser.
-  Needs `pip install gallery-dl` (GPL-2.0, run as a separate program).
+- **gallery-dl** — attempt to enumerate the profile through Instagram's
+  direct per-user API, in Instagram's order with pinned flags and dates, on
+  the browser's signed-in session. It can be faster than scrolling, but
+  Instagram may rate-limit or restrict it. SWM runs it with its user
+  configuration ignored and every setting stated, reads its output as it
+  streams so the capture's stopping rules apply post by post, stops it once
+  the capture has what it asked for, and resumes from the cursor it reported
+  after a rate limit rather than starting again. Post discovery and listing
+  metadata come from gallery-dl and are kept under `evidence/listings/` as
+  its output, not as Instagram's responses. Selected media is fetched through
+  the browser where possible; comments are collected from the browser. Needs
+  `pip install gallery-dl` (GPL-2.0, run as a separate program).
 
 Capture modes match Facebook's: date range, latest N (pinned posts recognised
 and kept without consuming the count), until stopped, and since last capture.

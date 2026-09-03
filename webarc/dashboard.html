@@ -685,9 +685,9 @@
             <label class="field-label" for="ig-listing">Profile listing</label>
             <select id="ig-listing">
               <option value="browser">Browser — scroll the profile and read what Instagram serves its own client</option>
-              <option value="gallery-dl">gallery-dl — list the profile's posts through the per-user endpoint, on the browser's session</option>
+              <option value="gallery-dl">gallery-dl — attempt to enumerate the profile through Instagram's direct per-user API, on the browser's signed-in session</option>
             </select>
-            <span class="help">gallery-dl lists exactly what the profile holds, with pinned flags and dates, the way Instaloader did, using the signed-in browser's cookies for one call. Media, comments and evidence still come through the browser. Needs <code>pip install gallery-dl</code>.</span>
+            <span class="help">gallery-dl can be faster than scrolling and reports pinned flags and dates, but Instagram may rate-limit or restrict it; SWM reads its output as it streams, stops it once the capture has what it asked for, and resumes from its cursor after a rate limit. Post discovery and listing metadata come from gallery-dl and are kept as its output, not as Instagram's responses. Selected media is fetched through the browser where possible; comments are collected from the browser. Needs <code>pip install gallery-dl</code>.</span>
           </div>
           <div class="field">
             <label class="field-label" for="ig-browser">Browser</label>

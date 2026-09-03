@@ -55,6 +55,11 @@ class _Listing:
 
     def __init__(self, fake: "FakeInstagram", what: str, items: list):
         self.fake, self.what, self.items, self.index = fake, what, items, 0
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        self.fake.closed_listings += 1
 
     def __iter__(self):
         return self
@@ -88,6 +93,7 @@ class FakeInstagram:
         self.checkpoint = False
         self.fail_media: set[str] = set()
         self.refreshed = 0
+        self.closed_listings = 0
 
     # -- setting the scene --------------------------------------------------
     def add_profile(self, username: str, posts: list[InstagramPost],

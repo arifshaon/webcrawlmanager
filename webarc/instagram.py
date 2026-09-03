@@ -442,6 +442,7 @@ class InstagramArchive:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.raw_dir = self.out_dir / "raw"
         self.responses_dir = self.raw_dir / "responses"
+        self.listings_dir = self.out_dir / "evidence" / "listings"
         self.media_dir = self.out_dir / "media"
         self.posts_path = self.out_dir / "instagram-posts.jsonl"
         self.comments_path = self.out_dir / "instagram-comments.jsonl"
@@ -537,6 +538,17 @@ class InstagramArchive:
         if payloads:
             self.save_raw("comments", shortcode, payloads)
 
+    def open_listing_evidence(self, tool: str) -> "ListingEvidence":
+        """A place for one listing run's own output, apart from raw/."""
+        self.listings_dir.mkdir(parents=True, exist_ok=True)
+        highest = 0
+        for existing in self.listings_dir.glob(f"{tool}-*.jsonl"):
+            digits = existing.stem.rsplit("-", 1)[-1]
+            if digits.isdigit():
+                highest = max(highest, int(digits))
+        return ListingEvidence(self.listings_dir, f"{tool}-{highest + 1:06d}",
+                               self.out_dir)
+
     def save_response(self, meta: dict, body: bytes) -> str:
         """Keep a response exactly as received; returns its package path.
 
@@ -572,7 +584,9 @@ class InstagramArchive:
         return row
 
     # -- media --------------------------------------------------------------
-    def save_media(self, url: str, body: bytes, content_type: str = "") -> dict:
+    def save_media(self, url: str, body: bytes, content_type: str = "",
+                   discovered_by: Optional[str] = None,
+                   fetched_via: Optional[str] = None) -> dict:
         existing = self.media_index.get(url)
         if existing:
             return existing
@@ -585,7 +599,11 @@ class InstagramArchive:
             temporary.write_bytes(body)
             temporary.replace(target)
         entry = {"file": name, "sha256": digest, "bytes": len(body),
-                 "content_type": content_type or None}
+                 "content_type": content_type or None,
+                 # where the URL came from, and which client fetched the bytes
+                 "discovered_by": discovered_by,
+                 "fetched_via": fetched_via,
+                 "browser_fallback": fetched_via == "playwright-api-request"}
         self.media_index[url] = entry
         self._checksums[f"media/{name}"] = digest
         return entry
@@ -656,6 +674,10 @@ class InstagramArchive:
                          else c for c in self.comments.values()))
         _atomic_json(self.checkpoint_path, checkpoint)
         _atomic_json(self.manifest_path, manifest)
+        if self.listings_dir.is_dir():
+            for path in sorted(self.listings_dir.rglob("*")):
+                if path.is_file():
+                    self._checksum(path)
         for name in ("instagram-posts.jsonl", "instagram-comments.jsonl",
                      "instagram-posts.csv", "instagram-comments.csv",
                      "instagram-profiles.json", "instagram-media.json",
@@ -685,6 +707,53 @@ class InstagramArchive:
                                                   ensure_ascii=False)
                 writer.writerow(current)
         temporary.replace(path)
+
+
+class ListingEvidence:
+    """One listing tool run, kept as the tool wrote it.
+
+    Three files share a stem: the tool's output as it streamed (JSON Lines,
+    verbatim, retained line by line so an interrupted run still leaves what
+    it listed), its log with session material removed, and a record of the
+    command, the outcome and the cursor. None of it is Instagram's response.
+    """
+
+    def __init__(self, folder: Path, stem: str, package_root: Path):
+        self.folder = folder
+        self.stem = stem
+        self.jsonl_path = folder / f"{stem}.jsonl"
+        self.log_path = folder / f"{stem}.log"
+        self.meta_path = folder / f"{stem}.json"
+        self.ref = str(self.jsonl_path.relative_to(package_root)).replace("\\", "/")
+        self._out = self.jsonl_path.open("a", encoding="utf-8")
+        self._log = self.log_path.open("a", encoding="utf-8")
+        self.events: list[dict] = []
+
+    def write_line(self, line: str) -> None:
+        self._out.write(line if line.endswith("\n") else line + "\n")
+        self._out.flush()
+
+    def log(self, line: str) -> None:
+        safe, _ = redact_body(line.encode("utf-8"), "text/plain")
+        self._log.write(safe.decode("utf-8", errors="replace"))
+        self._log.flush()
+
+    def note(self, event: str, **details) -> None:
+        self.events.append({"time": _iso_now(), "event": event, **details})
+        _atomic_json(self.meta_path, {
+            "tool": "gallery-dl", "output": self.jsonl_path.name,
+            "log": self.log_path.name,
+            "meaning": "The listing tool's own output, transformed from "
+                       "Instagram's responses by the tool; not Instagram's "
+                       "response. Session material is removed from the log.",
+            "events": self.events})
+
+    def close(self) -> None:
+        for handle in (self._out, self._log):
+            try:
+                handle.close()
+            except Exception:
+                pass
 
 
 def _without_raw(row: dict) -> dict:
@@ -983,6 +1052,9 @@ class InstagramCaptureSession:
         record_responses = getattr(self.client, "record_responses_to", None)
         if callable(record_responses):
             record_responses(self.archive.save_response)
+        record_listings = getattr(self.client, "record_listings_to", None)
+        if callable(record_listings):
+            record_listings(self.archive.open_listing_evidence)
         if not self._establish_viewer():
             self.state = STOPPED
             self.phase_detail = self._closing_summary()
@@ -1130,7 +1202,14 @@ class InstagramCaptureSession:
                 return
             iterator = (self.client.profile_posts(username) if surface == "posts"
                         else self.client.profile_reels(username))
-            self._walk_surface(target, surface, iterator, seen)
+            try:
+                self._walk_surface(target, surface, iterator, seen)
+            finally:
+                # a listing the engine stops pulling from is told so, so a
+                # tool behind it stops asking Instagram for more
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
             self._drain_client_anomalies()
 
     def _drain_client_anomalies(self) -> None:
@@ -1344,7 +1423,9 @@ class InstagramCaptureSession:
                 self.archive.event("media_failed", shortcode=post.shortcode,
                                    url=item.url, error="empty response")
                 continue
-            self.archive.save_media(item.url, body, content_type)
+            self.archive.save_media(
+                item.url, body, content_type, discovered_by=post.source,
+                fetched_via=getattr(self.client, "last_fetch_via", None))
 
     def _enrich_from_page(self, post: InstagramPost) -> None:
         """Fill what the listing did not say from the post's own page,
@@ -1532,14 +1613,27 @@ class InstagramCaptureSession:
                     "path": "raw/",
                     "responses": "raw/responses/",
                     "responses_saved": self.archive.responses_saved,
-                    "meaning": "Instagram's own payloads as received, before "
-                               "any normalisation. The primary evidence: "
-                               "each response a kept record was read from is "
-                               "kept verbatim under raw/responses/, and each "
-                               "record's provenance names that response and "
-                               "the path of its node inside it. Responses "
-                               "nothing was kept from are not retained.",
+                    "meaning": "Instagram's own payloads as the browser "
+                               "received them, before any normalisation, "
+                               "with the browser session's own material "
+                               "removed. The primary evidence: each browser "
+                               "response a kept record was read from is kept "
+                               "under raw/responses/, and each record's "
+                               "provenance names that response and the path "
+                               "of its node inside it. Responses nothing was "
+                               "kept from are not retained.",
                 },
+                "listings": {
+                    "path": "evidence/listings/",
+                    "meaning": "A listing tool's own output for each listing "
+                               "run (its output as JSON lines, its log, and a "
+                               "record of the command, outcome and cursor). "
+                               "This is the tool's reading of Instagram's "
+                               "responses, not the responses: a post listed "
+                               "this way says instagram_raw_response_available "
+                               "false, and what the browser later observed of "
+                               "it on its own page is under raw/responses/.",
+                } if self.config.listing == "gallery-dl" else None,
                 "normalised": {
                     "posts": ["instagram-posts.jsonl", "instagram-posts.csv"],
                     "comments": ["instagram-comments.jsonl",

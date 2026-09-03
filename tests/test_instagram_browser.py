@@ -290,6 +290,10 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
             self.assertTrue((self.out / "media" / entry["file"]).exists())
         self.assertEqual(client.page_fetches, 3)
         self.assertEqual(client.fallback_fetches, 0)
+        for entry in index.values():
+            self.assertEqual(entry["fetched_via"], "browser-page")
+            self.assertEqual(entry["discovered_by"], "browser")
+            self.assertFalse(entry["browser_fallback"])
         with next(self.out.glob("*.warc.gz")).open("rb") as handle:
             media_requests = [
                 r for r in ArchiveIterator(handle)

@@ -600,6 +600,7 @@ class InstagramBrowserClient:
         self.page_fetches = 0          # media requested by the page itself
         self.fallback_fetches = 0      # media the driver had to request
         self.anomalies: list[dict] = []   # what could not be made sense of
+        self.last_fetch_via: Optional[str] = None
         self._response_sink: Optional[Callable[[dict, bytes], str]] = None
         self._awaited_url: Optional[str] = None
         self._awaited_seen = False
@@ -990,6 +991,7 @@ class InstagramBrowserClient:
             if status >= 400:
                 raise TargetUnavailable(f"HTTP {status}")
             self.page_fetches += 1
+            self.last_fetch_via = "browser-page"
             return (base64.b64decode(answer.get("body") or ""),
                     str(answer.get("content_type") or ""))
         self._awaited_url = None
@@ -997,6 +999,7 @@ class InstagramBrowserClient:
         log.warning("The page could not fetch %s (%s); using the driver's "
                     "HTTP client instead.", url, reason)
         self.fallback_fetches += 1
+        self.last_fetch_via = "playwright-api-request"
         try:
             response = self._context.request.get(url, timeout=60_000)
         except Exception as exc:

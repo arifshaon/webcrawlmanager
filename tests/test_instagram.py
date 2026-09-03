@@ -579,6 +579,26 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ListingCloseTests(unittest.TestCase):
+    def test_a_listing_is_closed_when_the_engine_stops_pulling_from_it(self):
+        """A tool behind a listing must stop asking Instagram for more once
+        the engine has what it asked for."""
+        fake = FakeInstagram()
+        fake.add_profile("qnl", [post(f"C{n:05d}", f"2026-03-{20 - n:02d}T00:00:00Z")
+                                 for n in range(12)])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = InstagramCaptureConfig.from_dict({
+            "targets": ["qnl"], "mode": "latest_n", "latest_n": 2, "surfaces": ["posts"]})
+        session = InstagramCaptureSession(config=cfg, client=fake, output_dir=Path(tmp.name),
+                                          crawl_id=1, crawl_name="t", sleep=lambda _s: None)
+
+        session.run()
+
+        self.assertEqual(len(session.archive.posts), 2)
+        self.assertEqual(fake.closed_listings, 1)
+
+
 class ForeignPostTests(unittest.TestCase):
     """A profile's listing is the profile's posts and nothing else."""
 

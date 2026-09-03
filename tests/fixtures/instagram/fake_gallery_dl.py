@@ -1,0 +1,68 @@
+"""A stand-in for the gallery-dl program, for the streaming tests.
+
+Run as ``python -m tests.fixtures.instagram.fake_gallery_dl <gallery-dl args>``.
+It writes the recorded gallery-dl JSON Lines fixture to stdout the way the
+real program does with output.jsonl on -- one message per line, flushed --
+and logs a cursor to stderr after each post as the real Instagram extractor
+does at debug level. Environment variables shape the run:
+
+FAKE_GALLERY_DL_DELAY      seconds to sleep before each post (streaming proof)
+FAKE_GALLERY_DL_FAIL_AFTER fail with a 429 after this many posts, once
+FAKE_GALLERY_DL_FAIL_FLAG  a file whose absence means "fail this run"; it is
+                           created after failing so the resumed run succeeds
+"""
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+FIXTURE = Path(__file__).with_name("gallery-dl-posts.jsonl")
+
+
+def main(argv):
+    options = {}
+    for index, arg in enumerate(argv):
+        if arg == "-o" and index + 1 < len(argv):
+            key, _, value = argv[index + 1].partition("=")
+            options[key] = value
+    assert "--config-ignore" in argv, "the real program would read the user's config"
+    assert options.get("output.jsonl") == "true", "only JSON Lines streams"
+    cursor = int(options.get("cursor") or 0)
+    max_posts = int(options.get("extractor.instagram.max-posts") or 0)
+    delay = float(os.environ.get("FAKE_GALLERY_DL_DELAY") or 0)
+    fail_after = int(os.environ.get("FAKE_GALLERY_DL_FAIL_AFTER") or 0)
+    flag = os.environ.get("FAKE_GALLERY_DL_FAIL_FLAG")
+    should_fail = bool(fail_after) and (not flag or not Path(flag).exists())
+
+    posts_seen = 0
+    for line in FIXTURE.read_text(encoding="utf-8").splitlines():
+        message = json.loads(line)
+        if message[0] == 2:
+            posts_seen += 1
+            if posts_seen <= cursor:
+                continue
+            if max_posts and posts_seen - cursor > max_posts:
+                break
+            if should_fail and posts_seen - cursor > fail_after:
+                if flag:
+                    Path(flag).write_text("failed once")
+                sys.stderr.write("[instagram][error] HttpError: '429 Too Many Requests' for "
+                                 "'https://www.instagram.com/api/v1/feed/user/1/'\n")
+                sys.stderr.write(f"[instagram][info] Use '-o cursor={posts_seen - 1}' to continue "
+                                 "downloading from the current position\n")
+                sys.stderr.flush()
+                return 1
+            if delay:
+                time.sleep(delay)
+            sys.stderr.write(f"[instagram][debug] Cursor: {posts_seen}\n")
+            sys.stderr.flush()
+        elif posts_seen <= cursor:
+            continue
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

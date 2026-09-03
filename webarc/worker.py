@@ -306,7 +306,8 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
         # comments and evidence still through the browser
         from .instagram_gallery import GalleryListingClient, discovery_limit
         client = GalleryListingClient(
-            client, limit=discovery_limit(config.mode, config.latest_n))
+            client, limit=discovery_limit(config.mode, config.latest_n),
+            scratch_dir=Path(store.db_path).resolve().parent / "tmp")
 
     def control_poll():
         command = store.get_control(crawl_id)

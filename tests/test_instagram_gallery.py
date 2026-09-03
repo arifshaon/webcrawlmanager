@@ -1,70 +1,85 @@
-"""The gallery-dl listing source, on the browser's session."""
+"""The gallery-dl listing source: streamed, resumable, kept as evidence."""
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from webarc.instagram import (InstagramCaptureConfig, InstagramCaptureSession,
                               RateLimited)
-from webarc.instagram_gallery import (GalleryListingClient, discovery_limit,
-                                      gallery_command, posts_from_gallery,
+from webarc.instagram_gallery import (SCRATCH_PREFIX, GalleryListingClient,
+                                      clear_stale_scratch, discovery_limit,
+                                      gallery_command, lend_cookies,
+                                      posts_from_gallery_lines,
                                       write_netscape_cookies)
 
 from tests.instagram_fakes import FakeInstagram, post, user_id_of
 
-# gallery-dl's -j output for a profile, in the shape it really has: one
-# entry per post, then one per media file, pinned as the pinning user's id
-DISCOVERY = [
-    [2, {"post_shortcode": "CpXIBzFtUrl", "post_id": "3050942580514966245",
-         "pinned": [4267196155], "post_date": "2023-03-04 09:05:19",
-         "username": "qatarballers", "owner_id": "4267196155",
-         "fullname": "Qatar Ballers", "description": "Welcome", "likes": 321,
-         "post_url": "https://www.instagram.com/p/CpXIBzFtUrl/", "type": "post"}],
-    [3, {"post_shortcode": "CpXIBzFtUrl", "post_id": "3050942580514966245",
-         "pinned": [4267196155], "post_date": "2023-03-04 09:05:19",
-         "username": "qatarballers", "owner_id": "4267196155", "num": 2,
-         "media_id": "3050942580514966246", "display_url": "https://cdn/pin-2.jpg",
-         "width": 1080, "height": 1350}],
-    [3, {"post_shortcode": "CpXIBzFtUrl", "post_id": "3050942580514966245",
-         "username": "qatarballers", "owner_id": "4267196155", "num": 1,
-         "media_id": "3050942580514966245", "display_url": "https://cdn/pin-1.jpg",
-         "width": 1080, "height": 1350}],
-    [2, {"post_shortcode": "DcwC7FmjYdk", "post_id": "3976691327525816164",
-         "pinned": [], "post_date": "2026-09-01 16:02:49", "username": "qatarballers",
-         "owner_id": "4267196155", "description": "Banger", "likes": 1606,
-         "post_url": "https://www.instagram.com/p/DcwC7FmjYdk/", "type": "reel"}],
-    [3, {"post_shortcode": "DcwC7FmjYdk", "post_id": "3976691327525816164",
-         "username": "qatarballers", "owner_id": "4267196155", "num": 1,
-         "media_id": "3976691264275724139", "display_url": "https://cdn/reel-poster.jpg",
-         "video_url": "https://cdn/reel.mp4", "width": 720, "height": 1280}],
-]
+FIXTURE = Path(__file__).parent / "fixtures" / "instagram" / "gallery-dl-posts.jsonl"
+FAKE_MODULE = "tests.fixtures.instagram.fake_gallery_dl"
+FIXTURE_CODES = ["CpXIBzFtUrl", "Dbv_BWsNcdK", "DbqZzEmCN0k"]   # pinned, pinned, post
 
 
-class MappingTests(unittest.TestCase):
+class RecordedOutputTests(unittest.TestCase):
+    """gallery-dl 1.32.10's own output for a real profile, unmodified."""
+
     def test_posts_come_out_in_gallery_dls_order_with_pins_dates_and_media(self):
-        posts = posts_from_gallery(json.dumps(DISCOVERY), "qatarballers",
-                                   {"response": "raw/responses/response-000001.json"})
+        posts = posts_from_gallery_lines(FIXTURE.read_text(encoding="utf-8").splitlines(),
+                                         "qatarballers", {"listing_evidence": "e"})
 
-        self.assertEqual([p.shortcode for p in posts], ["CpXIBzFtUrl", "DcwC7FmjYdk"])
-        pinned, reel = posts
-        self.assertTrue(pinned.is_pinned)
-        self.assertFalse(reel.is_pinned)
-        self.assertEqual(pinned.created_time, "2023-03-04T09:05:19Z")
-        self.assertEqual(pinned.owner_id, "4267196155")
-        self.assertEqual(pinned.owner_username, "qatarballers")
-        self.assertEqual(pinned.caption, "Welcome")
-        self.assertEqual(pinned.likes_count, 321)
-        self.assertEqual(pinned.kind, "carousel")
-        self.assertEqual([m.url for m in pinned.media],
-                         ["https://cdn/pin-1.jpg", "https://cdn/pin-2.jpg"])
-        self.assertEqual(reel.kind, "reel")
-        self.assertEqual(reel.media[0].kind, "video")
-        self.assertEqual(reel.media[0].thumbnail_url, "https://cdn/reel-poster.jpg")
-        self.assertEqual(pinned.source, "gallery-dl")
-        self.assertEqual(pinned.provenance["response"], "raw/responses/response-000001.json")
-        self.assertTrue(pinned.provenance["listing_request"])
+        self.assertEqual([p.shortcode for p in posts], FIXTURE_CODES)
+        first = posts[0]
+        self.assertTrue(first.is_pinned)
+        self.assertEqual(first.created_time, "2023-03-04T09:05:19Z")
+        self.assertEqual(first.owner_id, "4267196155")
+        self.assertEqual(first.owner_username, "qatarballers")
+        self.assertEqual(first.likes_count, 321)
+        self.assertTrue(first.caption)
+        self.assertEqual(first.source, "gallery-dl")
+        self.assertEqual(first.provenance["listing_evidence"], "e")
+        self.assertEqual(first.provenance["line"], 1)
+        self.assertEqual([m.position for m in first.media], list(range(len(first.media))))
+        kinds = {p.shortcode: p.kind for p in posts}
+        self.assertIn(kinds["DbqZzEmCN0k"], ("carousel",))
+        self.assertTrue(all(p.media for p in posts))
+
+    def test_a_reels_video_carries_its_poster(self):
+        posts = posts_from_gallery_lines(FIXTURE.read_text(encoding="utf-8").splitlines(),
+                                         "qatarballers")
+        videos = [m for p in posts for m in p.media if m.kind == "video"]
+
+        self.assertTrue(videos)
+        self.assertTrue(all(m.thumbnail_url for m in videos))
+
+
+class CommandTests(unittest.TestCase):
+    def test_the_command_ignores_the_users_config_and_states_every_setting(self):
+        command = gallery_command(Path("/tmp/c.txt"), "https://www.instagram.com/qnl/posts/",
+                                 17, cursor="abc123")
+
+        self.assertIn("--config-ignore", command)
+        self.assertIn("--no-input", command)
+        self.assertIn("-v", command)
+        self.assertEqual(command[command.index("-C") + 1], "/tmp/c.txt")
+        self.assertIn("-j", command)
+        for setting in ("output.jsonl=true", "output.private=false",
+                        "extractor.instagram.api=rest", "extractor.instagram.pinned=true",
+                        "extractor.instagram.retries=0", "extractor.instagram.max-posts=17",
+                        "cursor=abc123"):
+            self.assertIn(setting, command)
+        self.assertEqual(command[-1], "https://www.instagram.com/qnl/posts/")
+
+    def test_only_the_cookies_gallery_dl_needs_are_lent(self):
+        jar = [{"name": "sessionid", "value": "s", "domain": ".instagram.com"},
+               {"name": "csrftoken", "value": "c", "domain": ".instagram.com"},
+               {"name": "datr", "value": "fingerprint", "domain": ".instagram.com"},
+               {"name": "ps_l", "value": "x", "domain": ".instagram.com"}]
+
+        self.assertEqual([c["name"] for c in lend_cookies(jar)], ["sessionid", "csrftoken"])
 
     def test_the_cookie_file_is_in_the_format_gallery_dl_reads(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -81,17 +96,18 @@ class MappingTests(unittest.TestCase):
                          ["#HttpOnly_.instagram.com", "TRUE", "/", "TRUE",
                           "1800000000", "sessionid", "1%3Aabc"])
 
-    def test_the_command_lends_the_cookies_and_caps_the_listing(self):
-        command = gallery_command(Path("/tmp/c.txt"),
-                                  "https://www.instagram.com/qnl/posts/", 17)
+    def test_stale_lent_cookie_folders_are_cleared(self):
+        with tempfile.TemporaryDirectory() as folder:
+            stale = Path(folder) / f"{SCRATCH_PREFIX}1-1"
+            stale.mkdir()
+            (stale / "cookies.txt").write_text("secret")
+            (Path(folder) / "unrelated").mkdir()
 
-        self.assertIn("-C", command)
-        self.assertIn("/tmp/c.txt", command)
-        self.assertIn("-j", command)
-        self.assertIn("extractor.instagram.max-posts=17", command)
-        self.assertEqual(command[-1], "https://www.instagram.com/qnl/posts/")
+            self.assertEqual(clear_stale_scratch(Path(folder)), 1)
+            self.assertFalse(stale.exists())
+            self.assertTrue((Path(folder) / "unrelated").exists())
 
-    def test_latest_n_lists_a_buffer_beyond_n_and_other_modes_list_everything(self):
+    def test_latest_n_lists_a_buffer_beyond_n_and_other_modes_list_until_stopped(self):
         self.assertEqual(discovery_limit("latest_n", 5), 17)
         self.assertEqual(discovery_limit("latest_n", 100), 200)
         self.assertIsNone(discovery_limit("date_range", 5))
@@ -103,104 +119,174 @@ class _Inner(FakeInstagram):
 
     def cookie_jar(self):
         return [{"name": "sessionid", "value": "1%3Aabc", "domain": ".instagram.com",
-                 "path": "/", "secure": True}]
+                 "path": "/", "secure": True},
+                {"name": "datr", "value": "not lent", "domain": ".instagram.com"}]
 
 
-def _discovery_for(inner: FakeInstagram) -> str:
-    """gallery-dl output listing the inner fake's posts, pinned first."""
-    entries = []
-    owner = user_id_of("qatarballers")
-    for p in inner.posts_by_user["qatarballers"]:
-        entries.append([2, {"post_shortcode": p.shortcode, "post_id": p.media_id,
-                            "pinned": [owner] if p.is_pinned else [],
-                            "post_date": p.created_time.replace("T", " ").rstrip("Z"),
-                            "username": "qatarballers", "owner_id": owner,
-                            "description": p.caption, "likes": p.likes_count,
-                            "post_url": p.permalink_url}])
-        for n, m in enumerate(p.media, 1):
-            entries.append([3, {"post_shortcode": p.shortcode, "post_id": p.media_id,
-                                "num": n, "media_id": f"{p.media_id}_{n}",
-                                "display_url": m.url, "username": "qatarballers",
-                                "owner_id": owner}])
-    return json.dumps(entries)
+class StreamingTestCase(unittest.TestCase):
+    """Against the fake gallery-dl program, run as a real subprocess."""
 
-
-class ListingClientTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name)
+        self.scratch = self.tmp / "scratch"
         self.inner = _Inner()
         self.inner.add_profile("qatarballers", [
-            post("Cpin01", "2023-03-04T09:05:19Z", pinned=True, owner="qatarballers"),
-            post("Cnew02", "2026-09-02T00:00:00Z", owner="qatarballers"),
-            post("Cnew01", "2026-09-01T00:00:00Z", owner="qatarballers"),
-        ])
-        self.inner.add_comments("Cnew02", [])
-        self.runs = 0
+            post(code, "2026-09-01T00:00:00Z", owner="qatarballers") for code in FIXTURE_CODES])
+        # the recorded listing names the real account's id; the profile the
+        # browser reads must agree, or the engine rightly skips the posts
+        self.inner.profiles["qatarballers"].user_id = "4267196155"
+        self._env = {}
+        self.addCleanup(self._restore_env)
 
-    def runner(self, command):
-        self.runs += 1
-        self.assertTrue(Path(command[command.index("-C") + 1]).exists())  # cookies lent
-        return _discovery_for(self.inner)
+    def env(self, **values):
+        for key, value in values.items():
+            self._env[key] = os.environ.get(key)
+            os.environ[key] = str(value)
 
-    def session(self, client, **config):
+    def _restore_env(self):
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def client(self, **kwargs) -> GalleryListingClient:
+        client = GalleryListingClient(self.inner, module=FAKE_MODULE,
+                                      scratch_dir=self.scratch, **kwargs)
+        self.addCleanup(client.close)
+        return client
+
+
+class StreamingTests(StreamingTestCase):
+    def test_posts_arrive_while_gallery_dl_is_still_running(self):
+        self.env(FAKE_GALLERY_DL_DELAY="0.4")
+        listing = self.client().profile_posts("qatarballers")
+
+        started = time.monotonic()
+        first = next(listing)
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(first.shortcode, FIXTURE_CODES[0])
+        self.assertIsNone(listing.process.poll())          # still listing
+        self.assertLess(elapsed, 1.2)                       # not the whole run
+        rest = [p.shortcode for p in listing]
+        self.assertEqual(rest, FIXTURE_CODES[1:])
+        self.assertEqual(listing.outcome, "exhausted")
+
+    def test_closing_a_listing_stops_gallery_dl(self):
+        self.env(FAKE_GALLERY_DL_DELAY="0.5")
+        listing = self.client().profile_posts("qatarballers")
+        next(listing)
+        process = listing.process
+
+        listing.close()
+
+        self.assertIsNotNone(process.poll())                # gone
+        self.assertEqual(listing.outcome, "stopped_by_engine")
+        self.assertFalse(list(self.scratch.glob(SCRATCH_PREFIX + "*")))   # cookies gone
+
+    def test_a_rate_limit_resumes_from_the_cursor_not_from_the_start(self):
+        flag = self.tmp / "failed-once"
+        self.env(FAKE_GALLERY_DL_FAIL_AFTER="1", FAKE_GALLERY_DL_FAIL_FLAG=str(flag))
+        listing = self.client().profile_posts("qatarballers")
+
+        first = next(listing)
+        with self.assertRaises(RateLimited) as refused:
+            next(listing)
+        self.assertIn("cursor", str(refused.exception))
+        second = next(listing)                              # after the engine's wait
+        rest = [p.shortcode for p in listing]
+
+        self.assertEqual([first.shortcode, second.shortcode] + rest, FIXTURE_CODES)
+        self.assertEqual(len(listing.commands), 2)
+        self.assertNotIn("cursor=", " ".join(listing.commands[0]))
+        self.assertIn("cursor=1", " ".join(listing.commands[1]))
+        self.assertEqual(listing.resumed_from, ["1"])
+
+    def test_the_engine_waits_out_the_rate_limit_and_keeps_what_was_listed(self):
+        flag = self.tmp / "failed-once"
+        self.env(FAKE_GALLERY_DL_FAIL_AFTER="2", FAKE_GALLERY_DL_FAIL_FLAG=str(flag))
+        client = self.client()
         cfg = InstagramCaptureConfig.from_dict({
-            "targets": ["qatarballers"], "mode": "latest_n", "latest_n": 2,
-            "surfaces": ["posts"], "listing": "gallery-dl", **config})
-        return InstagramCaptureSession(config=cfg, client=client, output_dir=self.tmp,
-                                       crawl_id=1, crawl_name="t", sleep=lambda _s: None)
-
-    def test_the_listing_comes_from_gallery_dl_and_the_rest_from_the_browser(self):
-        client = GalleryListingClient(self.inner, limit=14, runner=self.runner)
-
-        self.session(client).run()
-
-        rows = [json.loads(l) for l in (self.tmp / "instagram-posts.jsonl").read_text().splitlines()]
-        self.assertEqual([r["shortcode"] for r in rows], ["Cpin01", "Cnew02", "Cnew01"])
-        self.assertTrue(rows[0]["is_pinned"])
-        self.assertEqual({r["source"] for r in rows}, {"gallery-dl"})
-        self.assertEqual(self.runs, 1)
-        self.assertIn("extractor.instagram.max-posts=14", client.commands[0])
-        self.assertEqual(self.inner.calls["post_list"], 0)        # not scrolled
-        self.assertGreaterEqual(self.inner.calls["fetch"], 3)     # media via the browser
-        # the listing is kept as the response the posts were read from
-        listing = self.tmp / rows[0]["provenance"]["response"]
-        self.assertTrue(listing.exists())
-        saved = json.loads(listing.read_text(encoding="utf-8"))
-        self.assertEqual(saved["tool"], "gallery-dl")
-        self.assertIn("Cpin01", saved["body"])
-        manifest = json.loads((self.tmp / "instagram-manifest.json").read_text())
-        self.assertEqual(manifest["capture"]["listing_source"], "gallery-dl")
-        self.assertEqual(manifest["capture"]["client"], "browser+gallery-dl")
-
-    def test_a_rate_limit_from_gallery_dl_is_waited_out_and_retried(self):
-        attempts = []
-        def flaky(command):
-            attempts.append(command)
-            if len(attempts) == 1:
-                raise RateLimited(120.0, "gallery-dl was rate limited by Instagram")
-            return _discovery_for(self.inner)
-        client = GalleryListingClient(self.inner, runner=flaky)
-        session = self.session(client)
+            "targets": ["qatarballers"], "mode": "until_stopped", "surfaces": ["posts"],
+            "listing": "gallery-dl", "capture_media": False})
+        session = InstagramCaptureSession(config=cfg, client=client, output_dir=self.tmp / "out",
+                                          crawl_id=1, crawl_name="t", sleep=lambda _s: None)
 
         session.run()
 
-        self.assertEqual(len(attempts), 2)
-        self.assertEqual(len(session.archive.posts), 3)
+        self.assertEqual(list(session.archive.posts), FIXTURE_CODES)
         self.assertGreaterEqual(session.counters["rate_limit_waits"], 1)
+        self.assertEqual(len(client.commands), 2)
+
+
+class EvidenceTests(StreamingTestCase):
+    def run_engine(self, **config):
+        client = self.client(limit=17)
+        cfg = InstagramCaptureConfig.from_dict({
+            "targets": ["qatarballers"], "mode": "latest_n", "latest_n": 5,
+            "surfaces": ["posts"], "listing": "gallery-dl", **config})
+        session = InstagramCaptureSession(config=cfg, client=client, output_dir=self.tmp / "out",
+                                          crawl_id=1, crawl_name="t", sleep=lambda _s: None)
+        session.run()
+        return client, session
+
+    def test_the_listing_is_kept_as_the_tools_output_not_as_a_response(self):
+        client, session = self.run_engine()
+        out = self.tmp / "out"
+
+        rows = [json.loads(l) for l in (out / "instagram-posts.jsonl").read_text().splitlines()]
+        self.assertEqual([r["shortcode"] for r in rows], FIXTURE_CODES)
+        origin = rows[0]["provenance"]
+        self.assertEqual(origin["listing_source"], "gallery-dl")
+        self.assertFalse(origin["instagram_raw_response_available"])
+        self.assertIsNone(origin["response"])
+        evidence = out / origin["listing_evidence"]
+        self.assertTrue(evidence.exists())
+        self.assertTrue(str(evidence).replace("\\", "/").endswith(
+            "evidence/listings/gallery-dl-000001.jsonl"))
+        self.assertEqual(evidence.read_text(encoding="utf-8"),
+                         FIXTURE.read_text(encoding="utf-8"))
+        self.assertFalse(list((out / "raw" / "responses").glob("*")) if (out / "raw" / "responses").exists() else [])
+        meta = json.loads(evidence.with_suffix(".json").read_text(encoding="utf-8"))
+        events = {e["event"]: e for e in meta["events"]}
+        self.assertIn("<lent cookies>", events["started"]["command"])
+        self.assertNotIn("cookies.txt", " ".join(events["started"]["command"]))
+        self.assertEqual(events["finished"]["outcome"], "exhausted")
+        self.assertTrue(evidence.with_suffix(".log").exists())
+        checksums = (out / "checksums.sha256").read_text()
+        self.assertIn("evidence/listings/gallery-dl-000001.jsonl", checksums)
+        manifest = json.loads((out / "instagram-manifest.json").read_text())
+        self.assertIn("not the responses", manifest["layers"]["listings"]["meaning"])
+        self.assertEqual(manifest["capture"]["listing_source"], "gallery-dl")
+
+    def test_media_says_who_found_the_url_and_which_client_fetched_it(self):
+        self.inner.last_fetch_via = "browser-page"
+        posts = posts_from_gallery_lines(FIXTURE.read_text(encoding="utf-8").splitlines(),
+                                         "qatarballers")
+        for p in posts:
+            for m in p.media:
+                self.inner.media[m.url] = b"bytes"
+        client, session = self.run_engine(capture_media=True)
+
+        index = json.loads((self.tmp / "out" / "instagram-media.json").read_text())
+        self.assertTrue(index)
+        for entry in index.values():
+            self.assertEqual(entry["discovered_by"], "gallery-dl")
+            self.assertEqual(entry["fetched_via"], "browser-page")
+            self.assertFalse(entry["browser_fallback"])
 
     def test_the_reported_comment_count_is_filled_from_the_posts_own_page(self):
-        """gallery-dl does not report comment counts; the browser has the
-        post's page open for the comments and can say."""
-        seen = post("Cnew02", "2026-09-02T00:00:00Z", owner="qatarballers", comments_count=7)
-        self.inner.observed_post = lambda code: seen if code == "Cnew02" else None
-        client = GalleryListingClient(self.inner, runner=self.runner)
+        seen = post(FIXTURE_CODES[1], "2026-09-02T00:00:00Z", owner="qatarballers",
+                    comments_count=7)
+        self.inner.observed_post = lambda code: seen if code == FIXTURE_CODES[1] else None
 
-        self.session(client, include_comments=True).run()
+        self.run_engine(include_comments=True)
 
-        row = next(json.loads(l) for l in (self.tmp / "instagram-posts.jsonl").read_text().splitlines()
-                   if json.loads(l)["shortcode"] == "Cnew02")
+        row = next(json.loads(l) for l in (self.tmp / "out" / "instagram-posts.jsonl").read_text().splitlines()
+                   if json.loads(l)["shortcode"] == FIXTURE_CODES[1])
         self.assertEqual(row["comments_count"], 7)
         self.assertIn("comments_count", row["provenance"]["filled_from_page"]["fields"])
 
