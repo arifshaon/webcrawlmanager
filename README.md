@@ -39,6 +39,7 @@ SWM is designed around two complementary approaches to web archiving:
 |---|---|---|---|
 | Interactive recording | The operator | `headed`, `native` | Command line and dashboard |
 | Facebook Page capture | SWM scrolls; the curator handles login, verification and manual overrides | `headed`, `native` | Dashboard |
+| Instagram capture | SWM drives the signed-in browser, with a window or without; the curator handles sign-in and verification | `headed`, `native` | Dashboard |
 | Automated crawling | SWM, using human-like browser behaviour | `headless`, `headed`, `native` | Command line and dashboard |
 | Replay and QA | The operator | Default browser | Command line; replay also available from the dashboard |
 
@@ -58,6 +59,7 @@ SWM is designed around two complementary approaches to web archiving:
   - [Recording options](#recording-options)
   - [Privacy and sensitive content](#privacy-and-sensitive-content)
 - [Facebook Page capture](#facebook-page-capture)
+- [Instagram capture](#instagram-capture)
 - [Automated crawling](#automated-crawling)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
@@ -340,6 +342,61 @@ The managed headed browser uses an SWM-owned persistent Facebook profile below
 the state directory. This lets a curator remain signed in between authorised
 captures without SWM asking for or storing the password itself. Protect that
 profile as sensitive local data.
+
+## Instagram capture
+
+The dashboard's **Instagram** tab captures a profile's posts and reels, or a
+single post or reel, through a Chrome the curator has signed in to. Instagram
+refuses other clients on sight; what it cannot refuse is its own, so SWM
+collects from what Instagram serves that browser. Explore, hashtag and
+location results are refused as targets: they are selected by Instagram's
+ranking and cannot be presented as an archive of anything.
+
+The run needs no window: **Run in the background** scrolls the same signed-in
+profile unseen, and a window opens only when Instagram needs a person -- a
+sign-in or a verification -- and then stays for the run. A profile is
+identified by its numeric id once read, and a post is the profile's only when
+the profile's own listing request returned it, under its timeline connection,
+and it names no other owner. A signed-in page carries the viewer's feed,
+suggestions and other profiles' listings; none of that is the profile's.
+
+**Profile listing** is a choice of two:
+
+- **Browser** — scroll the profile and read what Instagram serves its own
+  client, page by page.
+- **gallery-dl** — list the profile through the per-user endpoint, in
+  Instagram's order with pinned flags and dates, the way Instaloader did. The
+  signed-in browser's cookies are lent to gallery-dl in a temporary file for
+  one call; media, comments and evidence still come through the browser.
+  Needs `pip install gallery-dl` (GPL-2.0, run as a separate program).
+
+Capture modes match Facebook's: date range, latest N (pinned posts recognised
+and kept without consuming the count), until stopped, and since last capture.
+
+Every run writes:
+
+- `media/` — original files at the highest resolution Instagram served,
+  requested by the page itself, content-addressed by SHA-256, every carousel
+  component in order;
+- `raw/responses/` — every response a kept record was read from, verbatim
+  but with the browser session's own bootstrap material removed, and
+  `raw/posts/`, `raw/profiles/`, `raw/comments/` — the extracted nodes; every
+  record's provenance names its response, decoder, document and path;
+- `instagram-posts.jsonl`/`.csv`, `instagram-comments.jsonl`/`.csv`,
+  `instagram-profiles.json`, `instagram-media.json`, `checksums.sha256`;
+- `instagram-manifest.json`, `instagram-checkpoint.json`,
+  `instagram-events.jsonl`;
+- `pages/` — reader pages built from the package's own records, plainly
+  marked as not Instagram;
+- optionally a WARC of every exchange the browser made, credentials and
+  session material redacted, which is the record of how Instagram presented
+  what was collected.
+
+Comments are opt-in. Each post carries a grade of what its comment
+collection can support as evidence: complete against Instagram's reported
+count, partial, limited by the capture's cap, none reported, or exhausted but
+unverified where nothing independent confirms the count. A thread that
+stopped yielding is never taken as proof it was complete.
 
 ## Automated crawling
 

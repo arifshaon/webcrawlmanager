@@ -4,3 +4,6 @@
 playwright>=1.44
 warcio>=1.7.4
 PyYAML>=6.0
+# Optional — Instagram profile listing through gallery-dl (run as a separate
+# program; only the "gallery-dl" listing choice needs it):
+#   pip install gallery-dl

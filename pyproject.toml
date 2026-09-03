@@ -19,6 +19,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dashboard = ["fastapi>=0.110", "uvicorn>=0.29"]
+# Instagram profile listing through gallery-dl (GPL-2.0; run as a separate
+# program, never imported). Only the "gallery-dl" listing choice needs it.
+instagram-listing = ["gallery-dl>=1.30"]
 
 [project.scripts]
 swm = "webarc.cli:main"
