@@ -852,6 +852,11 @@ class InstagramCaptureSession:
             self._request_stop("curator_stop", "curator_selected_stop_and_save")
             return
         if command == CMD_PAUSE:
+            # a client that asks Instagram on its own (a listing tool) must
+            # stop now, or the pause is a pause in name only
+            suspend = getattr(self.client, "suspend", None)
+            if callable(suspend):
+                suspend()
             self.state = PAUSED
             self.phase_detail = ("Paused. Nothing further is requested from "
                                  "Instagram until you resume.")
@@ -1711,7 +1716,8 @@ def _free_port() -> int:
 
 
 def _launch_native_chrome(user_data_dir: str | Path, headless: bool,
-                          chrome_path: Optional[str], url: str = "about:blank"):
+                          chrome_path: Optional[str], url: str = "about:blank",
+                          no_sandbox: bool = False):
     """The system's own Chrome on the dedicated profile, attached over CDP.
 
     Returns (process, cdp_port). Chrome ignores --remote-debugging-port on
@@ -1733,12 +1739,14 @@ def _launch_native_chrome(user_data_dir: str | Path, headless: bool,
         args.append("--headless=new")
     try:
         import os
-        if os.name == "posix" and os.geteuid() == 0:
+        if no_sandbox or (os.name == "posix" and os.geteuid() == 0):
             # Chrome exits at once as root without this; a container is the
-            # one place SWM runs as root, and the only place it is needed.
-            args.append("--no-sandbox")
+            # one place SWM runs as root. Some hosts also refuse Chrome's
+            # sandbox to ordinary users, and the caller asks again with it.
+            args += ["--no-sandbox", "--disable-dev-shm-usage"]
     except AttributeError:
-        pass
+        if no_sandbox:
+            args += ["--no-sandbox", "--disable-dev-shm-usage"]
     args.append(url)
     process = subprocess.Popen(args, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL)

@@ -295,6 +295,9 @@ class _StreamingListing:
         self._deferred_status: Optional[int] = None
         self._lines: "queue.Queue[Optional[str]]" = queue.Queue()
         self._stdout_thread: Optional[threading.Thread] = None
+        self._cursor_history: list[str] = []
+        self._buffer: list[InstagramPost] = []     # complete posts held over a pause
+        self._suspended = False
 
     # -- the process --------------------------------------------------------
     def _start(self) -> None:
@@ -348,6 +351,7 @@ class _StreamingListing:
                 match = _CURSOR_RE.search(line)
                 if match:
                     self.cursor = match.group(1) or match.group(2)
+                    self._cursor_history.append(self.cursor)
                 if self.evidence is not None:
                     self.evidence.log(line)
         except Exception:
@@ -367,6 +371,12 @@ class _StreamingListing:
             self._stderr_thread.join(timeout=5)
         if self._stdout_thread is not None:
             self._stdout_thread.join(timeout=5)
+        for pipe in (process.stdout, process.stderr):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except Exception:
+                pass
         return status
 
     def _stop_process(self) -> None:
@@ -380,6 +390,48 @@ class _StreamingListing:
             except subprocess.TimeoutExpired:
                 process.kill()
         self._finish_process()
+
+    def suspend(self) -> None:
+        """The curator paused: stop gallery-dl now, keep what it listed.
+
+        Nothing further is requested from Instagram until the curator
+        resumes. Posts already complete in the pipe are held over; the
+        pending one is dropped and the resumed run starts from the cursor
+        before the last one reported, so the page it was on is listed again
+        -- one page's cost -- and posts already handed over are not handed
+        over twice.
+        """
+        if self.process is None or self.closed:
+            return
+        self._stop_process()
+        while True:
+            try:
+                line = self._lines.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                break
+            self.lines += 1
+            if self.evidence is not None:
+                self.evidence.write_line(line)
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, list) and message and isinstance(message[-1], dict):
+                try:
+                    completed = self._take(message)
+                except InstagramError:
+                    continue
+                if completed is not None and completed.shortcode not in self.handed:
+                    self._buffer.append(completed)
+        self._pending = None
+        self.cursor = self._cursor_history[-2] if len(self._cursor_history) >= 2 else None
+        self._cursor_history = [self.cursor] if self.cursor else []
+        self._suspended = True
+        self.outcome = None
+        self._note("paused", cursor=self.cursor, held=len(self._buffer),
+                   posts=self.listed)
 
     def _note(self, event: str, **details) -> None:
         if self.evidence is not None:
@@ -401,11 +453,13 @@ class _StreamingListing:
             try:
                 line = self._lines.get(timeout=0.5)
             except queue.Empty:
-                self.client.tick()
+                self.client.tick()               # a pause holds in here
                 if self.client.stopping():
                     self._stop_process()
                     self.outcome = "stopped_by_curator"
                     raise TargetUnavailable("stopped")
+                if self._suspended:
+                    return None
                 continue
             if line is None:
                 return None
@@ -476,6 +530,11 @@ class _StreamingListing:
             if self.done or self.closed:
                 raise StopIteration
             if self.process is None:
+                if self._buffer:
+                    held = self._buffer.pop(0)
+                    if held.shortcode in self.handed:
+                        continue
+                    return self._hand(held)
                 if self._deferred_status is not None:
                     # the last run failed after a post the engine has now
                     # had; its refusal is raised here, and the resumed run
@@ -487,6 +546,9 @@ class _StreamingListing:
                     self.resumed_from.append(self.cursor)
                 self._start()
             message = self._read_message()
+            if message is None and self._suspended:
+                self._suspended = False          # paused, not finished
+                continue
             if message is None:
                 status = self._finish_process()
                 errored = any("error" in line.lower() for line in self._stderr_tail)
@@ -597,6 +659,11 @@ class GalleryListingClient:
         """``opener(tool)`` gives a place in the package for one listing's
         evidence, with write_line(), log(), note() and close()."""
         self._evidence_opener = opener
+
+    def suspend(self) -> None:
+        """The curator paused: gallery-dl must stop asking Instagram."""
+        if self._active is not None:
+            self._active.suspend()
 
     def profile_posts(self, username: str) -> Iterator[InstagramPost]:
         return self._listing(username, f"{self.base_url}/{username}/posts/", "posts")

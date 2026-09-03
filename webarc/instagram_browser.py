@@ -617,6 +617,16 @@ class InstagramBrowserClient:
 
     # -- lifecycle ------------------------------------------------------------
     def start(self) -> "InstagramBrowserClient":
+        # A browser that fails to come up must not leave Playwright's
+        # driver behind for the next attempt to trip over.
+        try:
+            return self._start()
+        except Exception:
+            self.close()
+            self._pw = self._context = self._native = self._page = None
+            raise
+
+    def _start(self) -> "InstagramBrowserClient":
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
@@ -628,7 +638,18 @@ class InstagramBrowserClient:
             self._native = _launch_native_chrome(profile, self.headless,
                                                  self.browser.chrome_path)
             process, port = self._native
-            _wait_for_cdp(port, process)
+            try:
+                _wait_for_cdp(port, process)
+            except RuntimeError as exc:
+                if "exited immediately" not in str(exc):
+                    raise
+                # the host refused Chrome's sandbox; once more without it
+                log.warning("Native Chrome exited at once (%s); retrying "
+                            "without its sandbox.", exc)
+                self._native = _launch_native_chrome(
+                    profile, self.headless, self.browser.chrome_path, no_sandbox=True)
+                process, port = self._native
+                _wait_for_cdp(port, process)
             attached = self._pw.chromium.connect_over_cdp(
                 f"http://127.0.0.1:{port}")
             self._context = (attached.contexts[0] if attached.contexts

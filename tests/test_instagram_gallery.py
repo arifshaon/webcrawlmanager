@@ -263,6 +263,36 @@ class RecoveryTests(StreamingTestCase):
 
         self.assertEqual(list(session.archive.posts), FIXTURE_CODES)
 
+    def test_pause_stops_gallery_dl_and_resume_continues_from_its_cursor(self):
+        """A pause is a pause of Instagram traffic: gallery-dl is stopped
+        while paused, and the resumed run starts from the cursor before the
+        last one reported, with nothing handed over twice."""
+        self.env(FAKE_GALLERY_DL_DELAY="0.6")
+        client = self.client()
+        seen_while_paused = []
+        answers = iter(["pause", "resume"])
+
+        def control_poll():
+            answer = next(answers, None)
+            if answer == "resume":
+                listing = client._active
+                seen_while_paused.append(listing.process is None)
+            return answer
+        cfg = InstagramCaptureConfig.from_dict({
+            "targets": ["qatarballers"], "mode": "until_stopped", "surfaces": ["posts"],
+            "listing": "gallery-dl", "capture_media": False})
+        session = InstagramCaptureSession(config=cfg, client=client, output_dir=self.tmp / "out",
+                                          crawl_id=1, crawl_name="t", sleep=lambda _s: None,
+                                          control_poll=control_poll)
+
+        session.run()
+
+        self.assertEqual(seen_while_paused, [True])          # no process during the pause
+        self.assertEqual(list(session.archive.posts), FIXTURE_CODES)
+        self.assertEqual(len(client.commands), 2)             # stopped, then resumed
+        meta = json.loads(next((self.tmp / "out" / "evidence" / "listings").glob("*.json")).read_text())
+        self.assertIn("paused", [e["event"] for e in meta["events"]])
+
     def test_stop_is_honoured_while_gallery_dl_is_waiting_on_instagram(self):
         self.env(FAKE_GALLERY_DL_DELAY="6")
         client = self.client()

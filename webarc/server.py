@@ -116,7 +116,8 @@ def _usable_directory(path: Path, label: str) -> Path:
     try:
         resolved.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise HTTPException(400, f"{label} cannot be created: {exc}")
+        raise HTTPException(
+            400, f"{label} is not writable: it cannot be created ({exc}).")
     if not os.access(resolved, os.W_OK):
         raise HTTPException(400, f"{label} is not writable.")
     return resolved
