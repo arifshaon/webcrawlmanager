@@ -331,6 +331,19 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
             self.assertIn(stray["code"], client.observed.posts)   # seen, not handed
             self.assertNotIn(stray["code"], codes)
 
+    def test_another_profiles_listing_prefetched_on_the_page_is_not_this_profiles(self):
+        """The page prefetches a suggested profile's own listing: the same
+        query, the same connection, nodes naming no owner. Only the user
+        the request names tells it apart."""
+        client = self.client()
+        client.profile("qnl")
+
+        codes = [p.shortcode for p in client.profile_posts("qnl")]
+
+        self.assertEqual(codes, [n["code"] for n in serve.TIMELINE])
+        prefetched = {n["code"] for n in serve.TIMELINE_B}
+        self.assertTrue(prefetched & set(client.observed.posts))   # it did arrive
+
     def test_reels_come_from_the_reels_listing(self):
         client = self.client()
         client.profile("qnl")

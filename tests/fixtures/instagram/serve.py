@@ -122,6 +122,14 @@ def _page(title: str, payload: dict, script: str, extra_html: str = "") -> bytes
             f"<script>{script}</script></body></html>").encode()
 
 
+# a page that also prefetches another profile's listing, as the real one
+# does for a profile the viewer hovers or is suggested
+PREFETCH_JS = """
+fetch('/graphql/query', {method: 'POST', headers: {'content-type': 'application/x-www-form-urlencoded'},
+  body: new URLSearchParams({fb_api_req_friendly_name: 'PolarisProfilePostsQuery',
+    variables: JSON.stringify({username: 'qbl', data: {count: 12}})}).toString()});
+"""
+
 SCROLL_JS = """
 let cursor = %(cursor)s; let busy = false;
 window.addEventListener('scroll', async () => {
@@ -175,8 +183,11 @@ class Handler(BaseHTTPRequestHandler):
                 data["xdt_api__v1__feed__timeline"] = {
                     "edges": [{"node": self._fix(n)} for n in VIEWER_FEED]}
             payload = _prefetch("PolarisProfilePostsTabContentQuery_connection", data)
-            return self._send(_page(segs[0], payload, SCROLL_JS % {
-                "cursor": json.dumps(cursor), "name": "PolarisProfilePostsTabContentQuery_connection"}))
+            script = SCROLL_JS % {
+                "cursor": json.dumps(cursor), "name": "PolarisProfilePostsTabContentQuery_connection"}
+            if segs[0] == "qnl":
+                script = PREFETCH_JS + script
+            return self._send(_page(segs[0], payload, script))
         if segs[:1] == ["qnl"] and segs[1:2] == ["reels"]:
             payload = _prefetch("PolarisProfileReelsTabContentQuery_connection", {
                 "xdt_api__v1__clips__user__connection_v2": {
@@ -221,7 +232,14 @@ class Handler(BaseHTTPRequestHandler):
         name = (form.get("fb_api_req_friendly_name") or [""])[0]
         variables = json.loads((form.get("variables") or ["{}"])[0])
         after = variables.get("after")
-        if "Comments" in name:
+        if variables.get("username") and variables["username"] != "qnl":
+            # another profile's listing, prefetched: its nodes name no owner
+            _, timeline, _ = PROFILES[variables["username"]]
+            stripped = [{k: v for k, v in n.items() if k != "user"} for n in timeline]
+            body = {"data": {"xdt_api__v1__feed__user_timeline_graphql_connection": {
+                "edges": [{"node": n} for n in self._fix(stripped)],
+                "page_info": {"has_next_page": False}}}}
+        elif "Comments" in name:
             body = {"data": {"xdt_api__v1__media__media_id__comments__connection": {
                 "edges": [{"node": c} for c in self._fix(MORE_COMMENTS)],
                 "page_info": {"has_next_page": False}}}, "next": None}
