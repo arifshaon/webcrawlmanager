@@ -401,7 +401,9 @@ Every run writes:
   marked as not Instagram;
 - optionally a WARC of every exchange the browser made, credentials and
   session material redacted, which is the record of how Instagram presented
-  what was collected.
+  what was collected. With the gallery-dl listing, the post pages opened for
+  comments and the media fetched are in it; the profile listing is not,
+  since the browser did not do that part.
 
 Comments are opt-in. Each post carries a grade of what its comment
 collection can support as evidence: complete against Instagram's reported

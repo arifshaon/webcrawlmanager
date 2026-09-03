@@ -600,7 +600,11 @@ class InstagramBrowserClient:
         self.navigation = 0            # the generation of the page open now
         self.exchanges_written = 0
         self.page_fetches = 0          # media requested by the page itself
+        self.cdn_tab_fetches = 0       # media requested from a tab on the CDN's origin
         self.fallback_fetches = 0      # media the driver had to request
+        self._cdn_page = None
+        self._cdn_origin: Optional[str] = None
+        self._media_hosts: set[str] = set()   # hosts media was asked from
         self.anomalies: list[dict] = []   # what could not be made sense of
         self.last_fetch_via: Optional[str] = None
         self._response_sink: Optional[Callable[[dict, bytes], str]] = None
@@ -695,6 +699,12 @@ class InstagramBrowserClient:
 
     def close(self) -> None:
         try:
+            if self._cdn_page is not None:
+                self._cdn_page.close()
+        except Exception:
+            pass
+        self._cdn_page, self._cdn_origin = None, None
+        try:
             if self._context is not None and self.browser.mode != "native":
                 self._context.close()
         except Exception:
@@ -761,7 +771,9 @@ class InstagramBrowserClient:
             netloc = (urlsplit(url).netloc or "").lower()
             host = urlsplit(url).hostname or ""
             ours = netloc == self.host or host.endswith(_INSTAGRAM_HOST)
-            if not ours and "cdninstagram" not in host and "fbcdn" not in host:
+            media_host = netloc in self._media_hosts
+            if not ours and not media_host and "cdninstagram" not in host \
+                    and "fbcdn" not in host:
                 return
             request = response.request
             body = b""
@@ -901,6 +913,7 @@ class InstagramBrowserClient:
         self._context = None
         self._native = None
         self._page = None
+        self._cdn_page, self._cdn_origin = None, None
         self.start()
         self.observed = observed
 
@@ -990,36 +1003,42 @@ class InstagramBrowserClient:
         return self.observed.comment_pages.get(self.navigation)
 
     def fetch(self, url: str) -> tuple[bytes, str]:
-        """Media, requested by the page the browser has open.
+        """Media, requested from inside the browser.
 
-        The page's own fetch carries the session and Chrome's fingerprint,
-        and the response passes through the response hook like any other, so
-        it reaches the WARC without a second request. If the page cannot
-        read the body (the CDN refusing a cross-origin read), the driver's
-        HTTP client is used and the fallback is counted and logged.
+        A fetch from a page carries the session and Chrome's own network
+        identity, and the response passes through the response hook like any
+        other, so it reaches the WARC without a second request. Instagram's
+        media hosts do not let a page on instagram.com read their bodies, so
+        a same-origin URL is fetched by the open page and a CDN URL from a
+        helper tab standing on the CDN's own origin, where the fetch is
+        same-origin and readable. Only if neither can is the driver's HTTP
+        client used, and that fallback is counted and logged.
         """
-        self._awaited_url, self._awaited_seen = url, False
-        try:
-            answer = self._page.evaluate(_PAGE_FETCH_JS, url)
-        except Exception as exc:
-            answer = {"error": str(exc)}
-        if isinstance(answer, dict) and "status" in answer:
-            # The page has the bytes before the response event reaches the
-            # hook; wait for the hook so the WARC holds this exchange before
-            # the caller moves on (or closes the WARC).
-            self._await_hook()
-            status = int(answer.get("status") or 0)
-            if status == 429:
-                raise RateLimited(120.0, "429 on media")
-            if status >= 400:
-                raise TargetUnavailable(f"HTTP {status}")
-            self.page_fetches += 1
-            self.last_fetch_via = "browser-page"
-            return (base64.b64decode(answer.get("body") or ""),
-                    str(answer.get("content_type") or ""))
-        self._awaited_url = None
-        reason = (answer or {}).get("error") if isinstance(answer, dict) else answer
-        log.warning("The page could not fetch %s (%s); using the driver's "
+        page_host = (urlsplit(self._page.url or self.base_url).netloc or "").lower() \
+            if self._page is not None else ""
+        media_netloc = (urlsplit(url).netloc or "").lower()
+        self._media_hosts.add(media_netloc)     # its exchanges belong in the WARC
+        same_origin = media_netloc == page_host
+        reason = None
+        if same_origin:
+            answer = self._fetch_in(self._page, url)
+            if answer is not None:
+                self.page_fetches += 1
+                self.last_fetch_via = "browser-page"
+                return answer
+            reason = self._last_fetch_error
+        else:
+            helper = self._cdn_tab_for(url)
+            if helper is not None:
+                answer = self._fetch_in(helper, url)
+                if answer is not None:
+                    self.cdn_tab_fetches += 1
+                    self.last_fetch_via = "browser-cdn-tab"
+                    return answer
+                reason = self._last_fetch_error
+            else:
+                reason = self._last_fetch_error or "no tab could stand on the media host's origin"
+        log.warning("The browser could not fetch %s (%s); using the driver's "
                     "HTTP client instead.", url, reason)
         self.fallback_fetches += 1
         self.last_fetch_via = "playwright-api-request"
@@ -1042,6 +1061,63 @@ class InstagramBrowserClient:
                 pass
         return body, response.headers.get("content-type", "")
 
+
+    _last_fetch_error: Optional[str] = None
+
+    def _fetch_in(self, page, url: str) -> Optional[tuple[bytes, str]]:
+        """Fetch ``url`` from inside ``page``; None if the page could not."""
+        self._awaited_url, self._awaited_seen = url, False
+        try:
+            answer = page.evaluate(_PAGE_FETCH_JS, url)
+        except Exception as exc:
+            answer = {"error": str(exc)}
+        if not (isinstance(answer, dict) and "status" in answer):
+            self._awaited_url = None
+            self._last_fetch_error = (answer or {}).get("error") \
+                if isinstance(answer, dict) else str(answer)
+            return None
+        # The page has the bytes before the response event reaches the
+        # hook; wait for the hook so the WARC holds this exchange before
+        # the caller moves on (or closes the WARC).
+        self._await_hook()
+        status = int(answer.get("status") or 0)
+        if status == 429:
+            raise RateLimited(120.0, "429 on media")
+        if status >= 400:
+            raise TargetUnavailable(f"HTTP {status}")
+        return (base64.b64decode(answer.get("body") or ""),
+                str(answer.get("content_type") or ""))
+
+    def _cdn_tab_for(self, url: str):
+        """A tab standing on the URL's own origin, opened or moved there.
+
+        The origin's root usually answers with an error page; that is fine,
+        since only the origin matters for a same-origin fetch. Media hosts
+        vary, so the tab moves whenever the host does.
+        """
+        parts = urlsplit(url)
+        if not parts.scheme or not parts.netloc:
+            return None
+        origin = f"{parts.scheme}://{parts.netloc}"
+        try:
+            if self._cdn_page is None or self._cdn_page.is_closed():
+                self._cdn_page = self._context.new_page()
+                self._cdn_origin = None
+            if self._cdn_origin != origin:
+                try:
+                    self._cdn_page.goto(origin + "/", wait_until="commit",
+                                        timeout=int(self.page_timeout * 1000))
+                except Exception as exc:
+                    log.debug("Standing on %s: %s", origin, exc)
+                landed = urlsplit(self._cdn_page.url)
+                if f"{landed.scheme}://{landed.netloc}" != origin:
+                    self._last_fetch_error = f"could not stand on {origin}"
+                    return None
+                self._cdn_origin = origin
+            return self._cdn_page
+        except Exception as exc:
+            self._last_fetch_error = str(exc)
+            return None
 
     def _await_hook(self, timeout: float = 5.0) -> None:
         deadline = time.monotonic() + timeout

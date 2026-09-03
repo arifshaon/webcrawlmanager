@@ -36,15 +36,17 @@ def node(n: int, taken_at: int, kind: str = "image", user: str = "qnl",
     if kind == "carousel":
         base["media_type"] = 8
         base["product_type"] = "carousel_container"
-        # components carry their own code, id and time, as Instagram's do
+        # components carry their own code, id and time, as Instagram's do;
+        # their files live on a CDN host that, like Instagram's, lets no
+        # page on the site read them cross-origin
         base["carousel_media"] = [
             {"pk": f"{1000 + n}0{i}", "id": f"{1000 + n}0{i}_{user_pk}",
              "code": f"{code}x{i}", "carousel_parent_id": str(1000 + n),
              "taken_at": taken_at, "media_type": 1,
              "user": {"pk": user_pk, "username": user},
              "image_versions2": {"candidates": [
-                 {"url": f"http://HOST/pic/{code}-{i}-s.jpg", "width": 320, "height": 320},
-                 {"url": f"http://HOST/pic/{code}-{i}-l.jpg", "width": 1080, "height": 1080}]}}
+                 {"url": f"http://CDNHOST/pic/{code}-{i}-s.jpg", "width": 320, "height": 320},
+                 {"url": f"http://CDNHOST/pic/{code}-{i}-l.jpg", "width": 1080, "height": 1080}]}}
             for i in range(3)]
     elif kind == "reel":
         base["media_type"] = 2
@@ -165,6 +167,8 @@ window.addEventListener('scroll', async () => {
 
 class Handler(BaseHTTPRequestHandler):
     host = "127.0.0.1:0"
+    cdn_host = "127.0.0.1:0"
+    cors_media = True          # the site lets its own pages read /pic
 
     def log_message(self, *_args):
         pass
@@ -180,7 +184,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _fix(self, obj):
-        return json.loads(json.dumps(obj).replace("HOST", self.host))
+        return json.loads(json.dumps(obj).replace("CDNHOST", self.cdn_host)
+                          .replace("HOST", self.host))
 
     def do_GET(self):
         parts = urlsplit(self.path)
@@ -237,9 +242,9 @@ class Handler(BaseHTTPRequestHandler):
             name = segs[-1]
             if name.endswith(".mp4"):
                 return self._send(b"\x00\x00\x00\x18ftypmp42" + name.encode(), "video/mp4",
-                                  cors=True)
+                                  cors=self.cors_media)
             return self._send(b"\x89PNG\r\n\x1a\n" + name.encode(), "image/png",
-                              cors=True)
+                              cors=self.cors_media)
         return self._send(b"not found", status=404)
 
     def do_POST(self):
@@ -267,9 +272,34 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(json.dumps(body).encode(), "application/json")
 
 
+class CdnHandler(Handler):
+    """Instagram's media host: serves the files, answers nothing else, and
+    sets no CORS header, so a page on the site cannot read them."""
+    cors_media = False
+
+    def do_GET(self):
+        segs = [s for s in self.path.split("/") if s]
+        if segs[:1] == ["pic"]:
+            return super().do_GET()
+        return self._send(b"not found", status=404)
+
+
+class _Site(ThreadingHTTPServer):
+    cdn: "ThreadingHTTPServer | None" = None
+
+    def shutdown(self):
+        super().shutdown()
+        if self.cdn is not None:
+            self.cdn.shutdown()
+
+
 def start() -> tuple[ThreadingHTTPServer, str]:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    server = _Site(("127.0.0.1", 0), Handler)
     host = f"127.0.0.1:{server.server_address[1]}"
     Handler.host = host
+    cdn = ThreadingHTTPServer(("127.0.0.1", 0), CdnHandler)
+    Handler.cdn_host = f"127.0.0.1:{cdn.server_address[1]}"
+    server.cdn = cdn
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=cdn.serve_forever, daemon=True).start()
     return server, host
