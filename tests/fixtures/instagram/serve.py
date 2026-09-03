@@ -80,6 +80,15 @@ TIMELINE_C = [{k: v for k, v in node(n, 1_680_000_000 - n * 86400,
 PROFILES = {"qnl": (PROFILE, TIMELINE, "c1"), "qbl": (PROFILE_B, TIMELINE_B, None),
             "noname": (PROFILE_C, TIMELINE_C, None)}
 
+# what a signed-in page preloads besides the profile: the viewer's own feed,
+# with posts whose owner is given by id alone
+VIEWER_POST = {**node(88, 1_698_000_000, user="viewer", user_pk="424242"),
+               "user": {"pk": "424242"}}
+STRANGER_POST = {k: v for k, v in node(89, 1_698_100_000, user="stranger",
+                                       user_pk="555").items() if k != "user"}
+STRANGER_POST["owner"] = {"id": "555"}
+VIEWER_FEED = [VIEWER_POST, STRANGER_POST]
+
 COMMENTS = [
     {"pk": "9001", "text": "Lovely", "created_at": 1_700_000_100,
      "user": {"pk": "7", "username": "reader"}, "comment_like_count": 2,
@@ -153,6 +162,8 @@ class Handler(BaseHTTPRequestHandler):
                                       "end_cursor": cursor}}}
             if segs[0] == "qnl":
                 data["suggested_posts"] = [{"node": self._fix(SUGGESTED)}]
+                data["xdt_api__v1__feed__timeline"] = {
+                    "edges": [{"node": self._fix(n)} for n in VIEWER_FEED]}
             payload = {"require": [["ScheduledServerJS", "handle", None, [{"__bbox": {"require": [
                 ["RelayPrefetchedStreamCache", "next", [], ["q", {"__bbox": {"result": {
                     "data": data}}}]]]}}]]]}

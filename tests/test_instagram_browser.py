@@ -281,6 +281,19 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
 
         self.assertEqual(second, [n["code"] for n in serve.TIMELINE_B])
 
+    def test_posts_preloaded_for_the_viewer_are_not_the_profiles(self):
+        """The signed-in page also carries the viewer's feed, whose posts
+        name their owner by id alone or not at all."""
+        client = self.client()
+        client.profile("qnl")
+
+        codes = [p.shortcode for p in client.profile_posts("qnl")]
+
+        self.assertEqual(codes, [n["code"] for n in serve.TIMELINE])
+        for stray in serve.VIEWER_FEED:
+            self.assertIn(stray["code"], client.observed.posts)   # seen, not handed
+            self.assertNotIn(stray["code"], codes)
+
     def test_a_suggested_post_by_someone_else_is_not_the_profiles(self):
         client = self.client()
         client.profile("qnl")

@@ -579,6 +579,29 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ForeignPostTests(unittest.TestCase):
+    """A profile's listing is the profile's posts and nothing else."""
+
+    def test_a_post_by_someone_else_in_the_listing_is_skipped_and_counted(self):
+        fake = FakeInstagram()
+        fake.add_profile("qnl", [
+            post("Cown01", "2026-03-02T00:00:00Z"),
+            post("Cnot01", "2026-03-01T00:00:00Z", owner="someone_else"),
+            post("Cown02", "2026-02-28T00:00:00Z")])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = InstagramCaptureConfig.from_dict({"targets": ["qnl"], "mode": "latest_n"})
+        session = InstagramCaptureSession(config=cfg, client=fake,
+                                          output_dir=Path(tmp.name), crawl_id=1,
+                                          crawl_name="t", sleep=lambda _s: None)
+
+        session.run()
+
+        self.assertEqual(sorted(session.archive.posts), ["Cown01", "Cown02"])
+        manifest = json.loads((Path(tmp.name) / "instagram-manifest.json").read_text())
+        self.assertEqual(manifest["counts"]["foreign_posts_skipped"], 1)
+
+
 class RawResponseTests(unittest.TestCase):
     """The package keeps the responses records were read from."""
 

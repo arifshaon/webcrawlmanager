@@ -840,6 +840,14 @@ def _shortcode_in(url: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
+# Connection names Instagram uses for a profile's own posts and reels; a
+# post with no owner named is the profile's only when read from one of these.
+_PROFILE_LISTING_KEYS = (
+    "user_timeline", "edge_owner_to_timeline_media", "clips__user",
+    "edge_felix_video_timeline", "profile_posts", "profile_reels",
+)
+
+
 class _ScrollingListing:
     """Posts as the browser loads them, scrolling for more on demand.
 
@@ -863,11 +871,24 @@ class _ScrollingListing:
         return self
 
     def _belongs(self, post: InstagramPost) -> bool:
-        """A post whose owner is someone else is not this profile's, even
-        on this profile's page (a suggestion, a tagged post)."""
-        if self.owner is None or not post.owner_username:
+        """Whether a post observed on this page is this profile's own.
+
+        A signed-in page carries more than the profile: suggestions, a
+        preload of the viewer's feed, the viewer's own posts. Ownership is
+        read from the post's owner name, then its owner id against the
+        profile record; a post that names no owner at all is the profile's
+        only if it sits in the profile's own timeline connection.
+        """
+        if self.owner is None:
             return True
-        return post.owner_username.lower() == self.owner
+        if post.owner_username:
+            return post.owner_username.lower() == self.owner
+        profile = next((p for p in self.client.observed.profiles.values()
+                        if p.username.lower() == self.owner), None)
+        if post.owner_id and profile and profile.user_id:
+            return post.owner_id == profile.user_id
+        path = str((post.provenance or {}).get("path") or "").lower()
+        return any(key in path for key in _PROFILE_LISTING_KEYS)
 
     def _pool(self) -> "OrderedDict[str, InstagramPost]":
         return self.client.observed.posts_in(self.navigation)

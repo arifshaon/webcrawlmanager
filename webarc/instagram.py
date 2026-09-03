@@ -1096,6 +1096,12 @@ class InstagramCaptureSession:
                         else self.client.profile_reels(username))
             self._walk_surface(target, surface, iterator, seen)
 
+    @staticmethod
+    def _is_targets_own(post: InstagramPost, target: InstagramTarget) -> bool:
+        owner = (post.owner_username or "").lower()
+        wanted = (target.username or "").lower()
+        return not owner or not wanted or owner == wanted
+
     def _walk_surface(self, target: InstagramTarget, surface: str,
                       iterator: Iterator[InstagramPost], seen: set[str]) -> None:
         """Walk one of a profile's surfaces, applying the stopping rule.
@@ -1126,6 +1132,15 @@ class InstagramCaptureSession:
                 exhausted = True
                 return False
             if isinstance(post, InstagramPost):
+                if not self._is_targets_own(post, target):
+                    # a page carries other people's posts too; a listing
+                    # that hands one over does not make it the target's
+                    self.counters["foreign_posts_skipped"] += 1
+                    self.archive.event("foreign_post_skipped",
+                                       target=target.label,
+                                       shortcode=post.shortcode,
+                                       owner=post.owner_username)
+                    return pull()
                 post.surface = surface
                 buffer.append(post)
                 return True
