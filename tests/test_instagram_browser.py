@@ -16,7 +16,8 @@ from pathlib import Path
 from webarc.config import BrowserConfig
 from webarc.instagram import (InstagramCaptureConfig, InstagramCaptureSession,
                               LoginRequired, TargetUnavailable)
-from webarc.instagram_browser import (InstagramBrowserClient,
+from webarc.instagram_browser import (InstagramBrowserClient, describe_request,
+                                      document_names_listing,
                                       extract_instagram_records)
 
 from tests.fixtures.instagram import serve
@@ -103,6 +104,41 @@ class ExtractionTests(unittest.TestCase):
         for step in origin["path"].split("."):
             node = node[int(step)] if isinstance(node, list) else node[step]
         self.assertEqual(node["code"], posts[2].shortcode)
+
+
+class RequestAttributionTests(unittest.TestCase):
+    """Which requests are a profile's own listing, read off the request."""
+
+    def test_the_profile_posts_query_names_the_user_it_lists(self):
+        asked = describe_request(
+            "POST", "https://www.instagram.com/graphql/query",
+            "fb_api_req_friendly_name=PolarisProfilePostsQuery&doc_id=1&variables="
+            + json.dumps({"data": {"count": 12}, "username": "qnl"}))
+
+        self.assertTrue(asked["listing"])
+        self.assertEqual(asked["user"], "qnl")
+        self.assertEqual(asked["query"], "PolarisProfilePostsQuery")
+
+    def test_the_feed_query_is_not_a_listing(self):
+        asked = describe_request(
+            "POST", "https://www.instagram.com/graphql/query",
+            "fb_api_req_friendly_name=PolarisFeedRootQuery&variables=%7B%7D")
+
+        self.assertFalse(asked["listing"])
+        self.assertIsNone(asked["user"])
+
+    def test_the_older_per_user_endpoint_is_a_listing_for_that_id(self):
+        asked = describe_request(
+            "GET", "https://www.instagram.com/api/v1/feed/user/100/?count=12", None)
+
+        self.assertTrue(asked["listing"])
+        self.assertEqual(asked["user"], "100")
+
+    def test_a_preloaded_block_says_which_query_it_answers(self):
+        self.assertTrue(document_names_listing(
+            {"require": [["x", ["adp_PolarisProfilePostsTabContentQuery_connectionrelayprovider_0", {}]]]}))
+        self.assertFalse(document_names_listing(
+            {"require": [["x", ["adp_PolarisFeedRootQueryrelayprovider_0", {}]]]}))
 
 
 class BrowserCollectorTestCase(unittest.TestCase):
@@ -283,7 +319,8 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
 
     def test_posts_preloaded_for_the_viewer_are_not_the_profiles(self):
         """The signed-in page also carries the viewer's feed, whose posts
-        name their owner by id alone or not at all."""
+        name their owner by id alone or not at all -- and one of the
+        profile's own posts, which only the profile's listing may hand over."""
         client = self.client()
         client.profile("qnl")
 
@@ -293,6 +330,30 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         for stray in serve.VIEWER_FEED:
             self.assertIn(stray["code"], client.observed.posts)   # seen, not handed
             self.assertNotIn(stray["code"], codes)
+
+    def test_reels_come_from_the_reels_listing(self):
+        client = self.client()
+        client.profile("qnl")
+
+        codes = [p.shortcode for p in client.profile_reels("qnl")]
+
+        self.assertEqual(codes, [serve.TIMELINE[2]["code"]])
+
+    def test_an_unrecognised_listing_is_reported_not_silent(self):
+        """If Instagram's listing request is not recognised, the run says so
+        with what the page asked for, rather than ending with nothing."""
+        from unittest import mock
+        client = self.client()
+        client.profile("qnl")
+        with mock.patch("webarc.instagram_browser._LISTING_QUERY_RE",
+                        __import__("re").compile("NeverMatches")):
+            client._goto(f"http://{self.host}/qbl/")
+            codes = [p.shortcode for p in client.profile_posts("qbl")]
+
+        self.assertEqual(codes, [])
+        self.assertEqual(client.anomalies[-1]["what"], "no_listing_recognised")
+        self.assertEqual(client.anomalies[-1]["profile"], "qbl")
+        self.assertTrue(client.anomalies[-1]["requests"])
 
     def test_a_suggested_post_by_someone_else_is_not_the_profiles(self):
         client = self.client()

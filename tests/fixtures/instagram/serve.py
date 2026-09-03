@@ -87,7 +87,17 @@ VIEWER_POST = {**node(88, 1_698_000_000, user="viewer", user_pk="424242"),
 STRANGER_POST = {k: v for k, v in node(89, 1_698_100_000, user="stranger",
                                        user_pk="555").items() if k != "user"}
 STRANGER_POST["owner"] = {"id": "555"}
-VIEWER_FEED = [VIEWER_POST, STRANGER_POST]
+# the profile's own post shown in the viewer's feed: the profile's, but not
+# the profile's listing -- only the listing decides
+OWN_POST_ELSEWHERE = node(99, 1_698_200_000)
+VIEWER_FEED = [VIEWER_POST, STRANGER_POST, OWN_POST_ELSEWHERE]
+
+
+def _prefetch(query: str, data: dict) -> dict:
+    """How the page embeds a prefetched query's answer, keyed by its name."""
+    return {"require": [["ScheduledServerJS", "handle", None, [{"__bbox": {"require": [
+        ["RelayPrefetchedStreamCache", "next", [],
+         [f"adp_{query}relayprovider_0", {"__bbox": {"result": {"data": data}}}]]]}}]]]}
 
 COMMENTS = [
     {"pk": "9001", "text": "Lovely", "created_at": 1_700_000_100,
@@ -164,15 +174,14 @@ class Handler(BaseHTTPRequestHandler):
                 data["suggested_posts"] = [{"node": self._fix(SUGGESTED)}]
                 data["xdt_api__v1__feed__timeline"] = {
                     "edges": [{"node": self._fix(n)} for n in VIEWER_FEED]}
-            payload = {"require": [["ScheduledServerJS", "handle", None, [{"__bbox": {"require": [
-                ["RelayPrefetchedStreamCache", "next", [], ["q", {"__bbox": {"result": {
-                    "data": data}}}]]]}}]]]}
+            payload = _prefetch("PolarisProfilePostsTabContentQuery_connection", data)
             return self._send(_page(segs[0], payload, SCROLL_JS % {
                 "cursor": json.dumps(cursor), "name": "PolarisProfilePostsTabContentQuery_connection"}))
         if segs[:1] == ["qnl"] and segs[1:2] == ["reels"]:
-            payload = {"data": {"xdt_api__v1__clips__user__connection_v2": {
-                "edges": [{"node": {"media": self._fix(TIMELINE[2])}}],
-                "page_info": {"has_next_page": False}}}}
+            payload = _prefetch("PolarisProfileReelsTabContentQuery_connection", {
+                "xdt_api__v1__clips__user__connection_v2": {
+                    "edges": [{"node": {"media": self._fix(TIMELINE[2])}}],
+                    "page_info": {"has_next_page": False}}})
             return self._send(_page("reels", payload, SCROLL_JS % {"cursor": "null", "name": "x"}))
         if segs[:1] == ["p"] and len(segs) >= 2:
             code = segs[1]

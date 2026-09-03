@@ -16,13 +16,18 @@ from webarc.instagram import (CheckpointRequired, InstagramComment,
                               MediaItem, RateLimited, TargetUnavailable)
 
 
+def user_id_of(username: str) -> str:
+    """A stable numeric id per fake account, "1" for the usual one."""
+    return "1" if username == "qnl" else str(100 + sum(map(ord, username)) % 900)
+
+
 def post(shortcode: str, when: str, *, media_id: Optional[str] = None,
          kind: str = "image", caption: str = "", pinned: bool = False,
          comments_count: int = 0, media: Optional[list[MediaItem]] = None,
          owner: str = "qnl") -> InstagramPost:
     return InstagramPost(
         media_id=media_id or str(abs(hash(shortcode)) % 10**12),
-        shortcode=shortcode, owner_username=owner, owner_id="1",
+        shortcode=shortcode, owner_username=owner, owner_id=user_id_of(owner),
         kind=kind, created_time=when, caption=caption or f"Post {shortcode}",
         permalink_url=f"https://www.instagram.com/p/{shortcode}/",
         likes_count=3, comments_count=comments_count,
@@ -89,7 +94,8 @@ class FakeInstagram:
                     reels: Optional[list[InstagramPost]] = None,
                     private: bool = False) -> None:
         self.profiles[username] = InstagramProfile(
-            user_id="1", username=username, full_name=username.title(),
+            user_id=user_id_of(username), username=username,
+            full_name=username.title(),
             is_private=private, posts_count=len(posts), raw={"username": username})
         self.posts_by_user[username] = list(posts)
         self.reels_by_user[username] = list(reels or [])

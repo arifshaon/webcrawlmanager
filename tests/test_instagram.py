@@ -601,6 +601,39 @@ class ForeignPostTests(unittest.TestCase):
         manifest = json.loads((Path(tmp.name) / "instagram-manifest.json").read_text())
         self.assertEqual(manifest["counts"]["foreign_posts_skipped"], 1)
 
+    def test_the_id_decides_over_the_name(self):
+        """Usernames change hands; the profile's numeric id does not."""
+        fake = FakeInstagram()
+        impostor = post("Cimp01", "2026-03-01T00:00:00Z")
+        impostor.owner_id = "2"                       # same name, another account
+        fake.add_profile("qnl", [post("Cown01", "2026-03-02T00:00:00Z"), impostor])
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = InstagramCaptureConfig.from_dict({"targets": ["qnl"], "mode": "latest_n"})
+        session = InstagramCaptureSession(config=cfg, client=fake,
+                                          output_dir=Path(tmp.name), crawl_id=1,
+                                          crawl_name="t", sleep=lambda _s: None)
+
+        session.run()
+
+        self.assertEqual(list(session.archive.posts), ["Cown01"])
+        manifest = json.loads((Path(tmp.name) / "instagram-manifest.json").read_text())
+        self.assertEqual(manifest["capture"]["targets"][0]["user_id"], "1")
+
+    def test_what_the_client_could_not_make_sense_of_is_in_the_events(self):
+        fake = FakeInstagram()
+        fake.add_profile("qnl", [post("Cown01", "2026-03-02T00:00:00Z")])
+        fake.anomalies = [{"what": "no_listing_recognised", "profile": "qnl"}]
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        cfg = InstagramCaptureConfig.from_dict({"targets": ["qnl"], "mode": "latest_n"})
+        InstagramCaptureSession(config=cfg, client=fake, output_dir=Path(tmp.name),
+                                crawl_id=1, crawl_name="t", sleep=lambda _s: None).run()
+
+        events = [json.loads(l) for l in
+                  (Path(tmp.name) / "instagram-events.jsonl").read_text().splitlines()]
+        self.assertIn("client_anomaly", [e["event"] for e in events])
+
 
 class RawResponseTests(unittest.TestCase):
     """The package keeps the responses records were read from."""

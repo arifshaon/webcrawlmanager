@@ -742,6 +742,10 @@ class InstagramCaptureSession:
             t.key: {"label": t.label, "kind": t.kind, "status": "pending",
                     "posts_selected": 0, "posts_encountered": 0}
             for t in self.targets}
+        # a profile's numeric id, once read: the identity posts are checked
+        # against, since usernames can change and ids cannot
+        self.target_ids: dict[str, str] = {}
+        self._anomalies_drained = 0
         self.current_target: Optional[InstagramTarget] = None
         self._stop_requested = False
         self._rate_limit_streak = 0
@@ -1084,6 +1088,9 @@ class InstagramCaptureSession:
             f"reading {target.label}")
         assert isinstance(profile, InstagramProfile)
         self.archive.add_profile(profile)
+        if profile.user_id:
+            self.target_ids[target.key] = profile.user_id
+            self.target_status[target.key]["user_id"] = profile.user_id
         if profile.is_private and not self.viewer_username:
             raise TargetUnavailable(
                 f"{target.label} is private, and the capture browser is not "
@@ -1095,9 +1102,23 @@ class InstagramCaptureSession:
             iterator = (self.client.profile_posts(username) if surface == "posts"
                         else self.client.profile_reels(username))
             self._walk_surface(target, surface, iterator, seen)
+            self._drain_client_anomalies()
 
-    @staticmethod
-    def _is_targets_own(post: InstagramPost, target: InstagramTarget) -> bool:
+    def _drain_client_anomalies(self) -> None:
+        """What the client could not make sense of belongs in the events."""
+        anomalies = getattr(self.client, "anomalies", None)
+        if not isinstance(anomalies, list):
+            return
+        for anomaly in anomalies[self._anomalies_drained:]:
+            if isinstance(anomaly, dict):
+                self.archive.event("client_anomaly", **anomaly)
+        self._anomalies_drained = len(anomalies)
+
+    def _is_targets_own(self, post: InstagramPost, target: InstagramTarget) -> bool:
+        """The id decides where both are known; the name otherwise."""
+        wanted_id = self.target_ids.get(target.key)
+        if post.owner_id and wanted_id:
+            return str(post.owner_id) == str(wanted_id)
         owner = (post.owner_username or "").lower()
         wanted = (target.username or "").lower()
         return not owner or not wanted or owner == wanted
@@ -1265,7 +1286,8 @@ class InstagramCaptureSession:
         if not current or (post.created_time or "") > (current.get("date") or ""):
             self.newest_by_target[target.key] = {
                 "media_id": post.media_id, "date": post.created_time,
-                "username": target.username}
+                "username": target.username,
+                "user_id": self.target_ids.get(target.key)}
 
     def _collect_media(self, post: InstagramPost) -> None:
         for item in post.media:

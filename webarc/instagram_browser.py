@@ -46,7 +46,7 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator, Optional
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .config import BrowserConfig
 from .facebook import (_CAPTURE_ARGS, _walk, decode_graphql_documents,
@@ -59,6 +59,122 @@ log = logging.getLogger(__name__)
 
 _INSTAGRAM_HOST = "instagram.com"
 _API_MARKERS = ("/graphql/query", "/api/v1/", "/graphql")
+
+# How Instagram's web client asks for a profile's own posts and reels: the
+# query names it sends, the per-user endpoints of its older API, and the
+# connection the answer comes back under. A post is a profile's listing only
+# when read from such a request, under such a connection -- the rule the
+# profile's own client follows, and the rule Instaloader follows by asking
+# the per-user endpoint directly.
+_LISTING_QUERY_RE = re.compile(
+    r"Profile(Posts|Reels|Timeline|Clips|Grid)|UserTimeline|ProfilePostsTab"
+    r"|ProfileReelsTab", re.I)
+_PER_USER_API_RE = re.compile(
+    r"/api/v1/(?:feed/user/(?P<user>[^/?]+)(?:/username)?/?|clips/user/?)", re.I)
+_PROFILE_LISTING_KEYS = (
+    "user_timeline", "edge_owner_to_timeline_media", "clips__user",
+    "edge_felix_video_timeline", "profile_posts", "profile_reels",
+)
+_USER_VARIABLE_KEYS = ("username", "user_id", "target_user_id", "userid",
+                       "id", "userID")
+
+
+def describe_request(method: str, url: str, post_data: Optional[str]) -> dict:
+    """What a request to Instagram was asking for, as far as it says.
+
+    Returns ``query`` (the friendly name, if any), ``listing`` (whether it
+    is a profile's posts or reels request) and ``user`` (the username or id
+    it names, if any).
+    """
+    query: Optional[str] = None
+    user: Optional[str] = None
+    listing = False
+    match = _PER_USER_API_RE.search(url or "")
+    if match:
+        listing = True
+        user = match.group("user")
+    form: dict = {}
+    if post_data:
+        try:
+            form = {k: v[0] for k, v in parse_qs(post_data).items() if v}
+        except Exception:
+            form = {}
+    if not form and post_data and post_data.lstrip().startswith("{"):
+        try:
+            form = json.loads(post_data)
+        except Exception:
+            form = {}
+    name = form.get("fb_api_req_friendly_name") or form.get("query_name")
+    if isinstance(name, str) and name:
+        query = name
+        if _LISTING_QUERY_RE.search(name):
+            listing = True
+    variables = form.get("variables")
+    if isinstance(variables, str):
+        try:
+            variables = json.loads(variables)
+        except Exception:
+            variables = None
+    if isinstance(variables, dict):
+        named = _named_user(variables)
+        if named:
+            user = user or named
+    if not query:
+        params = parse_qs(urlsplit(url or "").query)
+        for key in ("query_name", "fb_api_req_friendly_name"):
+            if params.get(key):
+                query = params[key][0]
+                if _LISTING_QUERY_RE.search(query):
+                    listing = True
+        if params.get("username"):
+            user = user or params["username"][0]
+    return {"query": query, "listing": listing, "user": user}
+
+
+def _named_user(variables: dict, depth: int = 0) -> Optional[str]:
+    for key in _USER_VARIABLE_KEYS:
+        value = variables.get(key)
+        if isinstance(value, (str, int)) and str(value):
+            return str(value)
+    if depth < 3:
+        for value in variables.values():
+            if isinstance(value, dict):
+                found = _named_user(value, depth + 1)
+                if found:
+                    return found
+    return None
+
+
+def document_names_listing(document: object, budget: int = 50_000) -> bool:
+    """Whether a preloaded block carries a profile listing query's name.
+
+    The page embeds each prefetched query under a cache key naming the
+    query, so the block that holds the first posts says which query they
+    answer, the same way a later request does in its form.
+    """
+    stack = [document]
+    seen = 0
+    while stack and seen < budget:
+        value = stack.pop()
+        seen += 1
+        if isinstance(value, str):
+            if len(value) < 400 and _LISTING_QUERY_RE.search(value):
+                return True
+        elif isinstance(value, dict):
+            stack.extend(value.keys())
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+    return False
+
+
+def _connection_in(path) -> Optional[str]:
+    for segment in path:
+        lowered = str(segment).lower()
+        for key in _PROFILE_LISTING_KEYS:
+            if key in lowered:
+                return str(segment)
+    return None
 _SESSION_COOKIES = ("sessionid", "csrftoken", "ds_user_id", "mid", "ig_did")
 
 
@@ -298,7 +414,8 @@ def extract_instagram_records(documents, shortcode_hint: Optional[str] = None,
     base = dict(provenance or {})
 
     def origin(index: int, path) -> dict:
-        return {**base, "document": index, "path": ".".join(path)}
+        return {**base, "document": index, "path": ".".join(path),
+                "connection": _connection_in(path)}
 
     for index, document in enumerate(documents):
         for obj, path, ancestors in _walk(document):
@@ -352,6 +469,9 @@ class _Observed:
         self.profiles: dict[str, InstagramProfile] = {}
         self._posts_by_navigation: dict[int, "OrderedDict[str, InstagramPost]"] = {}
         self._comments_by_navigation: dict[int, "OrderedDict[str, InstagramComment]"] = {}
+        # what each navigation asked Instagram for, for saying why a listing
+        # came back empty
+        self.queries_by_navigation: dict[int, list[str]] = {}
         self.responses = 0
         self.api_responses = 0
 
@@ -417,6 +537,7 @@ class InstagramBrowserClient:
         self.exchanges_written = 0
         self.page_fetches = 0          # media requested by the page itself
         self.fallback_fetches = 0      # media the driver had to request
+        self.anomalies: list[dict] = []   # what could not be made sense of
         self._response_sink: Optional[Callable[[dict, bytes], str]] = None
         self._awaited_url: Optional[str] = None
         self._awaited_seen = False
@@ -578,8 +699,17 @@ class InstagramBrowserClient:
             if not documents:
                 return
             navigation = self.navigation
+            asked = describe_request(request.method, url, request.post_data)
+            if decoder == "embedded":
+                asked["listing"] = any(document_names_listing(d) for d in documents)
+                asked["query"] = asked["query"] or "page"
             origin = {"url": url, "decoder": decoder, "navigation": navigation,
-                      "response": None}
+                      "response": None, "query": asked["query"],
+                      "listing_request": asked["listing"],
+                      "listing_user": asked["user"]}
+            self.observed.queries_by_navigation.setdefault(navigation, []).append(
+                f"{asked['query'] or urlsplit(url).path}"
+                + (" [listing]" if asked["listing"] else ""))
             if self._response_sink is not None:
                 try:
                     origin["response"] = self._response_sink({
@@ -840,14 +970,6 @@ def _shortcode_in(url: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-# Connection names Instagram uses for a profile's own posts and reels; a
-# post with no owner named is the profile's only when read from one of these.
-_PROFILE_LISTING_KEYS = (
-    "user_timeline", "edge_owner_to_timeline_media", "clips__user",
-    "edge_felix_video_timeline", "profile_posts", "profile_reels",
-)
-
-
 class _ScrollingListing:
     """Posts as the browser loads them, scrolling for more on demand.
 
@@ -865,30 +987,43 @@ class _ScrollingListing:
         self.navigation = navigation
         self.owner = (owner or "").lower() or None
         self.handed: set[str] = set()
+        self.returned = 0
         self.stalls = 0
 
     def __iter__(self):
         return self
 
+    def _profile_id(self) -> Optional[str]:
+        profile = next((p for p in self.client.observed.profiles.values()
+                        if p.username.lower() == self.owner), None)
+        return (profile.user_id or None) if profile else None
+
     def _belongs(self, post: InstagramPost) -> bool:
-        """Whether a post observed on this page is this profile's own.
+        """Whether a post observed on this page is in this profile's listing.
 
         A signed-in page carries more than the profile: suggestions, a
-        preload of the viewer's feed, the viewer's own posts. Ownership is
-        read from the post's owner name, then its owner id against the
-        profile record; a post that names no owner at all is the profile's
-        only if it sits in the profile's own timeline connection.
+        preload of the viewer's feed, the viewer's own posts, even the
+        profile's own posts shown somewhere else. The rule is the one
+        Instagram's client and Instaloader both follow: a post is the
+        profile's when the profile's own posts or reels request returned it,
+        under the profile's timeline connection, and it names no other owner.
+        Where the request names a user, it must be this profile; where the
+        post names an owner, the id decides, then the name.
         """
         if self.owner is None:
             return True
+        origin = post.provenance or {}
+        if not origin.get("connection") or not origin.get("listing_request"):
+            return False
+        profile_id = self._profile_id()
+        named = origin.get("listing_user")
+        if named and str(named).lower() not in {self.owner, str(profile_id or "").lower()}:
+            return False
+        if post.owner_id and profile_id:
+            return str(post.owner_id) == str(profile_id)
         if post.owner_username:
             return post.owner_username.lower() == self.owner
-        profile = next((p for p in self.client.observed.profiles.values()
-                        if p.username.lower() == self.owner), None)
-        if post.owner_id and profile and profile.user_id:
-            return post.owner_id == profile.user_id
-        path = str((post.provenance or {}).get("path") or "").lower()
-        return any(key in path for key in _PROFILE_LISTING_KEYS)
+        return True
 
     def _pool(self) -> "OrderedDict[str, InstagramPost]":
         return self.client.observed.posts_in(self.navigation)
@@ -899,8 +1034,23 @@ class _ScrollingListing:
                 continue
             self.handed.add(code)
             if self._belongs(post):
+                self.returned += 1
                 return post
         return None
+
+    def _finished(self) -> None:
+        # Posts were seen but none was the profile's listing: say so, with
+        # what the page asked for, rather than end quietly with nothing.
+        if self.returned == 0 and self._pool():
+            self.client.anomalies.append({
+                "what": "no_listing_recognised", "profile": self.owner,
+                "posts_observed": len(self._pool()),
+                "requests": self.client.observed.queries_by_navigation.get(
+                    self.navigation, [])[:40]})
+            log.warning("No listing for %s recognised among %d observed posts; "
+                        "the page asked for: %s", self.owner, len(self._pool()),
+                        self.client.observed.queries_by_navigation.get(
+                            self.navigation, []))
 
     def __next__(self) -> InstagramPost:
         found = self._pending()
@@ -916,6 +1066,7 @@ class _ScrollingListing:
                 return found
             if len(self._pool()) == before:
                 self.stalls += 1
+        self._finished()
         raise StopIteration
 
 
