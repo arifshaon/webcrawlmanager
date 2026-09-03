@@ -195,6 +195,9 @@ class InstagramPost:
     surface: str = "posts"        # posts | reels | direct
     source: str = "browser"
     raw: dict = field(default_factory=dict)
+    # where the raw node was read from: the saved response, the decoder,
+    # the document index and the path inside it
+    provenance: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -209,6 +212,7 @@ class InstagramComment:
     likes_count: Optional[int] = None
     depth: int = 0
     raw: dict = field(default_factory=dict)
+    provenance: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -225,6 +229,7 @@ class InstagramProfile:
     profile_pic_url: Optional[str] = None
     external_url: Optional[str] = None
     raw: dict = field(default_factory=dict)
+    provenance: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -404,10 +409,13 @@ class InstagramCaptureConfig:
 class InstagramArchive:
     """The capture package on disk, written incrementally.
 
-    Raw payloads go under ``raw/`` exactly as received. Media is stored under
-    a content-addressed name so a file referenced by several posts is kept
-    once, with SHA-256 recorded for every file. Exports are appended as
-    records arrive, so an interrupted run leaves a readable package.
+    Raw payloads go under ``raw/``: every response a record was read from,
+    verbatim, under ``raw/responses/``, and the extracted node for each post,
+    profile and comment thread beside it, each carrying where in which
+    response it was read. Media is stored under a content-addressed name so a
+    file referenced by several posts is kept once, with SHA-256 recorded for
+    every file. Exports are appended as records arrive, so an interrupted run
+    leaves a readable package.
     """
 
     POST_FIELDS = [
@@ -425,6 +433,7 @@ class InstagramArchive:
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.raw_dir = self.out_dir / "raw"
+        self.responses_dir = self.raw_dir / "responses"
         self.media_dir = self.out_dir / "media"
         self.posts_path = self.out_dir / "instagram-posts.jsonl"
         self.comments_path = self.out_dir / "instagram-comments.jsonl"
@@ -440,7 +449,19 @@ class InstagramArchive:
         # url -> {"file", "sha256", "bytes", "content_type"}
         self.media_index: dict[str, dict] = {}
         self._checksums: dict[str, str] = {}
+        self.responses_saved = 0
+        self._response_serial = self._next_response_serial()
         self._load_existing()
+
+    def _next_response_serial(self) -> int:
+        """Numbering continues after what an earlier run left."""
+        highest = 0
+        if self.responses_dir.is_dir():
+            for existing in self.responses_dir.glob("response-*.json"):
+                digits = existing.stem.rsplit("-", 1)[-1]
+                if digits.isdigit():
+                    highest = max(highest, int(digits))
+        return highest + 1
 
     def _load_existing(self) -> None:
         """A continued run starts from what the package already holds."""
@@ -507,6 +528,26 @@ class InstagramArchive:
     def save_raw_comments(self, shortcode: str, payloads: list[dict]) -> None:
         if payloads:
             self.save_raw("comments", shortcode, payloads)
+
+    def save_response(self, meta: dict, body: bytes) -> str:
+        """Keep a response exactly as received; returns its package path.
+
+        The body is stored verbatim as text (Instagram's GraphQL bodies carry
+        the ``for (;;);`` prefix, HTML pages carry the whole page), with the
+        exchange's URL, status and time, so an extracted record can point at
+        the bytes it was read from even when no WARC was written.
+        """
+        name = f"response-{self._response_serial:06d}.json"
+        self._response_serial += 1
+        target = self.responses_dir / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_json(target, {
+            **meta, "body_bytes": len(body),
+            "body_sha256": hashlib.sha256(body).hexdigest(),
+            "body": body.decode("utf-8", errors="replace")})
+        self._checksum(target)
+        self.responses_saved += 1
+        return f"raw/responses/{name}"
 
     def _post_row(self, post: "InstagramPost | dict") -> dict:
         if isinstance(post, dict):
@@ -866,6 +907,11 @@ class InstagramCaptureSession:
         self.archive.event("capture_created", mode=self.config.mode,
                            targets=[t.url for t in self.targets],
                            continuation_of=self.config.continuation_of)
+        # A client that reads records off responses keeps those responses
+        # in the package; the stand-in and a client without them need not.
+        record_responses = getattr(self.client, "record_responses_to", None)
+        if callable(record_responses):
+            record_responses(self.archive.save_response)
         if not self._establish_viewer():
             self.state = STOPPED
             self.phase_detail = self._closing_summary()
@@ -1304,8 +1350,14 @@ class InstagramCaptureSession:
                 },
                 "raw": {
                     "path": "raw/",
+                    "responses": "raw/responses/",
+                    "responses_saved": self.archive.responses_saved,
                     "meaning": "Instagram's own payloads as received, before "
-                               "any normalisation. The primary evidence.",
+                               "any normalisation. The primary evidence: "
+                               "each response a record was read from is "
+                               "kept verbatim under raw/responses/, and each "
+                               "record's provenance names that response and "
+                               "the path of its node inside it.",
                 },
                 "normalised": {
                     "posts": ["instagram-posts.jsonl", "instagram-posts.csv"],

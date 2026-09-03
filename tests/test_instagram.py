@@ -579,6 +579,54 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class RawResponseTests(unittest.TestCase):
+    """The package keeps the responses records were read from."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+
+    def test_a_response_is_kept_verbatim_and_numbered(self):
+        from webarc.instagram import InstagramArchive
+        archive = InstagramArchive(self.tmp)
+
+        ref = archive.save_response({"url": "https://x/graphql/query",
+                                     "status": 200}, b'for (;;);{"a": 1}')
+
+        self.assertEqual(ref, "raw/responses/response-000001.json")
+        saved = json.loads((self.tmp / ref).read_text(encoding="utf-8"))
+        self.assertEqual(saved["body"], 'for (;;);{"a": 1}')
+        self.assertEqual(saved["url"], "https://x/graphql/query")
+        self.assertEqual(saved["body_bytes"], 17)
+        self.assertEqual(archive.save_response({}, b"{}"),
+                         "raw/responses/response-000002.json")
+
+    def test_numbering_continues_after_an_earlier_run(self):
+        from webarc.instagram import InstagramArchive
+        InstagramArchive(self.tmp).save_response({}, b"{}")
+
+        ref = InstagramArchive(self.tmp).save_response({}, b"{}")
+
+        self.assertEqual(ref, "raw/responses/response-000002.json")
+
+    def test_the_engine_hands_the_store_to_a_client_that_reads_responses(self):
+        fake = FakeInstagram()
+        fake.add_profile("qnl", [post("Cabc01", "2026-03-01T00:00:00Z")])
+        given = []
+        fake.record_responses_to = given.append
+        cfg = InstagramCaptureConfig.from_dict({"targets": ["qnl"], "mode": "latest_n"})
+        session = InstagramCaptureSession(config=cfg, client=fake, output_dir=self.tmp,
+                                          crawl_id=1, crawl_name="t", sleep=lambda _s: None)
+
+        session.run()
+
+        self.assertEqual(len(given), 1)
+        ref = given[0]({"url": "u"}, b"{}")
+        self.assertTrue((self.tmp / ref).exists())
+        self.assertIn(ref, session.archive._checksums)
+
+
 class NativeChromeSessionTests(unittest.TestCase):
     """The system's own Chrome, attached over CDP, with and without a window."""
 

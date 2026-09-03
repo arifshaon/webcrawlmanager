@@ -88,6 +88,22 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(profiles, [])
         self.assertEqual(len(comments), 1)
 
+    def test_every_record_says_which_document_and_path_it_was_read_from(self):
+        docs = [{"unrelated": True},
+                {"data": {"xdt_api__v1__feed__user_timeline_graphql_connection": {
+                    "edges": [{"node": self.fixture(n)} for n in serve.TIMELINE[:3]]}}}]
+
+        posts, _, _ = extract_instagram_records(
+            docs, provenance={"response": "raw/responses/response-000007.json"})
+
+        origin = posts[2].provenance
+        self.assertEqual(origin["response"], "raw/responses/response-000007.json")
+        self.assertEqual(origin["document"], 1)
+        node = docs[1]
+        for step in origin["path"].split("."):
+            node = node[int(step)] if isinstance(node, list) else node[step]
+        self.assertEqual(node["code"], posts[2].shortcode)
+
 
 class BrowserCollectorTestCase(unittest.TestCase):
     @classmethod
@@ -167,8 +183,17 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
                          [serve.PINNED["code"]] + [n["code"] for n in serve.TIMELINE[1:4]])
         self.assertTrue(rows[0]["is_pinned"])
 
-    def test_media_is_fetched_through_the_browser_context(self):
-        client = self.client()
+    def test_media_is_requested_by_the_page_itself(self):
+        """The page's own fetch carries the browser's identity and passes
+        through the response hook, so the WARC holds it without a second
+        request from the driver."""
+        from warcio.archiveiterator import ArchiveIterator
+        from webarc.config import WarcConfig
+        from webarc.facebook import FacebookWarcSession
+
+        warc = FacebookWarcSession(self.out, "ig", f"http://{self.host}/qnl/", 1,
+                                   "webarc", WarcConfig())
+        client = self.client(warc=warc)
         config = InstagramCaptureConfig.from_dict({
             "targets": [f"http://{self.host}/p/{serve.TIMELINE[1]['code']}/".replace(
                 f"http://{self.host}", "https://www.instagram.com")],
@@ -178,11 +203,117 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
             crawl_name="t", sleep=lambda s: None)
 
         session.run()
+        warc.close()
 
         index = json.loads((self.out / "instagram-media.json").read_text())
         self.assertEqual(len(index), 3)                      # the carousel
         for entry in index.values():
             self.assertTrue((self.out / "media" / entry["file"]).exists())
+        self.assertEqual(client.page_fetches, 3)
+        self.assertEqual(client.fallback_fetches, 0)
+        with next(self.out.glob("*.warc.gz")).open("rb") as handle:
+            media_requests = [
+                r for r in ArchiveIterator(handle)
+                if r.rec_type == "request"
+                and "-l.jpg" in (r.rec_headers.get_header("WARC-Target-URI") or "")]
+        self.assertEqual(len(media_requests), 3)
+        for record in media_requests:
+            self.assertIn("Chrome", record.http_headers.get_header("User-Agent") or "")
+
+    def test_a_second_profile_sees_only_its_own_posts(self):
+        """What one page loaded is not the next page's: a listing hands over
+        only what its own navigation observed."""
+        client = self.client()
+        client.profile("qnl")
+        first = [p.shortcode for p in client.profile_posts("qnl")]
+        self.assertEqual(first, [n["code"] for n in serve.TIMELINE])
+
+        client.profile("qbl")
+        second = [p.shortcode for p in client.profile_posts("qbl")]
+
+        self.assertEqual(second, [n["code"] for n in serve.TIMELINE_B])
+        self.assertFalse(set(first) & set(second))
+
+    def test_isolation_holds_when_the_earlier_posts_name_no_owner(self):
+        """Owner scoping cannot catch an owner-less post; the navigation
+        scope must, on its own."""
+        client = self.client()
+        client.profile("noname")
+        first = [p.shortcode for p in client.profile_posts("noname")]
+        self.assertEqual(first, [n["code"] for n in serve.TIMELINE_C])
+        self.assertTrue(all(p.owner_username is None
+                            for p in client.observed.posts.values()))
+
+        client.profile("qbl")
+        second = [p.shortcode for p in client.profile_posts("qbl")]
+
+        self.assertEqual(second, [n["code"] for n in serve.TIMELINE_B])
+
+    def test_a_suggested_post_by_someone_else_is_not_the_profiles(self):
+        client = self.client()
+        client.profile("qnl")
+
+        codes = [p.shortcode for p in client.profile_posts("qnl")]
+
+        self.assertNotIn(serve.SUGGESTED["code"], codes)
+        # it was observed -- the page carried it -- just not handed over
+        self.assertIn(serve.SUGGESTED["code"], client.observed.posts)
+
+    def test_a_run_over_two_targets_attributes_each_post_to_its_own_profile(self):
+        client = self.client()
+        config = InstagramCaptureConfig.from_dict({
+            "targets": ["qnl", "qbl"], "mode": "latest_n", "latest_n": 3,
+            "surfaces": ["posts"], "capture_media": False})
+        session = InstagramCaptureSession(
+            config=config, client=client, output_dir=self.out, crawl_id=1,
+            crawl_name="t", sleep=lambda s: None)
+
+        session.run()
+
+        rows = [json.loads(l) for l in (self.out / "instagram-posts.jsonl").read_text().splitlines()]
+        by_owner = {}
+        for row in rows:
+            by_owner.setdefault(row["owner_username"], []).append(row["shortcode"])
+        self.assertEqual(set(by_owner), {"qnl", "qbl"})
+        self.assertTrue(all(c.startswith("C") for c in by_owner["qnl"]))
+        self.assertEqual(by_owner["qbl"], [n["code"] for n in serve.TIMELINE_B[:3]])
+
+    def test_every_response_a_record_came_from_is_kept_with_provenance(self):
+        """With no WARC, the package still holds the bytes each record was
+        read from, and the record says where in them it sits."""
+        from webarc.facebook import decode_graphql_documents, extract_embedded_documents
+
+        client = self.client()
+        config = InstagramCaptureConfig.from_dict({
+            "targets": ["qnl"], "mode": "latest_n", "latest_n": 8,
+            "surfaces": ["posts"], "capture_media": False})
+        session = InstagramCaptureSession(
+            config=config, client=client, output_dir=self.out, crawl_id=1,
+            crawl_name="t", sleep=lambda s: None)
+
+        session.run()
+
+        responses = sorted((self.out / "raw" / "responses").glob("response-*.json"))
+        self.assertGreaterEqual(len(responses), 2)      # the page and the scroll fetch
+        rows = [json.loads(l) for l in (self.out / "instagram-posts.jsonl").read_text().splitlines()]
+        decoders = set()
+        for row in rows:
+            origin = row["provenance"]
+            saved = json.loads((self.out / origin["response"]).read_text(encoding="utf-8"))
+            self.assertEqual(saved["url"], origin["url"])
+            body = saved["body"].encode("utf-8")
+            documents = (extract_embedded_documents(body) if origin["decoder"] == "embedded"
+                         else decode_graphql_documents(body))
+            node = documents[origin["document"]]
+            for step in origin["path"].split("."):
+                node = node[int(step)] if isinstance(node, list) else node[step]
+            self.assertEqual(node["code"], row["shortcode"])
+            decoders.add(origin["decoder"])
+        self.assertEqual(decoders, {"embedded", "graphql"})
+        checksums = (self.out / "checksums.sha256").read_text()
+        self.assertIn("raw/responses/response-000001.json", checksums)
+        manifest = json.loads((self.out / "instagram-manifest.json").read_text())
+        self.assertEqual(manifest["layers"]["raw"]["responses_saved"], len(responses))
 
     def test_comments_come_from_the_post_page_and_from_scrolling_it(self):
         client = self.client()

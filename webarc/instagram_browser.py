@@ -16,17 +16,27 @@ and are exercised with a stand-in. Where records come from:
   the browser's own responses, never requested separately;
 * a post's page carries the post and its first comments the same way, and
   loads further comments as the thread is scrolled;
-* media is fetched through the browser context, so it travels with the
-  session and the browser's own fingerprint;
+* media is requested by the page itself, so it arrives the way Instagram's
+  own client requests it and passes through the same response hook as
+  everything else; the driver's own HTTP client is a logged last resort;
 * every exchange the browser makes can be written to a WARC as it happens,
   with credentials redacted, which is the rendered record of how Instagram
   presented what was collected.
 
-Instagram's payload shapes change; extraction is schema-tolerant and keeps
-each record's source path and raw node, as the Facebook collector does.
+What the browser observes is scoped to the navigation it was observed
+under: each page opened is a new generation, and a listing hands over only
+records from its own generation that belong to its target, so a profile
+listed after another never inherits the other's posts, and a suggested post
+by someone else is not the profile's. Every response a record is read from
+can be handed to the package verbatim, and each record carries which
+response, which decoded document and which path inside it the node came
+from.
+
+Instagram's payload shapes change; extraction is schema-tolerant.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import random
@@ -265,7 +275,8 @@ def profile_from_node(node: dict) -> InstagramProfile:
         external_url=node.get("external_url"), raw=counts)
 
 
-def extract_instagram_records(documents, shortcode_hint: Optional[str] = None
+def extract_instagram_records(documents, shortcode_hint: Optional[str] = None,
+                              provenance: Optional[dict] = None
                               ) -> tuple[list[InstagramPost], list[InstagramComment],
                                          list[InstagramProfile]]:
     """Posts, comments and profiles found anywhere in decoded payloads.
@@ -275,16 +286,27 @@ def extract_instagram_records(documents, shortcode_hint: Optional[str] = None
     pinned posts off that order. A comment's post is the nearest post node
     above it, then the page it was loaded on; its parent is the nearest
     comment node above it.
+
+    ``provenance`` describes where ``documents`` came from (the saved
+    response, its URL, the decoder); each record gets a copy with the index
+    of the document and the path of its node inside it, so the node can be
+    found again in the response it was read from.
     """
     posts: "OrderedDict[str, InstagramPost]" = OrderedDict()
     comments: "OrderedDict[str, InstagramComment]" = OrderedDict()
     profiles: "OrderedDict[str, InstagramProfile]" = OrderedDict()
-    for document in documents:
+    base = dict(provenance or {})
+
+    def origin(index: int, path) -> dict:
+        return {**base, "document": index, "path": ".".join(path)}
+
+    for index, document in enumerate(documents):
         for obj, path, ancestors in _walk(document):
             if not isinstance(obj, dict):
                 continue
             if _looks_like_post(obj):
                 record = post_from_node(obj, ".".join(path))
+                record.provenance = origin(index, path)
                 if record.shortcode not in posts:
                     posts[record.shortcode] = record
                 continue
@@ -299,11 +321,13 @@ def extract_instagram_records(documents, shortcode_hint: Optional[str] = None
                 depth = 1 if parent else 0
                 record = comment_from_node(
                     obj, enclosing_post or shortcode_hint, parent, depth)
+                record.provenance = origin(index, path)
                 if record.comment_id not in comments:
                     comments[record.comment_id] = record
                 continue
             if _looks_like_profile(obj):
                 record = profile_from_node(obj)
+                record.provenance = origin(index, path)
                 if record.username not in profiles:
                     profiles[record.username] = record
     return list(posts.values()), list(comments.values()), list(profiles.values())
@@ -314,28 +338,46 @@ def extract_instagram_records(documents, shortcode_hint: Optional[str] = None
 # ---------------------------------------------------------------------------
 
 class _Observed:
-    """What the browser has loaded so far, in the order it arrived."""
+    """What the browser has loaded so far, in the order it arrived.
+
+    Records are kept under the navigation they arrived in -- each page the
+    browser opens is a new generation -- as well as in one pool across the
+    run. Listings read their own generation; the pool is for counting and
+    for the curator's view of the run.
+    """
 
     def __init__(self):
         self.posts: "OrderedDict[str, InstagramPost]" = OrderedDict()
         self.comments: "OrderedDict[str, InstagramComment]" = OrderedDict()
         self.profiles: dict[str, InstagramProfile] = {}
+        self._posts_by_navigation: dict[int, "OrderedDict[str, InstagramPost]"] = {}
+        self._comments_by_navigation: dict[int, "OrderedDict[str, InstagramComment]"] = {}
         self.responses = 0
         self.api_responses = 0
 
-    def take(self, posts, comments, profiles) -> int:
+    def take(self, posts, comments, profiles, navigation: int = 0) -> int:
         added = 0
+        bucket = self._posts_by_navigation.setdefault(navigation, OrderedDict())
         for post in posts:
-            if post.shortcode not in self.posts:
-                self.posts[post.shortcode] = post
+            if post.shortcode not in bucket:
+                bucket[post.shortcode] = post
                 added += 1
+            self.posts.setdefault(post.shortcode, post)
+        threads = self._comments_by_navigation.setdefault(navigation, OrderedDict())
         for comment in comments:
-            if comment.comment_id not in self.comments:
-                self.comments[comment.comment_id] = comment
+            if comment.comment_id not in threads:
+                threads[comment.comment_id] = comment
                 added += 1
+            self.comments.setdefault(comment.comment_id, comment)
         for profile in profiles:
             self.profiles[profile.username] = profile
         return added
+
+    def posts_in(self, navigation: int) -> "OrderedDict[str, InstagramPost]":
+        return self._posts_by_navigation.get(navigation) or OrderedDict()
+
+    def comments_in(self, navigation: int) -> "OrderedDict[str, InstagramComment]":
+        return self._comments_by_navigation.get(navigation) or OrderedDict()
 
 
 class InstagramBrowserClient:
@@ -371,7 +413,21 @@ class InstagramBrowserClient:
         self.user_agent: Optional[str] = None
         self._session: Optional[dict] = None
         self.current_url: Optional[str] = None
+        self.navigation = 0            # the generation of the page open now
         self.exchanges_written = 0
+        self.page_fetches = 0          # media requested by the page itself
+        self.fallback_fetches = 0      # media the driver had to request
+        self._response_sink: Optional[Callable[[dict, bytes], str]] = None
+        self._awaited_url: Optional[str] = None
+        self._awaited_seen = False
+
+    def record_responses_to(self, sink: Callable[[dict, bytes], str]) -> None:
+        """Hand every response a record is read from to ``sink`` verbatim.
+
+        ``sink(meta, body)`` returns a reference (the package path) that is
+        then carried in the provenance of each record read from that body.
+        """
+        self._response_sink = sink
 
     # -- lifecycle ------------------------------------------------------------
     def start(self) -> "InstagramBrowserClient":
@@ -465,6 +521,19 @@ class InstagramBrowserClient:
 
     # -- what the browser loads ------------------------------------------------
     def _on_response(self, response) -> None:
+        # The handler yields while it reads the body; a caller waiting for
+        # this exchange must not be released until the handler is finished
+        # with it, WARC write included.
+        try:
+            self._handle_response(response)
+        finally:
+            try:
+                if response.url == self._awaited_url:
+                    self._awaited_seen = True
+            except Exception:
+                pass
+
+    def _handle_response(self, response) -> None:
         try:
             url = response.url
             netloc = (urlsplit(url).netloc or "").lower()
@@ -498,20 +567,41 @@ class InstagramBrowserClient:
                 return
             lowered = url.lower()
             if request.resource_type == "document":
+                decoder = "embedded"
                 documents = extract_embedded_documents(body)
             elif any(marker in lowered for marker in _API_MARKERS):
                 self.observed.api_responses += 1
+                decoder = "graphql"
                 documents = decode_graphql_documents(body)
             else:
                 return
-            if documents:
-                hint = _shortcode_in(self.current_url or url)
-                self.observed.take(*extract_instagram_records(documents, hint))
+            if not documents:
+                return
+            navigation = self.navigation
+            origin = {"url": url, "decoder": decoder, "navigation": navigation,
+                      "response": None}
+            if self._response_sink is not None:
+                try:
+                    origin["response"] = self._response_sink({
+                        "url": url, "method": request.method,
+                        "status": response.status,
+                        "content_type": response.headers.get("content-type"),
+                        "resource_type": request.resource_type,
+                        "received_at": datetime.now(timezone.utc).isoformat(),
+                        "navigation": navigation, "decoder": decoder,
+                        "page_url": self.current_url,
+                    }, body)
+                except Exception as exc:
+                    log.warning("Could not keep the response for %s: %s", url, exc)
+            hint = _shortcode_in(self.current_url or url)
+            self.observed.take(
+                *extract_instagram_records(documents, hint, origin), navigation)
         except Exception as exc:
             log.debug("Response handling failed: %s", exc)
 
     # -- navigation ------------------------------------------------------------
     def _goto(self, url: str) -> None:
+        self.navigation += 1
         self.current_url = url
         try:
             self._page.goto(url, wait_until="domcontentloaded",
@@ -560,6 +650,7 @@ class InstagramBrowserClient:
             self.headless = False
             self._relaunch()
         try:
+            self.navigation += 1
             self.current_url = url
             self._page.goto(url, wait_until="domcontentloaded",
                             timeout=int(self.page_timeout * 1000))
@@ -632,19 +723,19 @@ class InstagramBrowserClient:
         url = f"{self.base_url}/{username}/"
         if self.current_url != url:
             self._goto(url)
-        return _ScrollingListing(self, lambda p: p.kind != "reel" or True)
+        return _ScrollingListing(self, self.navigation, owner=username)
 
     def profile_reels(self, username: str) -> Iterator[InstagramPost]:
         # Reels also appear in the posts grid for most profiles; the reels tab
         # exposes ones that were shared to reels only. Its shape differs, and
         # what is read here is whatever the page loads.
         self._goto(f"{self.base_url}/{username}/reels/")
-        return _ScrollingListing(self, lambda p: True)
+        return _ScrollingListing(self, self.navigation, owner=username)
 
     def post(self, shortcode: str) -> InstagramPost:
         self._goto(f"{self.base_url}/p/{shortcode}/")
         for _ in range(8):
-            found = self.observed.posts.get(shortcode)
+            found = self.observed.posts_in(self.navigation).get(shortcode)
             if found is not None:
                 return found
             self.sleep(0.5)
@@ -656,9 +747,41 @@ class InstagramBrowserClient:
         url = f"{self.base_url}/p/{shortcode}/"
         if self.current_url != url:
             self._goto(url)
-        return _ScrollingComments(self, shortcode, include_replies)
+        return _ScrollingComments(self, self.navigation, shortcode,
+                                  include_replies)
 
     def fetch(self, url: str) -> tuple[bytes, str]:
+        """Media, requested by the page the browser has open.
+
+        The page's own fetch carries the session and Chrome's fingerprint,
+        and the response passes through the response hook like any other, so
+        it reaches the WARC without a second request. If the page cannot
+        read the body (the CDN refusing a cross-origin read), the driver's
+        HTTP client is used and the fallback is counted and logged.
+        """
+        self._awaited_url, self._awaited_seen = url, False
+        try:
+            answer = self._page.evaluate(_PAGE_FETCH_JS, url)
+        except Exception as exc:
+            answer = {"error": str(exc)}
+        if isinstance(answer, dict) and "status" in answer:
+            # The page has the bytes before the response event reaches the
+            # hook; wait for the hook so the WARC holds this exchange before
+            # the caller moves on (or closes the WARC).
+            self._await_hook()
+            status = int(answer.get("status") or 0)
+            if status == 429:
+                raise RateLimited(120.0, "429 on media")
+            if status >= 400:
+                raise TargetUnavailable(f"HTTP {status}")
+            self.page_fetches += 1
+            return (base64.b64decode(answer.get("body") or ""),
+                    str(answer.get("content_type") or ""))
+        self._awaited_url = None
+        reason = (answer or {}).get("error") if isinstance(answer, dict) else answer
+        log.warning("The page could not fetch %s (%s); using the driver's "
+                    "HTTP client instead.", url, reason)
+        self.fallback_fetches += 1
         try:
             response = self._context.request.get(url, timeout=60_000)
         except Exception as exc:
@@ -679,6 +802,39 @@ class InstagramBrowserClient:
         return body, response.headers.get("content-type", "")
 
 
+    def _await_hook(self, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        try:
+            while not self._awaited_seen and time.monotonic() < deadline:
+                self._page.wait_for_timeout(25)
+        except Exception:
+            pass
+        finally:
+            self._awaited_url = None
+
+
+# Fetch a URL from inside the page and hand the bytes back as base64. A
+# failed read (network error, a cross-origin body the page may not see)
+# comes back as {"error"} rather than raising, so the caller can fall back.
+_PAGE_FETCH_JS = """
+async (url) => {
+  try {
+    const response = await fetch(url, {credentials: 'include', cache: 'no-store'});
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    }
+    return {status: response.status,
+            content_type: response.headers.get('content-type') || '',
+            body: btoa(binary)};
+  } catch (error) {
+    return {error: String(error)};
+  }
+}
+"""
+
+
 def _shortcode_in(url: str) -> Optional[str]:
     match = re.search(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)", url or "")
     return match.group(1) if match else None
@@ -692,21 +848,36 @@ class _ScrollingListing:
     new it ends. Instagram's own order is kept, so pinned posts come first.
     """
 
-    def __init__(self, client: InstagramBrowserClient, accept):
+    def __init__(self, client: InstagramBrowserClient, navigation: int,
+                 owner: Optional[str] = None):
         self.client = client
-        self.accept = accept
-        # Everything observed so far counts: the profile page loaded its first
-        # posts before this listing existed, and they are the listing's start.
+        # Only what this navigation loaded is the listing's: the page opened
+        # its first posts before the listing existed, and they are its start;
+        # what an earlier page loaded is not.
+        self.navigation = navigation
+        self.owner = (owner or "").lower() or None
         self.handed: set[str] = set()
         self.stalls = 0
 
     def __iter__(self):
         return self
 
+    def _belongs(self, post: InstagramPost) -> bool:
+        """A post whose owner is someone else is not this profile's, even
+        on this profile's page (a suggestion, a tagged post)."""
+        if self.owner is None or not post.owner_username:
+            return True
+        return post.owner_username.lower() == self.owner
+
+    def _pool(self) -> "OrderedDict[str, InstagramPost]":
+        return self.client.observed.posts_in(self.navigation)
+
     def _pending(self) -> Optional[InstagramPost]:
-        for code, post in list(self.client.observed.posts.items()):
-            if code not in self.handed and self.accept(post):
-                self.handed.add(code)
+        for code, post in list(self._pool().items()):
+            if code in self.handed:
+                continue
+            self.handed.add(code)
+            if self._belongs(post):
                 return post
         return None
 
@@ -715,14 +886,14 @@ class _ScrollingListing:
         if found is not None:
             return found
         while self.stalls < self.client.stall_rounds:
-            before = len(self.client.observed.posts)
+            before = len(self._pool())
             self.client._scroll()
             self.client._check_page_state()
             found = self._pending()
             if found is not None:
                 self.stalls = 0
                 return found
-            if len(self.client.observed.posts) == before:
+            if len(self._pool()) == before:
                 self.stalls += 1
         raise StopIteration
 
@@ -730,9 +901,10 @@ class _ScrollingListing:
 class _ScrollingComments:
     """A post's comments as the thread is scrolled, replies included."""
 
-    def __init__(self, client: InstagramBrowserClient, shortcode: str,
-                 include_replies: bool):
+    def __init__(self, client: InstagramBrowserClient, navigation: int,
+                 shortcode: str, include_replies: bool):
         self.client = client
+        self.navigation = navigation
         self.shortcode = shortcode
         self.include_replies = include_replies
         self.handed: set[str] = set()
@@ -741,8 +913,11 @@ class _ScrollingComments:
     def __iter__(self):
         return self
 
+    def _pool(self) -> "OrderedDict[str, InstagramComment]":
+        return self.client.observed.comments_in(self.navigation)
+
     def _pending(self) -> Optional[InstagramComment]:
-        for cid, comment in list(self.client.observed.comments.items()):
+        for cid, comment in list(self._pool().items()):
             if cid in self.handed:
                 continue
             if comment.post_shortcode and comment.post_shortcode != self.shortcode:
@@ -784,13 +959,13 @@ class _ScrollingComments:
         if found is not None:
             return found
         while self.stalls < self.client.stall_rounds:
-            before = len(self.client.observed.comments)
+            before = len(self._pool())
             self._load_more()
             self.client._check_page_state()
             found = self._pending()
             if found is not None:
                 self.stalls = 0
                 return found
-            if len(self.client.observed.comments) == before:
+            if len(self._pool()) == before:
                 self.stalls += 1
         raise StopIteration
