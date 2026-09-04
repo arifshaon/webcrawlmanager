@@ -1607,8 +1607,10 @@ class InstagramCaptureSession:
         details = self._progress_details()
         stated = self._comments_stated()
         collected = len(self.archive.comments)
+        from .metadata import manifest_section
         return {
             "schema": "swm-instagram-capture-manifest-v1",
+            "metadata": manifest_section(self.archive.out_dir),
             "capture": {
                 "crawl_id": self.crawl_id,
                 "name": self.crawl_name,

@@ -51,12 +51,46 @@ def _config_from_row(row: dict) -> CrawlConfig:
             behavior=_build_section(BehaviorConfig, m.get("behavior", {})),
             warc=_build_section(WarcConfig, m.get("warc", {})),
         ))
+    from .metadata import from_config
     return CrawlConfig(
         crawl_name=raw.get("crawl_name", row["name"]),
         output_dir=Path(row["output_dir"]),
         operator=raw.get("operator", "webarc"),
         seeds=seeds,
+        metadata=from_config(raw),
     )
+
+
+def _job_metadata(row: dict, kind: str, seed_urls: list[str],
+                  operator: str) -> dict[str, list[dict]]:
+    """Each seed's effective metadata for a social or recorded job, and the
+    metadata.json beside its outputs, from what the server stored."""
+    import json
+
+    from .metadata import (defaults_for, document, from_config, merge,
+                           read_document, with_defaults, write_document)
+
+    raw = json.loads(row["config_json"])
+    meta = from_config(raw)
+    out_dir = Path(row["output_dir"])
+    try:
+        write_document(out_dir, document(
+            job_id=row.get("id"), kind=kind, name=row["name"], operator=operator,
+            seeds=[{"url": u} for u in seed_urls], metadata=meta,
+            existing=read_document(out_dir)))
+    except OSError as exc:                       # pragma: no cover
+        log.warning("Could not write metadata.json: %s", exc)
+    return {url: with_defaults(merge(meta["job"], meta["seeds"].get(url)),
+                               defaults_for(kind, row["name"], operator, url))
+            for url in seed_urls}
+
+
+def _describe_manifest(row: dict) -> None:
+    """After a social capture: the manifest carries the metadata too."""
+    from .metadata import read_document, update_manifest
+    doc = read_document(Path(row["output_dir"]))
+    if doc:
+        update_manifest(Path(row["output_dir"]), doc)
 
 
 def _simulate(crawl: CrawlConfig, controller: StoreController) -> None:
@@ -65,8 +99,12 @@ def _simulate(crawl: CrawlConfig, controller: StoreController) -> None:
     body = b"<html><body>simulated capture</body></html>"
     for idx, seed in enumerate(crawl.seeds, start=1):
         controller.seed_status(idx, RUNNING)
+        from .crawler import seed_metadata, write_crawl_metadata
+        if idx == 1:
+            write_crawl_metadata(crawl)
         warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
-                           idx, crawl.operator, seed.warc)
+                           idx, crawl.operator, seed.warc,
+                           metadata_fields=seed_metadata(crawl, seed.url))
         visited = queued = 0
         stopped = False
         total = min(seed.scope.max_pages, 12)  # keep the demo short
@@ -117,6 +155,8 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
     if browser.mode not in ("headed", "native"):
         browser.mode = "headed"
 
+    described = _job_metadata(row, KIND_RECORDING, [start_url],
+                              rec.get("operator", "webarc"))
     warc = WarcSession(
         Path(row["output_dir"]), row["name"], start_url, 1,
         rec.get("operator", "webarc"), WarcConfig(),
@@ -124,7 +164,8 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
             "robots": "none",
             "description": f"Interactive session recording starting "
                            f"at {start_url}",
-        })
+        },
+        metadata_fields=described.get(start_url))
 
     def control_poll():
         command = store.get_control(crawl_id)
@@ -195,6 +236,7 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
     # A Facebook capture can be run without a WARC: its records, media and
     # rendered pages stand on their own, and replay of a Facebook feed is
     # limited to the page as first loaded in any case.
+    described = _job_metadata(row, KIND_FACEBOOK, [fb_config.page_url], operator)
     warc_cls = FacebookWarcSession if fb_config.write_warc else _NullWarcSession
     warc = warc_cls(
         output_dir, row["name"], fb_config.page_url, 1, operator,
@@ -208,6 +250,7 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
             "facebook-capture-mode": fb_config.mode,
             "facebook-page-key": fb_config.page_key,
         },
+        metadata_fields=described.get(fb_config.page_url),
     )
 
     def control_poll():
@@ -282,8 +325,12 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
     config = InstagramCaptureConfig.from_dict(raw.get("instagram", {}))
     output_dir = Path(row["output_dir"])
 
+    described = _job_metadata(row, KIND_INSTAGRAM, list(config.targets),
+                              config.operator)
     warc = None
     if config.write_warc:
+        # one WARC for the whole capture: its record describes the first
+        # target; every target's description is in metadata.json
         warc = FacebookWarcSession(
             output_dir, row["name"], config.targets[0], 1, config.operator,
             WarcConfig(),
@@ -294,7 +341,8 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
                                 "collected. The media files, raw payloads and "
                                 "normalised records beside it are the primary "
                                 "record."),
-            })
+            },
+            metadata_fields=described.get(config.targets[0]))
     client = InstagramBrowserClient(
         BrowserConfig(mode=config.browser_mode,
                       user_data_dir=config.browser_profile_dir,

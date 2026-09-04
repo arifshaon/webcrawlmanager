@@ -2999,8 +2999,10 @@ class FacebookCaptureSession(RecordingSession):
         }
 
     def _manifest_document(self, *, final: bool = False) -> dict:
+        from .metadata import manifest_section
         return {
             "schema": "swm-facebook-capture-manifest-v1",
+            "metadata": manifest_section(self.archive.out_dir),
             "capture": {
                 "crawl_id": self.crawl_id,
                 "name": self.crawl_name,

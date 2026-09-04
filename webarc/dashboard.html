@@ -123,6 +123,36 @@
   .storage-default-row input { flex: 1 1 320px; font-family: var(--mono);
     font-size: 12px; }
   .storage-default .help { display: block; margin-top: 6px; }
+  .md-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
+  .md-tab { font: inherit; font-size: 12px; border: 1px solid var(--rule); background: var(--paper);
+    color: var(--muted); border-radius: 999px; padding: 4px 11px; cursor: pointer; max-width: 320px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .md-tab.active { background: var(--accent-bg); color: var(--accent); border-color: transparent; font-weight: 600; }
+  .md-tab .n { font-family: var(--mono); font-size: 10px; margin-left: 5px; opacity: .8; }
+  .md-rows { display: flex; flex-direction: column; gap: 6px; }
+  .md-row { display: grid; grid-template-columns: 170px minmax(0, 1fr) auto; gap: 6px; align-items: start; }
+  .md-row .md-name { font-family: var(--ui); }
+  .md-row textarea.md-value { min-height: 36px; font-family: var(--ui); line-height: 1.4; }
+  .md-row .md-remove { padding: 7px 10px; }
+  .md-empty { color: var(--muted); font-size: 12px; padding: 6px 0; }
+  .md-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .md-actions select { width: auto; }
+  .md-actions .spacer { flex: 1; }
+  .md-note { display: block; color: var(--muted); font-size: 11px; margin-top: 8px; }
+  #metadata-overlay { display: none; position: fixed; inset: 0; z-index: 998;
+    background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center;
+    padding: 24px; }
+  #metadata-overlay.open { display: flex; }
+  .metadata-card { background: var(--paper); border: 1px solid var(--rule); border-radius: 14px;
+    width: min(760px, 100%); max-height: 100%; display: flex; flex-direction: column; overflow: hidden;
+    box-shadow: 0 16px 48px rgba(0,0,0,.25); }
+  .metadata-card .browse-head h2 { margin-bottom: 2px; }
+  .metadata-card .md-body { padding: 16px; overflow-y: auto; }
+  a.secondary { display: inline-block; text-decoration: none; font-size: 12px; font-weight: 500;
+    border: 1px solid var(--rule); background: var(--paper); color: var(--ink); padding: 7px 12px;
+    border-radius: 8px; }
+  a.secondary:hover { background: var(--surface); border-color: var(--faint); }
+  @media (max-width: 760px) { .md-row { grid-template-columns: 1fr; } }
   .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
     margin-bottom: 10px; }
   .filter-bar input[type=search] { flex: 1 1 200px; min-width: 160px; font-family: var(--ui); }
@@ -622,6 +652,15 @@
             </div>
           </div>
         </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Describe this capture <button type="button" class="tip" aria-label="What is this for?" data-help="f-metadata">?</button></span>
+            <span class="section-hint">Who or what is being captured, and why. Written into every output.</span>
+          </div>
+          <div class="section-body">
+            <div class="md-editor" id="f-metadata"></div>
+          </div>
+        </div>
       </div>
     </section>
     <section class="editor-panel" id="raw-panel" role="tabpanel" aria-labelledby="tab-raw">
@@ -680,6 +719,15 @@
               <b>SWM&nbsp;Recording</b> widget (bottom-right of every page) to pause,
               resume, or capture the current page; close the browser to finish.
             </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Describe this capture <button type="button" class="tip" aria-label="What is this for?" data-help="r-metadata">?</button></span>
+            <span class="section-hint">Who or what is being captured, and why. Written into every output.</span>
+          </div>
+          <div class="section-body">
+            <div class="md-editor" id="r-metadata"></div>
           </div>
         </div>
       </div>
@@ -795,6 +843,15 @@
             <div class="rec-warning">
               SWM never asks for your Facebook password. Chrome retains its own session cookies in the dedicated local profile; SWM redacts Cookie/Authorization and Set-Cookie headers plus recognised login/session fields before writing WARC. The browser opens with automatic scrolling paused: log in or resolve verification directly in Chrome, make sure the requested Page is open, then select <b>Start / resume scrolling</b>. WARC capture remains active while scrolling is paused.
             </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Describe this capture <button type="button" class="tip" aria-label="What is this for?" data-help="fb-metadata">?</button></span>
+            <span class="section-hint">Who or what is being captured, and why. Written into every output.</span>
+          </div>
+          <div class="section-body">
+            <div class="md-editor" id="fb-metadata"></div>
           </div>
         </div>
       </div>
@@ -937,6 +994,15 @@
             </div>
           </div>
         </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Describe this capture <button type="button" class="tip" aria-label="What is this for?" data-help="ig-metadata">?</button></span>
+            <span class="section-hint">Who or what is being captured, and why. Written into every output.</span>
+          </div>
+          <div class="section-body">
+            <div class="md-editor" id="ig-metadata"></div>
+          </div>
+        </div>
       </div>
     </div>
     <div class="form-foot">
@@ -970,6 +1036,23 @@
     </div>
   </div>
 </div>
+<datalist id="md-elements"></datalist>
+<div id="metadata-overlay" role="dialog" aria-modal="true" aria-labelledby="metadata-title">
+  <div class="metadata-card">
+    <div class="browse-head">
+      <h2 id="metadata-title">Describe this capture</h2>
+      <span class="help" id="metadata-sub"></span>
+    </div>
+    <div class="md-body"><div class="md-editor" id="modal-metadata"></div></div>
+    <div class="browse-foot">
+      <a class="secondary" id="metadata-export" href="#" download>Export sheet</a>
+      <span class="msg" id="metadata-msg"></span>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" id="metadata-cancel">Cancel</button>
+      <button type="button" class="primary" id="metadata-save">Save</button>
+    </div>
+  </div>
+</div>
 <div id="tip-bubble" role="tooltip"></div>
 <div id="resource-overlay" role="dialog" aria-modal="true" aria-labelledby="resource-title">
   <div class="resource-card">
@@ -993,6 +1076,7 @@ const fmtBytes = b => {
   return b.toFixed(i ? 1 : 0) + " " + u[i];
 };
 const clone = value => value ? JSON.parse(JSON.stringify(value)) : value;
+let lastCrawls = [];          // the job list as last fetched; filters and the metadata editor read it
 const openState = new Set();
 let editorMode = "guided";
 let rawBaseConfig = null;
@@ -1296,6 +1380,7 @@ async function startRecording() {
     if ($("#r-name").value.trim()) body.name = $("#r-name").value.trim();
     if ($("#r-operator").value.trim()) body.operator = $("#r-operator").value.trim();
     if ($("#r-storage").value.trim()) body.storage_dir = $("#r-storage").value.trim();
+    body.metadata = metadataEditors.record.value();
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setRecMessage("Cancelled.", ""); return; }
     body.start = choice;
@@ -1376,6 +1461,7 @@ async function startFacebook() {
   setFbMessage("Opening browser…");
   $("#facebook-start-btn").disabled = true;
   try {
+    body.metadata = metadataEditors.facebook.value();
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setFbMessage("Cancelled.", ""); return; }
     body.start = choice;
@@ -1468,6 +1554,7 @@ async function startInstagram() {
   setMsg("Starting…");
   $("#instagram-start-btn").disabled = true;
   try {
+    body.metadata = metadataEditors.instagram.value();
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setMsg("Cancelled.", ""); return; }
     body.start = choice;
@@ -1522,6 +1609,227 @@ $("#resource-overlay").addEventListener("click", event => {
 });
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && resourceDecision) settleResourceChoice(null);
+  if (event.key === "Escape" && metadataJobId !== null) closeMetadata();
+});
+
+// ---- Describe this capture: the metadata editor -----------------------
+// Archive-It's seed-level model: the fifteen Dublin Core elements plus
+// Collector, every one repeatable, custom fields allowed, at two levels:
+// the whole job, and each seed or target whose own values replace the
+// job's for that element. The server fills Title, Identifier, Date, Type
+// and Collector from the job where they are left empty.
+const MD_ELEMENTS = ["Title", "Creator", "Subject", "Description", "Publisher",
+  "Contributor", "Date", "Type", "Format", "Identifier", "Source", "Language",
+  "Relation", "Coverage", "Rights", "Collector"];
+const MD_HINTS = {
+  Title: "A name for what is captured, e.g. the site's or account's name",
+  Creator: "Who made the site or runs the account",
+  Subject: "What it is about: a topic, a keyword, a place, a person",
+  Description: "A sentence or two on what it is and why it was captured",
+  Publisher: "The organisation that puts the site out",
+  Contributor: "Anyone else who helped make it",
+  Date: "A date that matters to the content, e.g. when it was published",
+  Type: "What kind of thing it is: Website, Social media account, Blog…",
+  Format: "The form of the record, e.g. WARC, HTML",
+  Identifier: "An address or number that points to it, e.g. the URL",
+  Source: "Where it came from, if derived from something else",
+  Language: "The language of the content, e.g. en, ar",
+  Relation: "A related resource, e.g. a print title or another capture",
+  Coverage: "The place or period the content covers",
+  Rights: "Who holds the rights, or the terms of use",
+  Collector: "Who did the capturing: your library, team or name",
+};
+$("#md-elements").innerHTML = MD_ELEMENTS.map(e => `<option value="${e}">`).join("");
+const MD_JOB = "*";
+
+class MetadataEditor {
+  constructor(root, options = {}) {
+    this.root = root;
+    this.scopes = options.scopes || (() => []);   // () => [{key, label}]
+    this.state = {job: [], seeds: {}};
+    this.scope = MD_JOB;
+    this.render();
+  }
+  load(state) {
+    this.state = {job: (state && state.job) || [], seeds: (state && state.seeds) || {}};
+    this.scope = MD_JOB;
+    this.render();
+  }
+  value() {
+    const clean = fields => fields.map(f => ({name: String(f.name || "").trim(), value: String(f.value || "").trim()}))
+      .filter(f => f.name && f.value);
+    const seeds = {};
+    Object.entries(this.state.seeds).forEach(([key, fields]) => {
+      const kept = clean(fields);
+      if (kept.length) seeds[key] = kept;
+    });
+    return {job: clean(this.state.job), seeds};
+  }
+  fields() {
+    if (this.scope === MD_JOB) return this.state.job;
+    return this.state.seeds[this.scope] || (this.state.seeds[this.scope] = []);
+  }
+  count(key) {
+    const fields = key === MD_JOB ? this.state.job : (this.state.seeds[key] || []);
+    return fields.filter(f => String(f.value || "").trim()).length;
+  }
+  render() {
+    const scopes = this.scopes();
+    if (this.scope !== MD_JOB && !scopes.some(s => s.key === this.scope)) this.scope = MD_JOB;
+    const tabs = [{key: MD_JOB, label: "Whole job"}, ...scopes].map(sc => {
+      const n = this.count(sc.key);
+      return `<button type="button" class="md-tab${sc.key === this.scope ? " active" : ""}" data-scope="${escapeHtml(sc.key)}" title="${escapeHtml(sc.key === MD_JOB ? "Applies to every seed" : sc.key)}">${escapeHtml(sc.label)}${n ? `<span class="n">${n}</span>` : ""}</button>`;
+    }).join("");
+    const fields = this.fields();
+    const rows = fields.map((f, i) => `
+      <div class="md-row" data-index="${i}">
+        <input type="text" class="md-name" list="md-elements" value="${escapeHtml(f.name || "")}" placeholder="Field" aria-label="Field name" title="${escapeHtml(MD_HINTS[f.name] || "")}">
+        <textarea class="md-value" rows="1" placeholder="${escapeHtml(MD_HINTS[f.name] || "Value")}" aria-label="Value">${escapeHtml(f.value || "")}</textarea>
+        <button type="button" class="secondary md-remove" title="Remove this field">×</button>
+      </div>`).join("");
+    const scopeNote = this.scope === MD_JOB
+      ? "These apply to the whole job. A seed's own values, on its tab, replace the job's for that element."
+      : "Values here are for this seed only and replace the job's for the same element.";
+    this.root.innerHTML = `
+      ${scopes.length ? `<div class="md-tabs">${tabs}</div>` : ""}
+      <div class="md-rows">${rows || `<div class="md-empty">No fields yet. Add one below, copy from an earlier job, or import a sheet.</div>`}</div>
+      <div class="md-actions">
+        <select class="md-add" aria-label="Add a field">
+          <option value="">Add a field…</option>
+          ${MD_ELEMENTS.map(e => `<option value="${e}">${e}</option>`).join("")}
+          <option value="__custom">Custom field…</option>
+        </select>
+        <select class="md-copy" aria-label="Copy from an earlier job">${this.copyChoices()}</select>
+        <label class="secondary" style="cursor:pointer;font-size:12px;padding:7px 12px;border:1px solid var(--rule);border-radius:8px">Import sheet<input type="file" class="md-import" accept=".csv,text/csv" hidden></label>
+        <span class="spacer"></span>
+        <button type="button" class="secondary md-clear">Clear this level</button>
+      </div>
+      <span class="md-note">${scopeNote} Title, Identifier, Date, Type and Collector are filled from the job where left empty.</span>`;
+    this.bind();
+  }
+  bind() {
+    const root = this.root;
+    root.querySelectorAll(".md-tab").forEach(tab => tab.addEventListener("click", () => {
+      this.scope = tab.dataset.scope; this.render();
+    }));
+    root.querySelectorAll(".md-row").forEach(row => {
+      const index = Number(row.dataset.index);
+      const fields = this.fields();
+      row.querySelector(".md-name").addEventListener("input", e => { fields[index].name = e.target.value; });
+      row.querySelector(".md-name").addEventListener("change", () => this.render());
+      row.querySelector(".md-value").addEventListener("input", e => { fields[index].value = e.target.value; });
+      row.querySelector(".md-remove").addEventListener("click", () => { fields.splice(index, 1); this.render(); });
+    });
+    root.querySelector(".md-add").addEventListener("change", e => {
+      const chosen = e.target.value;
+      if (!chosen) return;
+      this.fields().push({name: chosen === "__custom" ? "" : chosen, value: ""});
+      this.render();
+      const rows = root.querySelectorAll(".md-row");
+      const last = rows[rows.length - 1];
+      if (last) last.querySelector(chosen === "__custom" ? ".md-name" : ".md-value").focus();
+    });
+    const copy = root.querySelector(".md-copy");
+    copy.addEventListener("focus", () => this.fillCopyChoices(copy));
+    copy.addEventListener("change", async e => {
+      const id = e.target.value;
+      if (!id) return;
+      try {
+        const doc = await api(`/api/crawls/${id}/metadata`);
+        this.adopt({job: doc.job || [], seeds: Object.fromEntries((doc.seeds || []).map(sd => [sd.url, sd.fields || []]))});
+      } catch (err) { alert("Could not copy: " + err.message); }
+      e.target.value = "";
+    });
+    root.querySelector(".md-import").addEventListener("change", async e => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      try {
+        const parsed = await api("/api/metadata/parse", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({csv: await file.text()})});
+        this.adopt(parsed);
+      } catch (err) { alert("Could not read the sheet: " + err.message); }
+      e.target.value = "";
+    });
+    root.querySelector(".md-clear").addEventListener("click", () => {
+      if (this.scope === MD_JOB) this.state.job = []; else delete this.state.seeds[this.scope];
+      this.render();
+    });
+  }
+  // Bring in another job's or a sheet's values: the job level replaces
+  // ours; seed values land on a seed of the same URL, or on our only
+  // seed when the source has only one.
+  adopt(incoming) {
+    const mine = this.scopes().map(sc => sc.key);
+    const seeds = {};
+    const entries = Object.entries(incoming.seeds || {});
+    entries.forEach(([url, fields]) => {
+      if (mine.includes(url)) seeds[url] = fields;
+      else if (entries.length === 1 && mine.length === 1) seeds[mine[0]] = fields;
+    });
+    this.state = {job: incoming.job || [], seeds};
+    this.render();
+  }
+  copyChoices(jobs = lastCrawls) {
+    const described = jobs.filter(c => Number(c.metadata_fields) > 0);
+    return `<option value="">Copy from job…</option>` + described.map(c =>
+      `<option value="${Number(c.id)}">#${Number(c.id)} ${escapeHtml(c.name || "")} (${Number(c.metadata_fields)} field${Number(c.metadata_fields) === 1 ? "" : "s"})</option>`).join("")
+      + (described.length ? "" : `<option value="" disabled>No earlier job has metadata</option>`);
+  }
+  async fillCopyChoices(select) {
+    let jobs = lastCrawls;
+    try { jobs = await api("/api/crawls"); } catch (_) {}
+    const chosen = select.value;
+    select.innerHTML = this.copyChoices(jobs);
+    select.value = chosen;
+  }
+}
+
+const seedScopes = urls => urls.map(u => ({key: u, label: u.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "") || u}));
+const metadataEditors = {
+  crawl: new MetadataEditor($("#f-metadata"), {scopes: () => seedScopes($$(".seed-url").map(i => i.value.trim()).filter(Boolean))}),
+  record: new MetadataEditor($("#r-metadata"), {scopes: () => seedScopes([$("#r-url").value.trim()].filter(Boolean))}),
+  facebook: new MetadataEditor($("#fb-metadata"), {scopes: () => seedScopes([$("#fb-url").value.trim()].filter(Boolean))}),
+  instagram: new MetadataEditor($("#ig-metadata"), {scopes: () => seedScopes(instagramTargets())}),
+};
+// the seed tabs follow the seeds as they are typed
+$("#seed-list").addEventListener("change", () => metadataEditors.crawl.render());
+$("#seed-list").addEventListener("click", e => { if (e.target.closest(".remove-seed")) metadataEditors.crawl.render(); });
+$("#add-seed-btn").addEventListener("click", () => metadataEditors.crawl.render());
+$("#r-url").addEventListener("change", () => metadataEditors.record.render());
+$("#fb-url").addEventListener("change", () => metadataEditors.facebook.render());
+$("#ig-targets").addEventListener("change", () => metadataEditors.instagram.render());
+
+// Editing after the fact, from the job list.
+let metadataJobId = null;
+let modalScopes = [];
+const modalMetadata = new MetadataEditor($("#modal-metadata"), {scopes: () => modalScopes});
+async function editMetadata(id) {
+  const msg = $("#metadata-msg");
+  msg.textContent = ""; msg.className = "msg";
+  try {
+    const doc = await api(`/api/crawls/${id}/metadata`);
+    metadataJobId = id;
+    modalScopes = seedScopes((doc.seeds || []).map(sd => sd.url));
+    modalMetadata.load({job: doc.job || [], seeds: Object.fromEntries((doc.seeds || []).map(sd => [sd.url, sd.fields || []]))});
+    $("#metadata-sub").textContent = `#${id} ${doc.name || ""} · saved to metadata.json${["facebook", "instagram"].includes(doc.kind) ? " and the manifest" : ""}; a WARC already written keeps the values of its moment.`;
+    $("#metadata-export").href = `/api/crawls/${id}/metadata.csv`;
+    $("#metadata-overlay").classList.add("open");
+  } catch (e) { alert("Could not load metadata: " + e.message); }
+}
+function closeMetadata() { $("#metadata-overlay").classList.remove("open"); metadataJobId = null; }
+$("#metadata-cancel").addEventListener("click", closeMetadata);
+$("#metadata-overlay").addEventListener("click", e => { if (e.target.id === "metadata-overlay") closeMetadata(); });
+$("#metadata-save").addEventListener("click", async () => {
+  const msg = $("#metadata-msg");
+  msg.textContent = "Saving…"; msg.className = "msg";
+  try {
+    await api(`/api/crawls/${metadataJobId}/metadata`, {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({metadata: modalMetadata.value()})});
+    closeMetadata();
+    refresh();
+  } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
 });
 
 // The wording behind each "?" comes from the server (help_text.yaml, with
@@ -1646,6 +1954,7 @@ async function start() {
       body = {config_yaml: $("#config-yaml").value};
     }
     if ($("#f-storage").value.trim()) body.storage_dir = $("#f-storage").value.trim();
+    body.metadata = metadataEditors.crawl.value();
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setMessage("Cancelled.", ""); return; }
     body.start = choice;
@@ -1688,7 +1997,6 @@ async function refresh() {
 // The list is filtered here, in the page, so the two-second refresh keeps
 // the figures live and the filter in place. The chosen filter survives a
 // reload through the browser's storage for this dashboard.
-let lastCrawls = [];
 const ACTIVE_STATUSES = ["running", "paused", "blocked", "stopping"];
 const FILTER_FIELDS = ["jf-search", "jf-kind", "jf-status", "jf-from", "jf-to"];
 

@@ -91,6 +91,8 @@ class CrawlConfig:
     output_dir: Path
     operator: str
     seeds: list[SeedConfig]
+    # descriptive metadata: {"job": [fields], "seeds": {url: [fields]}}
+    metadata: dict = field(default_factory=lambda: {"job": [], "seeds": {}})
 
 
 def _build_section(cls, data: dict):
@@ -126,9 +128,12 @@ def load_config(path: str | Path) -> CrawlConfig:
     if not seeds:
         raise ValueError("No seeds defined in configuration")
 
+    from .metadata import from_config
+
     return CrawlConfig(
         crawl_name=raw.get("crawl_name", "webarc-crawl"),
         output_dir=Path(raw.get("output_dir", "./warcs")),
         operator=raw.get("operator", "webarc"),
         seeds=seeds,
+        metadata=from_config(raw),
     )

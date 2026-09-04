@@ -592,6 +592,56 @@ Dashboard controls include:
 - monitor progress, storage use and available disk space;
 - watch what the machine has left and what each running job is using.
 
+### Describing a capture (metadata)
+
+Every job form ends with **Describe this capture**: who or what is being
+captured, and why, in the terms a catalogue uses. The model is Archive-It's
+seed-level metadata: the fifteen Dublin Core 1.1 elements (Title, Creator,
+Subject, Description, Publisher, Contributor, Date, Type, Format,
+Identifier, Source, Language, Relation, Coverage, Rights) plus
+**Collector**, every element repeatable, custom fields allowed, at two
+levels. Values on the *Whole job* tab apply to every seed; a seed's or
+target's own tab holds values that replace the job's for that element.
+Title, Identifier, Date, Type and Collector are filled from the job where
+left empty, and nothing else is guessed.
+
+What is written:
+
+- `metadata.json` in the job's folder: the job's fields, each seed's own
+  fields, and each seed's *effective* fields (its own over the job's, with
+  the defaults filled in). This is the record of truth and is current.
+- a `metadata` WARC record beside the warcinfo in each WARC file, in
+  `application/warc-fields` with `dc.` names (`dc.title`, `dc.subject`,
+  …, plus `collector` and `custom.<name>`), so a file that leaves the folder
+  still says what it is;
+- a `metadata` section in a Facebook or Instagram manifest, and a
+  *Description* table at the top of the reader pages.
+
+Metadata can be changed after the fact from the job list (**Metadata** on
+each row). `metadata.json` and the manifest are rewritten; a WARC already
+written keeps the values of its moment. The same dialog exports a sheet
+(`metadata.csv`, one row per seed with a column per value and repeated
+columns for repeated elements, plus a `*` row for the job level), and every
+form can **import** such a sheet or **copy** the metadata of an earlier
+job, which suits a monthly recapture of the same account.
+
+On the command line, a crawl YAML may carry a `metadata:` block at the top
+(job level) and one inside any seed:
+
+```yaml
+crawl_name: qatar-ballers
+operator: Qatar National Library
+metadata:
+  Subject: [Football, Qatar]
+  Rights: Captured for preservation; rights remain with the publisher
+seeds:
+  - url: https://example.org/
+    metadata:
+      Title: Example site
+```
+
+`swm metadata export <job folder>` writes the sheet for a finished job.
+
 ### Finding a job in the list
 
 The bar above the job list narrows it as you type or choose: by name or

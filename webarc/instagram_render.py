@@ -251,9 +251,15 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
     grid = "".join(_tile(p, media_index) for p in posts) or \
         '<div class="empty">No posts were captured.</div>'
 
+    from .facebook_render import _description_table
+    described = "".join(
+        _description_table(manifest, t.get("url")) for t in targets) \
+        or _description_table(manifest, None)
+
     _write(site_dir / "index.html", _page(
         f"{title} — captured posts",
         _notice(has_warc) + "".join(heads)
+        + described
         + f'<div class="post"><div class="facts">{fact_markup}</div>'
         f'<table class="meta-table" style="margin-top:.8rem">{table}</table></div>'
         + f'<div class="grid">{grid}</div>'

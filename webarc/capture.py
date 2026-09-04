@@ -136,7 +136,8 @@ class WarcSession:
 
     def __init__(self, out_dir: Path, crawl_name: str, seed_url: str,
                  seed_idx: int, operator: str, cfg: WarcConfig,
-                 info_extra: dict | None = None):
+                 info_extra: dict | None = None,
+                 metadata_fields: list[dict] | None = None):
         self.out_dir = out_dir
         self.crawl_name = crawl_name
         self.file_stem = safe_filename_component(crawl_name, "capture")
@@ -147,6 +148,10 @@ class WarcSession:
         # overrides/additions to the warcinfo record, e.g. a recording
         # session sets robots: none since a human drives the navigation
         self.info_extra = info_extra or {}
+        # descriptive metadata for this seed (Dublin Core and custom
+        # fields), written as a metadata record after each warcinfo so a
+        # file that leaves the folder still says what it is
+        self.metadata_fields = list(metadata_fields or [])
         self.serial = 0
         self.bytes_written = 0
         self._fh = None
@@ -183,6 +188,15 @@ class WarcSession:
             },
         )
         self._writer.write_record(info)
+        if self.metadata_fields:
+            from .metadata import warc_fields_text
+            described = self._writer.create_warc_record(
+                self.seed_url, "metadata",
+                payload=BytesIO(warc_fields_text(self.metadata_fields)),
+                warc_content_type="application/warc-fields")
+            described.rec_headers.add_header("WARC-Warcinfo-ID",
+                                             info.rec_headers.get_header("WARC-Record-ID"))
+            self._writer.write_record(described)
         log.info("Writing WARC: %s", self._current_path.name)
 
     def _maybe_rotate(self) -> None:

@@ -293,6 +293,7 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
     table = "".join(
         f"<tr><td>{html.escape(label)}</td><td>{_text(value)}</td></tr>"
         for label, value in rows if value not in (None, ""))
+    described = _description_table(manifest, capture.get("page_url"))
 
     _write(site_dir / "index.html", _page(
         f"{page_name} — captured posts",
@@ -300,11 +301,26 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
         + f'<div class="head"><h1>{_text(page_name)}</h1>'
         f'<div class="sub">{_text(capture.get("page_url", ""))}</div>'
         f'<div class="facts">{fact_markup}</div></div>'
+        + described
         + f'<div class="post"><table class="meta-table">{table}</table></div>'
         + ("".join(cards) or '<div class="empty">No posts were captured.</div>')))
 
     log.info("Built Facebook pages for %d post(s) at %s", len(posts), site_dir)
     return site_dir
+
+
+def _description_table(manifest: dict, seed_url: Optional[str]) -> str:
+    """What the curator said this capture is: the Dublin Core description."""
+    from .metadata import describe_rows
+
+    rows = describe_rows(manifest.get("metadata"), seed_url)
+    if not rows:
+        return ""
+    body = "".join(
+        f"<tr><td>{html.escape(label)}</td><td>{_text(value)}</td></tr>"
+        for label, value in rows)
+    return (f'<div class="post"><h2 style="margin:0 0 .5rem">Description</h2>'
+            f'<table class="meta-table">{body}</table></div>')
 
 
 def _write(path: Path, content: str) -> None:

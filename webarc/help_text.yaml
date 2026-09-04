@@ -114,3 +114,29 @@ res-memory: >-
   Below this much spare memory, you are asked before a new job starts. A browser needs plenty, so around 15 is sensible.
 res-disk: >-
   Below this much free disk space on the folder the job writes to, you are asked before it starts. Captures can be large; 10 leaves a safety margin.
+
+# Describe this capture (all job types)
+f-metadata: >-
+  What this capture is, in the words a catalogue would use: a title, who made
+  the site, what it is about, who holds the rights. Fill in as much or as
+  little as you like; Title, Identifier, Date, Type and Collector are filled
+  from the job where left empty, and each seed can have its own values. It is
+  written into metadata.json and the archive, and can be changed later.
+r-metadata: >-
+  What this recording is, in the words a catalogue would use: a title, who
+  made the site, what it is about, who holds the rights. Fill in as much or
+  as little as you like; Title, Identifier, Date, Type and Collector are
+  filled from the job where left empty. It is written into metadata.json and
+  the archive, and can be changed later from the job list.
+fb-metadata: >-
+  What this Page is, in the words a catalogue would use: a title, who runs it,
+  what it is about, who holds the rights. Fill in as much or as little as you
+  like; Title, Identifier, Date, Type and Collector are filled from the job
+  where left empty. It is written into metadata.json, the manifest and the
+  archive, and can be changed later from the job list.
+ig-metadata: >-
+  What these profiles or posts are, in the words a catalogue would use: a
+  title, who runs the account, what it is about, who holds the rights. Fill
+  in what you like; Title, Identifier, Date, Type and Collector are filled
+  from the job where left empty, and each target can have its own values. It
+  is written into metadata.json, the manifest and the archive.

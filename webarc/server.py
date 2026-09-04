@@ -21,6 +21,9 @@ Endpoints:
   POST /api/crawls/{id}/start -> launch a job that was told to wait
   GET/PUT /api/settings       -> default storage location, resource warning levels
   GET  /api/help              -> the help text behind each "?" on the forms
+  GET/PUT /api/crawls/{id}/metadata -> a job's descriptive metadata (Dublin Core)
+  GET  /api/crawls/{id}/metadata.csv -> the same as a one-row-per-seed sheet
+  POST /api/metadata/parse    -> read such a sheet back into the metadata shape
 
 A crawl runs as an isolated subprocess (webarc.worker). Pause/resume/stop are
 delivered through the store's control column, which the worker polls between
@@ -42,6 +45,7 @@ import yaml
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import metadata as md
 from . import resources
 from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
                     KIND_INSTAGRAM, KIND_RECORDING, PAUSED, PENDING, RUNNING,
@@ -370,6 +374,47 @@ def _launch_worker(crawl_id: int) -> int:
     return proc.pid
 
 
+def _metadata_from(payload: dict, seeds: list[str]) -> dict:
+    """The metadata a create request carries, validated, or a 400."""
+    try:
+        return md.normalise(payload.get("metadata"), seeds=seeds)
+    except ValueError as exc:
+        raise HTTPException(400, f"metadata: {exc}") from exc
+
+
+def _job_operator(config: dict) -> str:
+    for section in ("recording", "facebook", "instagram"):
+        if isinstance(config.get(section), dict) and config[section].get("operator"):
+            return str(config[section]["operator"])
+    return str(config.get("operator") or "webarc")
+
+
+def _metadata_document(row: dict) -> dict:
+    """metadata.json's content for a job, from what the store holds."""
+    import json
+
+    config = json.loads(row["config_json"])
+    seeds = [{"url": str(s.get("url"))} for s in config.get("seeds", [])
+             if isinstance(s, dict) and s.get("url")]
+    crawl_dir = _crawl_dir(row)
+    return md.document(
+        job_id=row["id"], kind=row.get("kind", "crawl"), name=row["name"],
+        operator=_job_operator(config), seeds=seeds,
+        metadata=md.from_config(config), existing=md.read_document(crawl_dir))
+
+
+def _write_metadata(row: dict) -> dict:
+    """Write metadata.json (and the manifest's copy) for a job."""
+    doc = _metadata_document(row)
+    crawl_dir = _crawl_dir(row)
+    try:
+        md.write_document(crawl_dir, doc)
+        md.update_manifest(crawl_dir, doc)
+    except OSError as exc:
+        log.warning("Could not write metadata for crawl %s: %s", row["id"], exc)
+    return doc
+
+
 def _monitor() -> resources.ResourceMonitor:
     assert _MONITOR is not None
     return _MONITOR
@@ -486,7 +531,18 @@ def _crawl_view(row: dict) -> dict:
         "seeds": progress,
         # what this job's worker, browser and helpers are using right now
         "resources": _job_usage(row),
+        "metadata_fields": _metadata_count(row),
     }
+
+
+def _metadata_count(row: dict) -> int:
+    """How many fields the curator gave this job, all levels together."""
+    import json
+    try:
+        meta = md.from_config(json.loads(row["config_json"]))
+    except (ValueError, TypeError, KeyError):
+        return 0
+    return len(meta["job"]) + sum(len(v) for v in meta["seeds"].values())
 
 
 def create_app(db_path: str, warc_root: str, simulate: bool = False,
@@ -586,6 +642,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 "browser": {"mode": browser_mode},
             },
             "seeds": [{"url": url}],
+            "metadata": _metadata_from(payload, [url]),
         }
         # Resolved before the row exists: a location that cannot serve
         # should fail the request, not leave a crawl pointing nowhere.
@@ -597,6 +654,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
+        _write_metadata(_store().get_crawl(crawl_id))
 
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
@@ -630,6 +688,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config = {
             "facebook": facebook,
             "seeds": [{"url": facebook["page_url"]}],
+            "metadata": _metadata_from(payload, [facebook["page_url"]]),
         }
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="", seeds_total=1,
@@ -639,6 +698,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
+        _write_metadata(_store().get_crawl(crawl_id))
         _start_or_wait(crawl_id, payload)
         return JSONResponse(
             status_code=201,
@@ -756,6 +816,16 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
         name = payload.get("name") or config.get("crawl_name", "webarc-crawl")
         storage_root = _storage_root_for(payload.get("storage_dir"))
+        seed_urls = [str(seed["url"]) for seed in config["seeds"]]
+        if "metadata" in payload:
+            # the request's metadata wins over any in the YAML; a seed's own
+            # block inside the YAML still counts
+            config["metadata"] = _metadata_from(payload, seed_urls)
+        else:
+            try:
+                config["metadata"] = md.normalise(config.get("metadata"), seeds=seed_urls)
+            except ValueError as exc:
+                raise HTTPException(400, f"metadata: {exc}") from exc
         # create once to obtain the id, then point the config at its own dir
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="",
@@ -765,6 +835,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config.setdefault("crawl_name", name)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
+        _write_metadata(_store().get_crawl(crawl_id))
 
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
@@ -930,7 +1001,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         name = str(payload.get("name") or default_name).strip()[:200] or "instagram"
         storage_root = _storage_root_for(payload.get("storage_dir"))
         config_json = {"instagram": instagram,
-                       "seeds": [{"url": u} for u in config.targets]}
+                       "seeds": [{"url": u} for u in config.targets],
+                       "metadata": _metadata_from(payload, list(config.targets))}
         crawl_id = _store().create_crawl(
             name=name, config=config_json, output_dir="",
             seeds_total=len(config.targets), kind=KIND_INSTAGRAM)
@@ -938,9 +1010,58 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
+        _write_metadata(_store().get_crawl(crawl_id))
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
+
+    @app.get("/api/crawls/{crawl_id}/metadata")
+    def read_metadata(crawl_id: int):
+        """A job's descriptive metadata: its own fields, each seed's, and
+        what the outputs carry once defaults are filled in."""
+        return _metadata_document(_require(crawl_id))
+
+    @app.put("/api/crawls/{crawl_id}/metadata")
+    def write_metadata(crawl_id: int, payload: dict = Body(...)):
+        """Change a job's metadata after the fact.
+
+        metadata.json and a social capture's manifest are rewritten; a WARC
+        already written keeps the values of its moment, which the document
+        notes rather than rewriting archive files.
+        """
+        import json
+
+        row = _require(crawl_id)
+        config = json.loads(row["config_json"])
+        seeds = [str(s.get("url")) for s in config.get("seeds", []) if isinstance(s, dict)]
+        config["metadata"] = _metadata_from(payload, seeds)
+        for seed in config.get("seeds", []):
+            if isinstance(seed, dict):
+                seed.pop("metadata", None)        # the job's block now says it all
+        _store().finalize_config(crawl_id, config, row["output_dir"])
+        return _write_metadata(_store().get_crawl(crawl_id))
+
+    @app.get("/api/crawls/{crawl_id}/metadata.csv")
+    def export_metadata(crawl_id: int):
+        from fastapi.responses import PlainTextResponse
+
+        row = _require(crawl_id)
+        text = md.csv_text(_metadata_document(row))
+        name = f"metadata-{crawl_id}.csv"
+        return PlainTextResponse(text, media_type="text/csv",
+                                 headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+    @app.post("/api/metadata/parse")
+    def parse_metadata(payload: dict = Body(...)):
+        """Read a metadata sheet (as exported, or Archive-It's shape) back
+        into the job/seeds structure the forms use."""
+        text = payload.get("csv")
+        if not isinstance(text, str) or not text.strip():
+            raise HTTPException(400, "provide csv text")
+        try:
+            return md.parse_csv(text)
+        except ValueError as exc:
+            raise HTTPException(400, f"The sheet could not be read: {exc}") from exc
 
     @app.post("/api/crawls/{crawl_id}/kill")
     def kill(crawl_id: int):

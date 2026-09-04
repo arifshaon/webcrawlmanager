@@ -261,7 +261,8 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
     robots = RobotsCache("webarc") if seed.behavior.obey_robots else None
 
     warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
-                       seed_idx, crawl.operator, seed.warc)
+                       seed_idx, crawl.operator, seed.warc,
+                       metadata_fields=seed_metadata(crawl, seed.url))
     stats = {"visited": 0, "skipped_robots": 0, "failed": 0, "blocked": 0,
              "dynamic_incomplete": 0, "consent_dismissed": 0,
              "consent_unresolved": 0}
@@ -402,8 +403,32 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
     return stats
 
 
+def seed_metadata(crawl: CrawlConfig, seed_url: str) -> list[dict]:
+    """What this seed's outputs say about it: its own fields over the
+    job's, with the capture's own facts filling anything left empty."""
+    from .metadata import defaults_for, merge, with_defaults
+    meta = getattr(crawl, "metadata", None) or {"job": [], "seeds": {}}
+    return with_defaults(
+        merge(meta.get("job", []), meta.get("seeds", {}).get(seed_url)),
+        defaults_for("crawl", crawl.crawl_name, crawl.operator, seed_url))
+
+
+def write_crawl_metadata(crawl: CrawlConfig, job_id=None) -> None:
+    """metadata.json in the output folder, before the first seed runs."""
+    from .metadata import document, read_document, write_document
+    meta = getattr(crawl, "metadata", None) or {"job": [], "seeds": {}}
+    write_document(crawl.output_dir, document(
+        job_id=job_id, kind="crawl", name=crawl.crawl_name,
+        operator=crawl.operator, seeds=[{"url": s.url} for s in crawl.seeds],
+        metadata=meta, existing=read_document(crawl.output_dir)))
+
+
 def run_crawl(crawl: CrawlConfig, controller: Controller | None = None) -> None:
     controller = controller or NullController()
+    try:
+        write_crawl_metadata(crawl)
+    except OSError as exc:                 # pragma: no cover - a full disk
+        log.warning("Could not write metadata.json: %s", exc)
     for idx, seed in enumerate(crawl.seeds, start=1):
         if controller.should_stop():
             log.info("Crawl stop requested; skipping remaining seeds")

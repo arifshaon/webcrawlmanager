@@ -188,13 +188,15 @@ class ReadingBackTests(StorageTestCase):
 
     def test_its_size_is_counted_where_it_lives(self):
         (self.dir / "a.warc.gz").write_bytes(b"x" * 2048)
+        # the job's own metadata.json is part of the capture and counts too
+        expected = 2048 + (self.dir / "metadata.json").stat().st_size
 
         storage = self.client.get("/api/storage").json()
         mine = [c for c in storage["per_crawl"]
                 if c["id"] == self.made["id"]][0]
 
-        self.assertEqual(mine["bytes"], 2048)
-        self.assertEqual(storage["total_bytes"], 2048)
+        self.assertEqual(mine["bytes"], expected)
+        self.assertEqual(storage["total_bytes"], expected)
 
     def test_its_rendered_pages_are_served_from_where_it_lives(self):
         pages = self.dir / "pages"

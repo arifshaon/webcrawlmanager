@@ -293,6 +293,28 @@ def _print_resource_report(snapshot: dict, thresholds: dict, jobs: list[dict],
         print(f"\nNote: {snapshot['note']}")
 
 
+def _cmd_metadata(args) -> int:
+    from pathlib import Path as _P
+
+    from . import metadata as md
+
+    job_dir = _P(args.job_dir)
+    doc = md.read_document(job_dir)
+    if not doc:
+        print(f"No {md.DOCUMENT_NAME} in {job_dir}: this folder is not a job's, "
+              "or the job was made before metadata was recorded.", file=sys.stderr)
+        return 1
+    text = md.csv_text(doc)
+    if args.output == "-":
+        sys.stdout.write(text)
+        return 0
+    target = _P(args.output) if args.output else job_dir / md.CSV_NAME
+    target.write_text(text, encoding="utf-8")
+    rows = max(0, text.count("\n") - 1)
+    print(f"Wrote {target}: {rows} row(s)")
+    return 0
+
+
 def _cmd_resources(args) -> int:
     import json as _json
 
@@ -414,6 +436,15 @@ def main(argv: list[str] | None = None) -> int:
                        help="disk to report when no default storage is set")
     p_res.add_argument("--json", action="store_true",
                        help="print the reading as JSON")
+
+    p_md = sub.add_parser(
+        "metadata", help="Export a capture's descriptive metadata as a sheet")
+    md_sub = p_md.add_subparsers(dest="metadata_command", required=True)
+    p_md_export = md_sub.add_parser(
+        "export", help="Write metadata.csv (one row per seed) from a job folder")
+    p_md_export.add_argument("job_dir", help="A job's folder (holds metadata.json)")
+    p_md_export.add_argument("--output", "-o",
+                             help="Where to write the sheet (default: metadata.csv in the folder; - for stdout)")
 
     p_rec = sub.add_parser(
         "record",
@@ -736,6 +767,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "resources":
         return _cmd_resources(args)
+
+    if args.command == "metadata":
+        return _cmd_metadata(args)
 
     if args.command == "serve":
         try:
