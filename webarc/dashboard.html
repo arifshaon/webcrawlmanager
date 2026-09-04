@@ -297,6 +297,18 @@
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .field.wide { grid-column: 1 / -1; }
   label.field-label { display: block; font-weight: 600; margin-bottom: 5px; }
+  .tip { display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; margin-left: 5px; padding: 0; border-radius: 50%;
+    border: 1px solid var(--faint); background: transparent; color: var(--muted);
+    font: 600 10px/1 var(--ui); vertical-align: 1px; cursor: help;
+    transition: background .12s, color .12s, border-color .12s; }
+  .tip:hover, .tip:focus-visible, .tip.open { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .section-title .tip { vertical-align: 2px; }
+  #tip-bubble { position: fixed; z-index: 1000; max-width: 300px; padding: 10px 12px;
+    background: var(--ink); color: var(--paper); font-size: 12px; line-height: 1.5;
+    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25); pointer-events: none;
+    opacity: 0; transition: opacity .1s; }
+  #tip-bubble.show { opacity: 1; }
   .help { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
   input[type=text], input[type=url], input[type=number], input[type=date], select, textarea {
     font-family: var(--mono); font-size: 13px; border: 1px solid var(--rule);
@@ -376,7 +388,7 @@
   <section class="view hidden" id="view-settings">
     <div class="eyebrow">Storage</div>
   <div class="storage-default" id="storage-default">
-      <label class="field-label" for="storage-root">Default storage location</label>
+      <label class="field-label" for="storage-root">Default storage location <button type="button" class="tip" aria-label="What is this for?" data-tip="Where new jobs put their files unless a job names its own folder. Jobs already made are not moved.">?</button></label>
       <div class="storage-default-row">
         <input type="text" id="storage-root" placeholder="the server's own storage directory">
         <button type="button" class="secondary browse-btn" data-target="storage-root">Browse…</button>
@@ -392,11 +404,11 @@
         <span class="check-copy"><strong>Warn before starting a job when the machine is short of a resource</strong><span>You then choose whether to start anyway, wait until it is free, or cancel.</span></span>
       </label>
       <div class="levels">
-        <label for="res-cpu">Warn when less than this % of CPU is free
+        <label for="res-cpu">Warn when less than this % of CPU is free <button type="button" class="tip" aria-label="What is this for?" data-tip="Below this much spare processing power, you are asked before a new job starts. Around 15 is a sensible starting point.">?</button>
           <input type="number" id="res-cpu" min="0" max="100" step="1"></label>
-        <label for="res-memory">… of memory is free
+        <label for="res-memory">… of memory is free <button type="button" class="tip" aria-label="What is this for?" data-tip="Below this much spare memory, you are asked before a new job starts. A browser needs plenty, so around 15 is sensible.">?</button>
           <input type="number" id="res-memory" min="0" max="100" step="1"></label>
-        <label for="res-disk">… of disk space is free
+        <label for="res-disk">… of disk space is free <button type="button" class="tip" aria-label="What is this for?" data-tip="Below this much free disk space on the folder the job writes to, you are asked before it starts. Captures can be large; 10 leaves a safety margin.">?</button>
           <input type="number" id="res-disk" min="0" max="100" step="1"></label>
         <button type="button" class="secondary" id="res-save">Save</button>
         <span class="msg" id="res-msg"></span>
@@ -434,12 +446,12 @@
           </div>
           <div class="section-body form-grid">
             <div class="field">
-              <label class="field-label" for="f-crawl-name">Crawl name</label>
+              <label class="field-label" for="f-crawl-name">Crawl name <button type="button" class="tip" aria-label="What is this for?" data-tip="A label for this job in the job list and in the file names it produces. Something you will recognise later, like the site and the month, is best.">?</button></label>
               <input type="text" id="f-crawl-name" value="example-crawl" required>
               <span class="help">Used as the crawl label in the dashboard.</span>
             </div>
             <div class="field">
-              <label class="field-label" for="f-operator">Operator</label>
+              <label class="field-label" for="f-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-tip="Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.">?</button></label>
               <input type="text" id="f-operator" value="Example Library — Digital Collections" required>
               <span class="help">Institution, team, or person running the crawl.</span>
             </div>
@@ -447,7 +459,7 @@
         </div>
         <div class="form-section">
           <div class="section-head">
-            <span class="section-title">Seed URLs</span>
+            <span class="section-title">Seed URLs <button type="button" class="tip" aria-label="What is this for?" data-tip="The pages the crawl starts from. It opens each one and follows links from there, within the limits set below. One is enough for most sites; add more for separate sections that do not link to each other.">?</button></span>
             <span class="section-hint">The starting pages for the crawl.</span>
             <button type="button" class="secondary" id="add-seed-btn">Add seed</button>
           </div>
@@ -463,7 +475,7 @@
           </div>
           <div class="section-body form-grid">
             <div class="field">
-              <label class="field-label" for="f-browser-mode">Browser mode</label>
+              <label class="field-label" for="f-browser-mode">Browser mode <button type="button" class="tip" aria-label="What is this for?" data-tip="Whether you see the browser while it works. Headless runs unseen and suits most sites. Choose a visible browser when a site asks you to log in or pass a check.">?</button></label>
               <select id="f-browser-mode">
                 <option value="headless">Headless — run in the background</option>
                 <option value="headed">Headed — show the browser window</option>
@@ -471,7 +483,7 @@
               </select>
             </div>
             <div class="field">
-              <label class="field-label" for="f-scope-strategy">Scope strategy</label>
+              <label class="field-label" for="f-scope-strategy">Scope strategy <button type="button" class="tip" aria-label="What is this for?" data-tip="How far from the starting page the crawl may wander. Same host stays on that website only; wider choices also follow links to related sites.">?</button></label>
               <select id="f-scope-strategy">
                 <option value="same-host">Same host only</option>
                 <option value="same-domain">Same domain, including subdomains</option>
@@ -480,16 +492,16 @@
               </select>
             </div>
             <div class="field">
-              <label class="field-label" for="f-max-depth">Maximum link depth</label>
+              <label class="field-label" for="f-max-depth">Maximum link depth <button type="button" class="tip" aria-label="What is this for?" data-tip="How many clicks away from the starting page the crawl may go. 0 saves only the starting page, 1 adds the pages it links to, and so on. Keep it small for a quick capture.">?</button></label>
               <input type="number" id="f-max-depth" min="0" step="1" value="2">
               <span class="help">0 captures only the seed page; 1 also follows its direct links.</span>
             </div>
             <div class="field">
-              <label class="field-label" for="f-max-pages">Maximum pages per seed</label>
+              <label class="field-label" for="f-max-pages">Maximum pages per seed <button type="button" class="tip" aria-label="What is this for?" data-tip="A ceiling on how many pages are saved from each starting page, so a large site cannot run on for hours. The crawl stops when it gets there.">?</button></label>
               <input type="number" id="f-max-pages" min="1" step="1" value="200">
             </div>
             <div class="field wide">
-              <label class="field-label" for="f-exclude">Excluded URL patterns</label>
+              <label class="field-label" for="f-exclude">Excluded URL patterns <button type="button" class="tip" aria-label="What is this for?" data-tip="Web addresses to skip, one pattern per line. Handy for leaving out downloads, log-out links or endless calendar pages. A page whose address matches is not saved.">?</button></label>
               <textarea id="f-exclude" rows="3">\.(zip|exe|dmg|iso)($|\?)
 /logout</textarea>
               <span class="help">One regular expression per line. Matching URLs will not be crawled.</span>
@@ -503,7 +515,7 @@
           </div>
           <div class="section-body form-grid">
             <div class="field">
-              <label class="field-label">Delay between pages (seconds)</label>
+              <label class="field-label">Delay between pages (seconds) <button type="button" class="tip" aria-label="What is this for?" data-tip="A pause before each page, picked at random between these two numbers. It keeps the crawl polite, so the website is not overloaded and does not block you.">?</button></label>
               <div class="inline-fields">
                 <input type="number" id="f-delay-min" min="0" step="0.1" value="1.5" aria-label="Minimum delay">
                 <input type="number" id="f-delay-max" min="0" step="0.1" value="4.0" aria-label="Maximum delay">
@@ -511,11 +523,11 @@
               <span class="help">A random delay is selected between the minimum and maximum.</span>
             </div>
             <div class="field">
-              <label class="field-label" for="f-page-timeout">Page timeout (seconds)</label>
+              <label class="field-label" for="f-page-timeout">Page timeout (seconds) <button type="button" class="tip" aria-label="What is this for?" data-tip="How long to wait for a page to finish loading before giving up on it and moving on. Raise it for slow sites.">?</button></label>
               <input type="number" id="f-page-timeout" min="1" step="1" value="45">
             </div>
             <div class="field">
-              <label class="field-label" for="f-wait-until">Wait until</label>
+              <label class="field-label" for="f-wait-until">Wait until <button type="button" class="tip" aria-label="What is this for?" data-tip="When a page counts as loaded. Network is idle waits until the page has stopped fetching things, which captures more on pages that keep loading after they open.">?</button></label>
               <select id="f-wait-until">
                 <option value="networkidle">Network is idle</option>
                 <option value="load">Page load event</option>
@@ -523,7 +535,7 @@
               </select>
             </div>
             <div class="field">
-              <label class="field-label">Options</label>
+              <label class="field-label">Options <button type="button" class="tip" aria-label="What is this for?" data-tip="Switches for how each page is visited. The usual settings are already ticked; change them only if a site needs it.">?</button></label>
               <label class="check-row">
                 <input type="checkbox" id="f-obey-robots" checked>
                 <span class="check-copy"><strong>Obey robots.txt</strong><span>Respect automated crawler exclusions.</span></span>
@@ -542,7 +554,7 @@
               </label>
             </div>
             <div class="field">
-              <label class="field-label" for="f-consent-preference">Consent choice</label>
+              <label class="field-label" for="f-consent-preference">Consent choice <button type="button" class="tip" aria-label="What is this for?" data-tip="What to click on cookie banners: accept or decline. Either way the banner is closed so the page behind it is captured, and the choice is noted in the record.">?</button></label>
               <select id="f-consent-preference">
                 <option value="decline">Decline where offered — keeps trackers out of the archive</option>
                 <option value="accept">Accept — may pull advertising and analytics into the WARC</option>
@@ -558,18 +570,18 @@
           </div>
           <div class="section-body form-grid">
             <div class="field">
-              <label class="field-label" for="f-warc-size">Maximum WARC size (MB)</label>
+              <label class="field-label" for="f-warc-size">Maximum WARC size (MB) <button type="button" class="tip" aria-label="What is this for?" data-tip="Archive files are split when they reach this size, so no single file becomes too big to copy or open.">?</button></label>
               <input type="number" id="f-warc-size" min="1" step="1" value="900">
             </div>
             <div class="field">
-              <label class="field-label">Options</label>
+              <label class="field-label">Options <button type="button" class="tip" aria-label="What is this for?" data-tip="Switches for how the archive files are written.">?</button></label>
               <label class="check-row">
                 <input type="checkbox" id="f-dedup" checked>
                 <span class="check-copy"><strong>Deduplicate payloads</strong><span>Write revisit records for repeated content.</span></span>
               </label>
             </div>
             <div class="field wide">
-              <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+              <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-tip="The folder where this job&#x27;s files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.">?</button></label>
               <div class="storage-row">
               <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty for the default location">
               <button type="button" class="secondary browse-btn" data-target="f-storage">Browse…</button>
@@ -600,28 +612,28 @@
         </div>
         <div class="section-body form-grid">
           <div class="field wide">
-            <label class="field-label" for="r-url">Starting URL</label>
+            <label class="field-label" for="r-url">Starting URL <button type="button" class="tip" aria-label="What is this for?" data-tip="The page the browser opens first. From there you browse by hand, and everything that loads is saved.">?</button></label>
             <input type="url" id="r-url" placeholder="https://example.org/" required>
             <span class="help">The browser opens here; everything you then visit is captured.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="r-name">Session name</label>
+            <label class="field-label" for="r-name">Session name <button type="button" class="tip" aria-label="What is this for?" data-tip="A label for this recording in the job list and its folder. Left empty, it is taken from the website&#x27;s name.">?</button></label>
             <input type="text" id="r-name" placeholder="derived from the host if empty">
           </div>
           <div class="field">
-            <label class="field-label" for="r-operator">Operator</label>
+            <label class="field-label" for="r-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-tip="Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.">?</button></label>
             <input type="text" id="r-operator" placeholder="webarc">
             <span class="help">Stored in the WARC metadata.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="r-browser">Browser</label>
+            <label class="field-label" for="r-browser">Browser <button type="button" class="tip" aria-label="What is this for?" data-tip="Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.">?</button></label>
             <select id="r-browser">
               <option value="headed">Headed — managed Chrome (recommended)</option>
               <option value="native">Native — system Chrome via CDP (advanced)</option>
             </select>
           </div>
           <div class="field wide">
-            <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+            <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-tip="The folder where this job&#x27;s files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.">?</button></label>
             <div class="storage-row">
               <input type="text" id="r-storage" class="storage-dir" placeholder="leave empty for the default location">
               <button type="button" class="secondary browse-btn" data-target="r-storage">Browse…</button>
@@ -655,21 +667,21 @@
         </div>
         <div class="section-body form-grid">
           <div class="field wide">
-            <label class="field-label" for="fb-url">Facebook Page URL</label>
+            <label class="field-label" for="fb-url">Facebook Page URL <button type="button" class="tip" aria-label="What is this for?" data-tip="The Page to capture, as it appears in the address bar. The address of a single post captures that post only.">?</button></label>
             <input type="url" id="fb-url" placeholder="https://www.facebook.com/PageName — or a single post URL" required>
             <span class="help">A Page URL collects posts from its timeline using the mode below. A single post URL collects that post and its comments only, ignoring the Page's other posts. Personal profiles, groups and other Facebook surfaces are rejected.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="fb-name">Capture name</label>
+            <label class="field-label" for="fb-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-tip="A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the site and the month, is best. Left empty, one is made up from the target.">?</button></label>
             <input type="text" id="fb-name" placeholder="derived from the Page if empty">
           </div>
           <div class="field">
-            <label class="field-label" for="fb-operator">Operator</label>
+            <label class="field-label" for="fb-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-tip="Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.">?</button></label>
             <input type="text" id="fb-operator" placeholder="webarc">
             <span class="help">Stored in the WARC and capture manifest.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="fb-browser">Browser</label>
+            <label class="field-label" for="fb-browser">Browser <button type="button" class="tip" aria-label="What is this for?" data-tip="Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.">?</button></label>
             <select id="fb-browser">
               <option value="headed">Headed — persistent managed Chrome (recommended)</option>
               <option value="native">Native — system Chrome via CDP (advanced)</option>
@@ -677,14 +689,14 @@
             <span class="help">SWM keeps a dedicated Facebook browser profile so your login can persist between captures.</span>
           </div>
           <div class="field wide">
-            <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+            <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-tip="The folder where this job&#x27;s files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.">?</button></label>
             <div class="storage-row">
               <input type="text" id="fb-storage" class="storage-dir" placeholder="leave empty for the default location">
               <button type="button" class="secondary browse-btn" data-target="fb-storage">Browse…</button>
             </div>
           </div>
           <div class="field">
-            <label class="field-label" for="fb-mode">Capture mode</label>
+            <label class="field-label" for="fb-mode">Capture mode <button type="button" class="tip" aria-label="What is this for?" data-tip="What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.">?</button></label>
             <select id="fb-mode">
               <option value="date_range">Date range</option>
               <option value="latest_n">Latest N posts</option>
@@ -694,7 +706,7 @@
             </select>
           </div>
           <div class="field wide" id="fb-date-options">
-            <label class="field-label">Requested post dates</label>
+            <label class="field-label">Requested post dates <button type="button" class="tip" aria-label="What is this for?" data-tip="The dates to keep. Posts outside this range are passed over on the way but not kept. From is required so the capture knows when to stop scrolling; To is optional.">?</button></label>
             <div class="inline-fields">
               <div>
                 <label class="help" for="fb-from">From (required)</label>
@@ -709,13 +721,13 @@
             <div class="mode-explanation" style="margin-top:8px">Posts newer than To must be traversed to reach older material. Their traffic remains in WARC but they are excluded from the normalised CSV and JSONL.</div>
           </div>
           <div class="field wide hidden" id="fb-latest-options">
-            <label class="field-label" for="fb-latest-n">Number of latest non-pinned posts</label>
+            <label class="field-label" for="fb-latest-n">Number of latest non-pinned posts <button type="button" class="tip" aria-label="What is this for?" data-tip="How many of the newest posts to keep. Pinned posts sit at the top regardless of date, so they are not counted in this number.">?</button></label>
             <input type="number" id="fb-latest-n" min="1" max="100000" step="1" value="100">
             <span class="help">Pinned posts are preserved but do not consume the N-post limit.</span>
           </div>
           <div class="field wide hidden" id="fb-mode-note"></div>
           <div class="field wide">
-            <label class="field-label">Capture options</label>
+            <label class="field-label">Capture options <button type="button" class="tip" aria-label="What is this for?" data-tip="What to keep alongside the posts themselves: pictures and video, comments, and the raw browser traffic.">?</button></label>
             <label class="check-row">
               <input type="checkbox" id="fb-media" checked>
               <span class="check-copy"><strong>Capture images and media</strong><span>Fetch the images and video referenced by captured posts, and keep them as files.</span></span>
@@ -735,7 +747,7 @@
             <div id="fb-comment-options" class="hidden">
               <div class="inline-fields" style="margin-top:10px">
                 <div>
-                  <label class="field-label" for="fb-comment-max">Maximum comments per post</label>
+                  <label class="field-label" for="fb-comment-max">Maximum comments per post <button type="button" class="tip" aria-label="What is this for?" data-tip="A ceiling on comments per post, so one very busy post does not take all day. The number reached is written into the record.">?</button></label>
                   <input type="number" id="fb-comment-max" min="1" max="5000" step="1" value="25">
                 </div>
                 <label class="check-row" style="align-self:end;padding-bottom:7px">
@@ -770,21 +782,21 @@
         </div>
         <div class="section-body form-grid">
           <div class="field wide">
-            <label class="field-label" for="ig-targets">Targets — one per line</label>
+            <label class="field-label" for="ig-targets">Targets — one per line <button type="button" class="tip" aria-label="What is this for?" data-tip="What to capture, one per line: a username, a profile address, or the address of a single post or reel. A profile collects its posts using the mode below; a post or reel address collects that item only.">?</button></label>
             <textarea id="ig-targets" rows="4" placeholder="qatarnationallibrary&#10;https://www.instagram.com/someprofile/&#10;https://www.instagram.com/p/Cabc123/"></textarea>
             <span class="help">A profile (username or URL) collects its posts and reels using the mode below. A post or reel URL collects that item only. Explore, hashtag, story and direct-message URLs are refused: they cannot be presented as an archive of anything.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="ig-name">Capture name</label>
+            <label class="field-label" for="ig-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-tip="A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the site and the month, is best. Left empty, one is made up from the target.">?</button></label>
             <input type="text" id="ig-name" placeholder="derived from the targets if empty">
           </div>
           <div class="field">
-            <label class="field-label" for="ig-operator">Operator</label>
+            <label class="field-label" for="ig-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-tip="Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.">?</button></label>
             <input type="text" id="ig-operator" placeholder="webarc">
             <span class="help">Stored in the capture manifest.</span>
           </div>
           <div class="field">
-            <label class="field-label">How it runs</label>
+            <label class="field-label">How it runs <button type="button" class="tip" aria-label="What is this for?" data-tip="Whether a browser window is on screen while the capture works. Ticked, it runs unseen and a window appears only when Instagram needs you.">?</button></label>
             <label class="check-row">
               <input type="checkbox" id="ig-headless">
               <span class="check-copy"><strong>Run in the background</strong><span>No window: the same signed-in Chrome scrolls the profile unseen. A window opens only if Instagram needs you to sign in or clear a verification, and then stays for the run.</span></span>
@@ -792,7 +804,7 @@
             <span class="help">Letting Instagram's own web application build the requests in a real Chrome keeps client-compatibility failures to a minimum; Instagram can still rate-limit or challenge the account. Either way SWM opens the profile in Chrome, scrolls it, and collects from what Instagram loads; with the WARC option on, every exchange is written as it happens.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="ig-listing">Profile listing</label>
+            <label class="field-label" for="ig-listing">Profile listing <button type="button" class="tip" aria-label="What is this for?" data-tip="How the list of a profile&#x27;s posts is found. Browser scrolls the profile like a person would and needs nothing extra. gallery-dl is a separate tool that can be faster; it must be installed, and if Instagram refuses it the capture falls back to the browser.">?</button></label>
             <select id="ig-listing">
               <option value="browser">Browser — scroll the profile and read what Instagram serves its own client</option>
               <option value="gallery-dl">gallery-dl — attempt to enumerate the profile through Instagram's direct per-user API, on the browser's signed-in session</option>
@@ -800,7 +812,7 @@
             <span class="help">gallery-dl can be faster than scrolling and reports pinned flags and dates, but Instagram may rate-limit or restrict it; SWM reads its output as it streams, stops it once the capture has what it asked for, and resumes from its cursor after a rate limit. If Instagram refuses the browser's session from gallery-dl while the browser is signed in, the capture lists through the browser instead and records that it did. Post discovery and listing metadata come from gallery-dl and are kept as its output, not as Instagram's responses. Selected media is fetched through the browser where possible; comments are collected from the browser. Needs <code>pip install gallery-dl</code>.</span>
           </div>
           <div class="field">
-            <label class="field-label" for="ig-browser">Browser</label>
+            <label class="field-label" for="ig-browser">Browser <button type="button" class="tip" aria-label="What is this for?" data-tip="Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.">?</button></label>
             <select id="ig-browser">
               <option value="headed">Headed — managed Chrome with a dedicated profile (recommended)</option>
               <option value="native">Native — your system Chrome via CDP (advanced)</option>
@@ -808,14 +820,14 @@
             <span class="help">Either way SWM keeps a dedicated Instagram profile: sign in there once. With the browser method the window stays open for the capture, like a Facebook capture.</span>
           </div>
           <div class="field wide">
-            <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+            <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-tip="The folder where this job&#x27;s files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.">?</button></label>
             <div class="storage-row">
               <input type="text" id="ig-storage" class="storage-dir" placeholder="leave empty for the default location">
               <button type="button" class="secondary browse-btn" data-target="ig-storage">Browse…</button>
             </div>
           </div>
           <div class="field">
-            <label class="field-label" for="ig-mode">Capture mode</label>
+            <label class="field-label" for="ig-mode">Capture mode <button type="button" class="tip" aria-label="What is this for?" data-tip="What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.">?</button></label>
             <select id="ig-mode">
               <option value="latest_n">Latest N posts</option>
               <option value="date_range">Date range</option>
@@ -825,7 +837,7 @@
             </select>
           </div>
           <div class="field">
-            <label class="field-label">Profile surfaces</label>
+            <label class="field-label">Profile surfaces <button type="button" class="tip" aria-label="What is this for?" data-tip="Which parts of a profile to look through: the main grid of posts, the Reels tab, or both.">?</button></label>
             <label class="check-row">
               <input type="checkbox" id="ig-surface-posts" checked>
               <span class="check-copy"><strong>Posts grid</strong></span>
@@ -836,7 +848,7 @@
             </label>
           </div>
           <div class="field wide hidden" id="ig-date-options">
-            <label class="field-label">Requested post dates</label>
+            <label class="field-label">Requested post dates <button type="button" class="tip" aria-label="What is this for?" data-tip="The dates to keep. Posts outside this range are passed over on the way but not kept. From is required so the capture knows when to stop scrolling; To is optional.">?</button></label>
             <div class="inline-fields">
               <div>
                 <label class="help" for="ig-from">From (required)</label>
@@ -850,12 +862,12 @@
             <span class="help">Pinned posts never end the capture on their own. SWM stops after five consecutive non-pinned posts older than From.</span>
           </div>
           <div class="field wide" id="ig-latest-options">
-            <label class="field-label" for="ig-latest-n">Number of latest non-pinned posts</label>
+            <label class="field-label" for="ig-latest-n">Number of latest non-pinned posts <button type="button" class="tip" aria-label="What is this for?" data-tip="How many of the newest posts to keep. Pinned posts sit at the top regardless of date, so they are not counted in this number.">?</button></label>
             <input type="number" id="ig-latest-n" min="1" max="100000" step="1" value="100">
           </div>
           <div class="field wide hidden" id="ig-mode-note"></div>
           <div class="field wide">
-            <label class="field-label">Capture options</label>
+            <label class="field-label">Capture options <button type="button" class="tip" aria-label="What is this for?" data-tip="What to keep alongside the posts themselves: original media, comments, and the raw browser traffic.">?</button></label>
             <label class="check-row">
               <input type="checkbox" id="ig-media" checked>
               <span class="check-copy"><strong>Download original media</strong><span>Every image, video and carousel component at the highest resolution available to the capture, with SHA-256 fixity.</span></span>
@@ -871,11 +883,11 @@
             <div id="ig-comment-options" class="hidden">
               <div class="inline-fields" style="margin-top:10px">
                 <div>
-                  <label class="field-label" for="ig-comment-max">Maximum comments per post</label>
+                  <label class="field-label" for="ig-comment-max">Maximum comments per post <button type="button" class="tip" aria-label="What is this for?" data-tip="A ceiling on comments per post, so one very busy post does not take all day. The number reached is written into the record.">?</button></label>
                   <input type="number" id="ig-comment-max" min="1" max="5000" step="1" value="25">
                 </div>
                 <div>
-                  <label class="field-label" for="ig-reply-max">Maximum replies per comment</label>
+                  <label class="field-label" for="ig-reply-max">Maximum replies per comment <button type="button" class="tip" aria-label="What is this for?" data-tip="How many replies to keep under each comment, so long threads stay manageable.">?</button></label>
                   <input type="number" id="ig-reply-max" min="1" max="1000" step="1" value="10">
                 </div>
               </div>
@@ -925,6 +937,7 @@
     </div>
   </div>
 </div>
+<div id="tip-bubble" role="tooltip"></div>
 <div id="resource-overlay" role="dialog" aria-modal="true" aria-labelledby="resource-title">
   <div class="resource-card">
     <h2 id="resource-title">This machine is short of a resource</h2>
@@ -1477,6 +1490,53 @@ $("#resource-overlay").addEventListener("click", event => {
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && resourceDecision) settleResourceChoice(null);
 });
+
+// One bubble for every "?" on the page: shown on hover, on keyboard focus,
+// and on a tap; placed under the icon and kept inside the window.
+let tipOpen = null;
+function showTip(icon) {
+  const bubble = $("#tip-bubble");
+  if (tipOpen && tipOpen !== icon) tipOpen.classList.remove("open");
+  tipOpen = icon;
+  icon.classList.add("open");
+  bubble.textContent = icon.dataset.tip || "";
+  bubble.classList.add("show");
+  const at = icon.getBoundingClientRect();
+  const box = bubble.getBoundingClientRect();
+  const left = Math.min(Math.max(8, at.left - 8), window.innerWidth - box.width - 8);
+  let top = at.bottom + 8;
+  if (top + box.height > window.innerHeight - 8) top = at.top - box.height - 8;
+  bubble.style.left = `${left}px`;
+  bubble.style.top = `${top}px`;
+}
+function hideTip() {
+  if (tipOpen) tipOpen.classList.remove("open");
+  tipOpen = null;
+  $("#tip-bubble").classList.remove("show");
+}
+document.addEventListener("mouseover", event => {
+  const icon = event.target.closest(".tip");
+  if (icon) showTip(icon);
+});
+document.addEventListener("mouseout", event => {
+  const icon = event.target.closest(".tip");
+  if (icon && icon === tipOpen && !icon.matches(":focus")) hideTip();
+});
+document.addEventListener("focusin", event => {
+  const icon = event.target.closest(".tip");
+  if (icon) showTip(icon);
+});
+document.addEventListener("focusout", event => {
+  if (event.target.closest(".tip")) hideTip();
+});
+document.addEventListener("click", event => {
+  const icon = event.target.closest(".tip");
+  if (!icon) return;
+  event.preventDefault();
+  if (icon === tipOpen && $("#tip-bubble").classList.contains("show")) hideTip(); else showTip(icon);
+});
+document.addEventListener("keydown", event => { if (event.key === "Escape") hideTip(); });
+window.addEventListener("scroll", hideTip, true);
 async function startNow(id) {
   try { await api(`/api/crawls/${id}/start`, {method:"POST"}); refresh(); }
   catch (e) { alert("Start failed: " + e.message); }
