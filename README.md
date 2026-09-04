@@ -592,6 +592,17 @@ Dashboard controls include:
 - monitor progress, storage use and available disk space;
 - watch what the machine has left and what each running job is using.
 
+### Help text beside each field
+
+Every field on the job forms and the Settings page has a "?" that explains,
+in plain words, what the field is for. The wording lives in
+`webarc/help_text.yaml`, one entry per field, and is served to the page
+when it loads. To change it for your installation without editing the
+package, copy that file to `help_text.yaml` next to the dashboard's
+database (`webarc-state/help_text.yaml` by default) and keep only the
+entries you want to change: each one overrides the packaged text, an entry
+left blank hides that "?", and the file is read again on every page load.
+
 ### Machine resources
 
 The *Jobs* page shows the machine's spare CPU, memory and disk space, and

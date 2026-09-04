@@ -20,6 +20,7 @@ Endpoints:
   GET  /api/resources/check   -> whether a new job should be warned before starting
   POST /api/crawls/{id}/start -> launch a job that was told to wait
   GET/PUT /api/settings       -> default storage location, resource warning levels
+  GET  /api/help              -> the help text behind each "?" on the forms
 
 A crawl runs as an isolated subprocess (webarc.worker). Pause/resume/stop are
 delivered through the store's control column, which the worker polls between
@@ -531,6 +532,12 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         hardening = DASHBOARD_HARDENING.read_text(encoding="utf-8")
         injected = f"<script>\n{hardening}\n</script>\n</body>"
         return html.replace("</body>", injected, 1)
+
+    @app.get("/api/help")
+    def help_text():
+        """The wording behind each "?"; an installation's own copy wins."""
+        from . import help as help_module
+        return help_module.load_help(Path(_store().db_path).resolve().parent)
 
     @app.get("/api/capabilities")
     def capabilities():

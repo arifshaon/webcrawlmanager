@@ -1,0 +1,116 @@
+# Help text for the "?" beside each field on the SWM dashboard.
+#
+# Each key names a field; the text is shown when the "?" next to that field
+# is hovered, focused or tapped. Edit the wording here, or copy this file to
+# help_text.yaml next to the dashboard's database (webarc-state/ by default)
+# and change only the entries you want: that copy overrides these, entry by
+# entry, and is read again each time the dashboard loads. Plain text only;
+# keep each entry to a sentence or three.
+
+# Automated crawl
+f-crawl-name: >-
+  A label for this job in the job list and in the file names it produces. Something you will recognise later, like the site and the month, is best.
+f-operator: >-
+  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+f-seeds: >-
+  The pages the crawl starts from. It opens each one and follows links from there, within the limits set below. One is enough for most sites; add more for separate sections that do not link to each other.
+f-browser-mode: >-
+  Whether you see the browser while it works. Headless runs unseen and suits most sites. Choose a visible browser when a site asks you to log in or pass a check.
+f-scope-strategy: >-
+  How far from the starting page the crawl may wander. Same host stays on that website only; wider choices also follow links to related sites.
+f-max-depth: >-
+  How many clicks away from the starting page the crawl may go. 0 saves only the starting page, 1 adds the pages it links to, and so on. Keep it small for a quick capture.
+f-max-pages: >-
+  A ceiling on how many pages are saved from each starting page, so a large site cannot run on for hours. The crawl stops when it gets there.
+f-exclude: >-
+  Web addresses to skip, one pattern per line. Handy for leaving out downloads, log-out links or endless calendar pages. A page whose address matches is not saved.
+f-delay: >-
+  A pause before each page, picked at random between these two numbers. It keeps the crawl polite, so the website is not overloaded and does not block you.
+f-page-timeout: >-
+  How long to wait for a page to finish loading before giving up on it and moving on. Raise it for slow sites.
+f-wait-until: >-
+  When a page counts as loaded. Network is idle waits until the page has stopped fetching things, which captures more on pages that keep loading after they open.
+f-page-options: >-
+  Switches for how each page is visited. The usual settings are already ticked; change them only if a site needs it.
+f-consent-preference: >-
+  What to click on cookie banners: accept or decline. Either way the banner is closed so the page behind it is captured, and the choice is noted in the record.
+f-warc-size: >-
+  Archive files are split when they reach this size, so no single file becomes too big to copy or open.
+f-warc-options: >-
+  Switches for how the archive files are written.
+f-storage: >-
+  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+
+# Record session
+r-url: >-
+  The page the browser opens first. From there you browse by hand, and everything that loads is saved.
+r-name: >-
+  A label for this recording in the job list and its folder. Left empty, it is taken from the website's name.
+r-operator: >-
+  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+r-browser: >-
+  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+r-storage: >-
+  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+
+# Facebook Page capture
+fb-url: >-
+  The Page to capture, as it appears in the address bar. The address of a single post captures that post only.
+fb-name: >-
+  A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the site and the month, is best. Left empty, one is made up from the target.
+fb-operator: >-
+  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+fb-browser: >-
+  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+fb-storage: >-
+  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+fb-mode: >-
+  What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.
+fb-dates: >-
+  The dates to keep. Posts outside this range are passed over on the way but not kept. From is required so the capture knows when to stop scrolling; To is optional.
+fb-latest-n: >-
+  How many of the newest posts to keep. Pinned posts sit at the top regardless of date, so they are not counted in this number.
+fb-options: >-
+  What to keep alongside the posts themselves: pictures and video, comments, and the raw browser traffic.
+fb-comment-max: >-
+  A ceiling on comments per post, so one very busy post does not take all day. The number reached is written into the record.
+
+# Instagram capture
+ig-targets: >-
+  What to capture, one per line: a username, a profile address, or the address of a single post or reel. A profile collects its posts using the mode below; a post or reel address collects that item only.
+ig-name: >-
+  A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the site and the month, is best. Left empty, one is made up from the target.
+ig-operator: >-
+  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+ig-run: >-
+  Whether a browser window is on screen while the capture works. Ticked, it runs unseen and a window appears only when Instagram needs you.
+ig-listing: >-
+  How the list of a profile's posts is found. Browser scrolls the profile like a person would and needs nothing extra. gallery-dl is a separate tool that can be faster; it must be installed, and if Instagram refuses it the capture falls back to the browser.
+ig-browser: >-
+  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+ig-storage: >-
+  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+ig-mode: >-
+  What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.
+ig-surfaces: >-
+  Which parts of a profile to look through: the main grid of posts, the Reels tab, or both.
+ig-dates: >-
+  The dates to keep. Posts outside this range are passed over on the way but not kept. From is required so the capture knows when to stop scrolling; To is optional.
+ig-latest-n: >-
+  How many of the newest posts to keep. Pinned posts sit at the top regardless of date, so they are not counted in this number.
+ig-options: >-
+  What to keep alongside the posts themselves: original media, comments, and the raw browser traffic.
+ig-comment-max: >-
+  A ceiling on comments per post, so one very busy post does not take all day. The number reached is written into the record.
+ig-reply-max: >-
+  How many replies to keep under each comment, so long threads stay manageable.
+
+# Settings
+storage-root: >-
+  Where new jobs put their files unless a job names its own folder. Jobs already made are not moved.
+res-cpu: >-
+  Below this much spare processing power, you are asked before a new job starts. Around 15 is a sensible starting point.
+res-memory: >-
+  Below this much spare memory, you are asked before a new job starts. A browser needs plenty, so around 15 is sensible.
+res-disk: >-
+  Below this much free disk space on the folder the job writes to, you are asked before it starts. Captures can be large; 10 leaves a safety margin.

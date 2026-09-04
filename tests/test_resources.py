@@ -413,3 +413,14 @@ class WithoutPsutilTests(unittest.TestCase):
     def test_a_job_reports_no_usage_and_the_reading_says_why(self):
         self.assertIsNone(resources.ProcessUsage().usage(os.getpid()))
         self.assertIn("pip install -r requirements.txt", resources.measurement_note())
+
+
+class HelpEndpointTests(ServerTestCase):
+    def test_the_help_text_is_served_with_a_local_override_on_top(self):
+        from webarc.help import OVERRIDE_NAME
+        (self.tmp / OVERRIDE_NAME).write_text("f-max-depth: Ours.\n", encoding="utf-8")
+
+        seen = self.client.get("/api/help").json()
+
+        self.assertEqual(seen["f-max-depth"], "Ours.")
+        self.assertIn("f-operator", seen)

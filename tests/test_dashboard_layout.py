@@ -169,5 +169,57 @@ class StorageFieldTests(DashboardTestCase):
         self.assertEqual(self.script.count("body.storage_dir = "), 4)
 
 
+class HelpTextTests(DashboardTestCase):
+    """The "?" beside each field reads its wording from help_text.yaml."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from webarc.help import load_help
+        cls.texts = load_help()
+        cls.keys = set(re.findall(r'class="tip"[^>]*data-help="([^"]+)"', cls.markup))
+
+    def test_every_icon_has_wording(self):
+        self.assertTrue(self.keys)
+        self.assertEqual(sorted(self.keys - set(self.texts)), [])
+
+    def test_every_wording_has_an_icon(self):
+        self.assertEqual(sorted(set(self.texts) - self.keys), [])
+
+    def test_wording_is_plain_text_a_sentence_or_three_long(self):
+        for key, text in self.texts.items():
+            with self.subTest(field=key):
+                self.assertNotIn("<", text)
+                self.assertLess(len(text), 400)
+                self.assertTrue(text.endswith("."))
+
+    def test_an_installation_can_override_one_entry(self):
+        import tempfile
+        from webarc.help import OVERRIDE_NAME, load_help
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / OVERRIDE_NAME).write_text(
+                "f-max-depth: Our own wording.\nf-operator:\n", encoding="utf-8")
+
+            texts = load_help(tmp)
+
+        self.assertEqual(texts["f-max-depth"], "Our own wording.")
+        self.assertNotIn("f-operator", texts)          # blank hides that icon
+        self.assertEqual(texts["f-max-pages"], self.texts["f-max-pages"])
+
+    def test_a_broken_override_leaves_the_packaged_wording(self):
+        import tempfile
+        from webarc.help import OVERRIDE_NAME, load_help
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / OVERRIDE_NAME).write_text("- not: [a mapping", encoding="utf-8")
+
+            texts = load_help(tmp)
+
+        self.assertEqual(texts, self.texts)
+
+    def test_the_page_fills_the_icons_from_the_server(self):
+        self.assertIn('api("/api/help")', self.script)
+        self.assertIn("loadHelp();", self.script)
+
+
 if __name__ == "__main__":
     unittest.main()
