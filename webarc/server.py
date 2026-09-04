@@ -407,7 +407,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     _ALLOW_REMOTE_RECORDING = allow_remote_recording
 
     app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
-                  version="0.2.0")
+                  version="0.3.0")
 
     # crawls left mid-flight by a previous server are settled at once
     for stale in _STORE.list_crawls():
