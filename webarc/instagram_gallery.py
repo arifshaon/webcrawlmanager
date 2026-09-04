@@ -49,10 +49,9 @@ log = logging.getLogger(__name__)
 
 GALLERY_DL_MODULE = "gallery_dl"
 SCRATCH_PREFIX = "swm-gallery-dl-"
-# the cookies gallery-dl needs to be taken for the signed-in browser; the
-# rest of the jar stays in the browser
-_LENT_COOKIES = ("sessionid", "csrftoken", "ds_user_id", "mid", "ig_did", "rur")
 _CURSOR_RE = re.compile(r"Cursor: ([^'\"\s]+)|-o cursor=([^'\"\s]+)")
+# Instagram's API answering a signed-out client: a redirect to the home page
+_SIGNED_OUT_RE = re.compile(r'"(?:GET|POST) /api/v1/[^"]*" 302\b')
 
 
 def gallery_dl_version() -> Optional[str]:
@@ -79,7 +78,15 @@ def discovery_limit(mode: str, latest_n: Optional[int]) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 def lend_cookies(cookies: Iterable[dict]) -> list[dict]:
-    return [c for c in cookies if str(c.get("name")) in _LENT_COOKIES]
+    """The browser's Instagram cookies, all of them.
+
+    A session cookie alone is not accepted: Instagram ties a session to the
+    browser it was made in through its identifying cookies (datr among
+    them), and a client presenting the session without them is answered as
+    signed out. Lending only the session's own cookies was tried and was
+    refused; the whole jar, as the browser presents it, is accepted.
+    """
+    return [c for c in cookies if c.get("name") and c.get("value") is not None]
 
 
 def write_netscape_cookies(cookies: Iterable[dict], path: Path) -> int:
@@ -499,6 +506,9 @@ class _StreamingListing:
             "response": None,
         }
 
+    def _signed_out(self) -> bool:
+        return any(_SIGNED_OUT_RE.search(line) for line in self._stderr_tail)
+
     def _failed(self, status: int) -> None:
         """Raise the engine's condition for how gallery-dl ended."""
         text = "\n".join(self._stderr_tail).lower()
@@ -552,6 +562,17 @@ class _StreamingListing:
             if message is None:
                 status = self._finish_process()
                 errored = any("error" in line.lower() for line in self._stderr_tail)
+                if status == 0 and not errored and self.listed == 0 \
+                        and self._pending is None and self._signed_out():
+                    # gallery-dl was answered as signed out and ended with
+                    # nothing: not an empty profile, a refused session
+                    self._note("failed", status=status, reason="signed_out",
+                               log_tail=list(self._stderr_tail)[-20:])
+                    raise LoginRequired(
+                        "Instagram answered gallery-dl's listing request with "
+                        "a sign-out redirect: the browser's session was not "
+                        "accepted from it. Sign in again in the browser, then "
+                        "continue; the next run is lent the fresh session.")
                 if status != 0 or errored:
                     # a post complete when the run failed -- its files come
                     # right after it, before the next page is asked for --

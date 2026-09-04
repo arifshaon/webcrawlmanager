@@ -73,13 +73,15 @@ class CommandTests(unittest.TestCase):
             self.assertIn(setting, command)
         self.assertEqual(command[-1], "https://www.instagram.com/qnl/posts/")
 
-    def test_only_the_cookies_gallery_dl_needs_are_lent(self):
+    def test_the_whole_jar_is_lent_since_the_session_alone_is_refused(self):
         jar = [{"name": "sessionid", "value": "s", "domain": ".instagram.com"},
                {"name": "csrftoken", "value": "c", "domain": ".instagram.com"},
-               {"name": "datr", "value": "fingerprint", "domain": ".instagram.com"},
-               {"name": "ps_l", "value": "x", "domain": ".instagram.com"}]
+               {"name": "datr", "value": "browser identity", "domain": ".instagram.com"},
+               {"name": "ps_l", "value": "x", "domain": ".instagram.com"},
+               {"name": "", "value": "nameless"}]
 
-        self.assertEqual([c["name"] for c in lend_cookies(jar)], ["sessionid", "csrftoken"])
+        self.assertEqual([c["name"] for c in lend_cookies(jar)],
+                         ["sessionid", "csrftoken", "datr", "ps_l"])
 
     def test_the_cookie_file_is_in_the_format_gallery_dl_reads(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -118,11 +120,15 @@ class _Inner(FakeInstagram):
     """The browser client's part: everything but the listing."""
 
     session_value = "1%3Aabc"        # what the browser's sessionid cookie holds now
+    identity_cookie = "datr"         # the browser's identifying cookie, lent with it
 
     def cookie_jar(self):
-        return [{"name": "sessionid", "value": self.session_value, "domain": ".instagram.com",
-                 "path": "/", "secure": True},
-                {"name": "datr", "value": "not lent", "domain": ".instagram.com"}]
+        jar = [{"name": "sessionid", "value": self.session_value, "domain": ".instagram.com",
+                "path": "/", "secure": True}]
+        if self.identity_cookie:
+            jar.append({"name": self.identity_cookie, "value": "browser identity",
+                        "domain": ".instagram.com", "path": "/"})
+        return jar
 
 
 class StreamingTestCase(unittest.TestCase):
@@ -239,6 +245,21 @@ class RecoveryTests(StreamingTestCase):
 
         self.assertEqual(codes, FIXTURE_CODES)
         self.assertEqual(len(listing.commands), 2)
+
+    def test_a_sign_out_redirect_with_no_posts_is_not_an_empty_profile(self):
+        """Instagram answers a session lent without the browser's identifying
+        cookies with a redirect home and gallery-dl ends with nothing; that
+        is a refused session, raised as such, not a profile with no posts."""
+        self.env(FAKE_GALLERY_DL_REQUIRE_COOKIE="datr")
+        self.inner.identity_cookie = None
+        listing = self.client().profile_posts("qatarballers")
+
+        with self.assertRaises(LoginRequired) as refused:
+            next(listing)
+        self.assertIn("sign-out redirect", str(refused.exception))
+
+        self.inner.identity_cookie = "datr"          # the whole jar, as lent now
+        self.assertEqual([p.shortcode for p in listing], FIXTURE_CODES)
 
     def test_the_engine_recovers_a_gallery_dl_sign_in_through_the_curator(self):
         self.inner.session_value = "old-session"

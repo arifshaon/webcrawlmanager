@@ -13,6 +13,11 @@ FAKE_GALLERY_DL_FAIL_FLAG  a file whose absence means "fail this run"; it is
 FAKE_GALLERY_DL_REJECT_SESSION
                            a sessionid value the lent cookie file must not
                            carry: with it, the run answers 401 like Instagram
+FAKE_GALLERY_DL_REQUIRE_COOKIE
+                           a cookie name the lent file must carry: without
+                           it, the run is answered as signed out the way
+                           Instagram really answers -- a redirect to the
+                           home page, no output, exit 0
 """
 import json
 import os
@@ -38,6 +43,18 @@ def main(argv):
     flag = os.environ.get("FAKE_GALLERY_DL_FAIL_FLAG")
     should_fail = bool(fail_after) and (not flag or not Path(flag).exists())
 
+    required = os.environ.get("FAKE_GALLERY_DL_REQUIRE_COOKIE")
+    if required and "-C" in argv:
+        cookie_file = Path(argv[argv.index("-C") + 1])
+        names = {line.split("\t")[5] for line in cookie_file.read_text(encoding="utf-8").splitlines()
+                 if len(line.split("\t")) == 7}
+        if required not in names:
+            sys.stderr.write("[urllib3.connectionpool][debug] https://www.instagram.com:443 "
+                             "\"GET /api/v1/feed/user/1/?count=30 HTTP/1.1\" 302 0\n")
+            sys.stderr.write("[urllib3.connectionpool][debug] https://www.instagram.com:443 "
+                             "\"GET / HTTP/1.1\" 200 None\n")
+            sys.stderr.flush()
+            return 0
     rejected = os.environ.get("FAKE_GALLERY_DL_REJECT_SESSION")
     if rejected and "-C" in argv:
         cookie_file = Path(argv[argv.index("-C") + 1])
