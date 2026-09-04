@@ -23,6 +23,20 @@ class DashboardTestCase(unittest.TestCase):
         cls.markup = cls.html.split("<script>", 1)[0]
         cls.ids = set(re.findall(r'\bid="([^"]+)"', cls.markup))
 
+    def views(self):
+        return re.findall(r'<section class="view( hidden)?" id="view-([^"]+)"',
+                          self.markup)
+
+    def section(self, name):
+        """The markup of one page of the dashboard."""
+        start = self.markup.index(f'id="view-{name}"')
+        following = [self.markup.index(f'id="view-{other}"')
+                     for _, other in self.views()
+                     if other != name
+                     and self.markup.index(f'id="view-{other}"') > start]
+        return self.markup[start:min(following)] if following \
+            else self.markup[start:]
+
 
 class ElementReferenceTests(DashboardTestCase):
     def referenced_ids(self, source):
@@ -55,10 +69,6 @@ class ElementReferenceTests(DashboardTestCase):
 
 class NavigationTests(DashboardTestCase):
     """One page per job of work: set one up, watch them run, change settings."""
-
-    def views(self):
-        return re.findall(r'<section class="view( hidden)?" id="view-([^"]+)"',
-                          self.markup)
 
     def test_the_sidebar_names_a_section_that_exists(self):
         named = set(re.findall(r'class="nav-item[^"]*" data-view="([^"]+)"',
@@ -102,14 +112,6 @@ class NavigationTests(DashboardTestCase):
         self.assertIn('id="storage-root"', settings)
         self.assertNotIn('id="storage-root"', self.section("jobs"))
 
-    def section(self, name):
-        start = self.markup.index(f'id="view-{name}"')
-        following = [self.markup.index(f'id="view-{other}"')
-                     for _, other in self.views()
-                     if other != name
-                     and self.markup.index(f'id="view-{other}"') > start]
-        return self.markup[start:min(following)] if following \
-            else self.markup[start:]
 
 
 class DisabledJobTabTests(DashboardTestCase):
@@ -219,6 +221,33 @@ class HelpTextTests(DashboardTestCase):
     def test_the_page_fills_the_icons_from_the_server(self):
         self.assertIn('api("/api/help")', self.script)
         self.assertIn("loadHelp();", self.script)
+
+
+class JobFilterTests(DashboardTestCase):
+    """The job list can be narrowed by name, type, status and date, in the page."""
+
+    def test_the_filter_bar_sits_above_the_list_on_the_jobs_page(self):
+        jobs = self.section("jobs")
+        for field in ("jf-search", "jf-kind", "jf-status", "jf-from", "jf-to", "jf-clear", "jf-count"):
+            with self.subTest(field=field):
+                self.assertIn(f'id="{field}"', jobs)
+        self.assertLess(jobs.index('id="job-filters"'), jobs.index('id="manifest"'))
+
+    def test_every_job_type_can_be_chosen(self):
+        start = self.markup.index('id="jf-kind"')
+        select = self.markup[start:self.markup.index("</select>", start)]
+        options = set(re.findall(r'<option value="([a-z]+)"', select))
+        self.assertEqual(options, {"crawl", "recording", "facebook", "instagram"})
+
+    def test_the_refresh_renders_through_the_filter(self):
+        start = self.script.index("async function refresh()")
+        body = self.script[start:self.script.index("\n}", start)]
+        self.assertIn("renderJobList()", body)
+        self.assertNotIn("crawls.map(crawlRow)", body)
+
+    def test_a_filter_survives_a_reload(self):
+        self.assertIn('localStorage.setItem("swm-job-filter"', self.script)
+        self.assertIn("restoreJobFilter();", self.script)
 
 
 if __name__ == "__main__":

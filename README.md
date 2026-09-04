@@ -592,6 +592,15 @@ Dashboard controls include:
 - monitor progress, storage use and available disk space;
 - watch what the machine has left and what each running job is using.
 
+### Finding a job in the list
+
+The bar above the job list narrows it as you type or choose: by name or
+`#id`, by job type (automated crawl, recorded session, Facebook,
+Instagram), by status (active, waiting, completed, stopped, failed) and by
+the date the job was created, from and to. The figures keep refreshing
+underneath, the count shows how many of the jobs match, and the filter is
+remembered in the browser until you clear it.
+
 ### Help text beside each field
 
 Every field on the job forms and the Settings page has a "?" that explains,

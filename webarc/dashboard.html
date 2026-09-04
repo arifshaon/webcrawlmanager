@@ -123,6 +123,15 @@
   .storage-default-row input { flex: 1 1 320px; font-family: var(--mono);
     font-size: 12px; }
   .storage-default .help { display: block; margin-top: 6px; }
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    margin-bottom: 10px; }
+  .filter-bar input[type=search] { flex: 1 1 200px; min-width: 160px; font-family: var(--ui); }
+  .filter-bar select { width: auto; flex: 0 1 auto; padding-right: 28px; }
+  .jf-dates { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .jf-date { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+    color: var(--muted); white-space: nowrap; }
+  .jf-date input { width: auto; font-family: var(--ui); font-size: 12px; padding: 6px 8px; }
+  .jf-count { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .bar { height: 6px; background: var(--rule); border-radius: 3px; margin-top: 10px; overflow: hidden; }
   .bar span { display: block; height: 100%; border-radius: 3px;
     background: linear-gradient(90deg, var(--accent), var(--run)); }
@@ -310,7 +319,7 @@
     opacity: 0; transition: opacity .1s; }
   #tip-bubble.show { opacity: 1; }
   .help { display: block; color: var(--muted); font-size: 11px; margin-top: 5px; }
-  input[type=text], input[type=url], input[type=number], input[type=date], select, textarea {
+  input[type=text], input[type=url], input[type=number], input[type=date], input[type=search], select, textarea {
     font-family: var(--mono); font-size: 13px; border: 1px solid var(--rule);
     background: var(--paper); color: var(--ink); border-radius: 8px; padding: 8px 11px; width: 100%;
     transition: border-color .12s, box-shadow .12s;
@@ -382,7 +391,31 @@
     <span class="help" id="resources-note"></span>
     <div class="eyebrow">Storage</div>
     <div class="storage" id="storage"></div>
-    <div class="eyebrow">Crawls</div>
+    <div class="eyebrow">Jobs</div>
+    <div class="filter-bar" id="job-filters">
+      <input type="search" id="jf-search" placeholder="Search by name or #id" aria-label="Search jobs by name" autocomplete="off">
+      <select id="jf-kind" aria-label="Job type">
+        <option value="">All types</option>
+        <option value="crawl">Automated crawl</option>
+        <option value="recording">Record session</option>
+        <option value="facebook">Facebook</option>
+        <option value="instagram">Instagram</option>
+      </select>
+      <select id="jf-status" aria-label="Job status">
+        <option value="">Any status</option>
+        <option value="active">Active</option>
+        <option value="waiting">Waiting to start</option>
+        <option value="completed">Completed</option>
+        <option value="stopped">Stopped</option>
+        <option value="failed">Failed</option>
+      </select>
+      <span class="jf-dates">
+        <label class="jf-date">Created from <input type="date" id="jf-from" aria-label="Created on or after"></label>
+        <label class="jf-date">to <input type="date" id="jf-to" aria-label="Created on or before"></label>
+      </span>
+      <button type="button" class="secondary" id="jf-clear">Clear</button>
+      <span class="jf-count" id="jf-count"></span>
+    </div>
     <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
   </section>
   <section class="view hidden" id="view-settings">
@@ -1645,13 +1678,77 @@ async function refresh() {
     renderStorageDefault(settings);
     renderResourceSettings(settings);
     $("#nav-active").textContent = active ? String(active) : "";
-    $("#manifest").innerHTML = crawls.length
-      ? crawls.map(crawlRow).join("")
-      : `<div class="empty">No crawls yet. Define one below and press <code>Start crawl</code>.</div>`;
+    lastCrawls = crawls;
+    renderJobList();
   } catch (e) {
     $("#manifest").innerHTML = `<div class="empty">Server unreachable — ${e.message}</div>`;
   }
 }
+
+// The list is filtered here, in the page, so the two-second refresh keeps
+// the figures live and the filter in place. The chosen filter survives a
+// reload through the browser's storage for this dashboard.
+let lastCrawls = [];
+const ACTIVE_STATUSES = ["running", "paused", "blocked", "stopping"];
+const FILTER_FIELDS = ["jf-search", "jf-kind", "jf-status", "jf-from", "jf-to"];
+
+function jobFilter() {
+  return {
+    search: $("#jf-search").value.trim().toLowerCase(),
+    kind: $("#jf-kind").value,
+    status: $("#jf-status").value,
+    from: $("#jf-from").value,
+    to: $("#jf-to").value,
+  };
+}
+function jobMatches(c, f) {
+  if (f.kind && (c.kind || "crawl") !== f.kind) return false;
+  if (f.status === "active" ? !ACTIVE_STATUSES.includes(c.status)
+      : f.status && c.status !== f.status) return false;
+  const day = String(c.created_at || "").slice(0, 10);     // ISO date part
+  if (f.from && day < f.from) return false;
+  if (f.to && day > f.to) return false;
+  if (f.search) {
+    const idText = `#${c.id}`;
+    const name = String(c.name || "").toLowerCase();
+    if (!name.includes(f.search) && !idText.startsWith(f.search) && String(c.id) !== f.search) return false;
+  }
+  return true;
+}
+function renderJobList() {
+  const f = jobFilter();
+  const filtering = Boolean(f.search || f.kind || f.status || f.from || f.to);
+  const shown = lastCrawls.filter(c => jobMatches(c, f));
+  $("#jf-count").textContent = lastCrawls.length
+    ? (filtering ? `${shown.length} of ${lastCrawls.length} jobs` : `${lastCrawls.length} job${lastCrawls.length === 1 ? "" : "s"}`)
+    : "";
+  $("#jf-clear").hidden = !filtering;
+  $("#manifest").innerHTML = shown.length
+    ? shown.map(crawlRow).join("")
+    : lastCrawls.length
+      ? `<div class="empty">No jobs match this filter.</div>`
+      : `<div class="empty">No jobs yet. Set one up under <code>New job</code>.</div>`;
+}
+function saveJobFilter() {
+  try { localStorage.setItem("swm-job-filter", JSON.stringify(jobFilter())); } catch (_) {}
+}
+function restoreJobFilter() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem("swm-job-filter") || "null"); } catch (_) {}
+  if (!saved) return;
+  $("#jf-search").value = saved.search || "";
+  $("#jf-kind").value = saved.kind || "";
+  $("#jf-status").value = saved.status || "";
+  $("#jf-from").value = saved.from || "";
+  $("#jf-to").value = saved.to || "";
+}
+FILTER_FIELDS.forEach(id => $(`#${id}`).addEventListener("input", () => { saveJobFilter(); renderJobList(); }));
+$("#jf-clear").addEventListener("click", () => {
+  FILTER_FIELDS.forEach(id => { $(`#${id}`).value = ""; });
+  saveJobFilter();
+  renderJobList();
+});
+restoreJobFilter();
 let browseTarget = null;
 
 async function openBrowser(targetId) {
