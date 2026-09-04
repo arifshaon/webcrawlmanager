@@ -220,6 +220,147 @@ def _build_cli_www_alias_warc(warc_paths):
     return Path(tmp.name), len(aliases)
 
 
+def _resource_thresholds_for(db_path: str) -> dict:
+    """The warning levels the dashboard holds, or the defaults."""
+    from pathlib import Path as _P
+
+    from . import resources
+
+    if db_path and _P(db_path).exists():
+        from .store import Store
+        return resources.thresholds_from_settings(Store(db_path).get_setting)
+    return dict(resources.DEFAULT_THRESHOLDS)
+
+
+def _running_jobs(db_path: str) -> list[dict]:
+    """Jobs the dashboard is running, with what each one is using."""
+    from pathlib import Path as _P
+
+    if not db_path or not _P(db_path).exists():
+        return []
+    from . import resources
+    from .server import _ACTIVE_STATES, _pid_alive, _pid_is_worker
+    from .store import PENDING, Store
+
+    usage = resources.ProcessUsage()
+    rows = [r for r in Store(db_path).list_crawls()
+            if r.get("status") in _ACTIVE_STATES + (PENDING,)
+            and _pid_alive(r.get("pid")) and _pid_is_worker(r["pid"])]
+    for row in rows:                       # first reading of a rate is zero
+        usage.usage(row["pid"])
+    if rows:
+        import time as _t
+        _t.sleep(0.5)
+    out = []
+    for row in rows:
+        seen = usage.usage(row["pid"]) or {}
+        out.append({"id": row["id"], "name": row["name"],
+                    "kind": row.get("kind", "crawl"), "status": row["status"],
+                    "pid": row["pid"], **seen})
+    return out
+
+
+def _print_resource_report(snapshot: dict, thresholds: dict, jobs: list[dict],
+                           warnings: list[dict]) -> None:
+    from .resources import _fmt_bytes
+
+    cpu, mem, disk = snapshot["cpu"], snapshot["memory"], snapshot["disk"]
+    pct = lambda v: "not measured" if v is None else f"{v:.0f}% free"
+    print("This machine")
+    print(f"  CPU     : {pct(cpu.get('free_percent'))}"
+          + (f" of {cpu['count']} cores" if cpu.get("count") else ""))
+    print(f"  memory  : {pct(mem.get('free_percent'))}"
+          + (f" ({_fmt_bytes(mem['available'])} available)" if mem.get("available") is not None else ""))
+    print(f"  disk    : {pct(disk.get('free_percent'))} on {disk.get('path')}"
+          + (f" ({_fmt_bytes(disk['free'])})" if disk.get("free") else ""))
+    print(f"  warn when less than {thresholds['cpu_free_percent']:g}% CPU, "
+          f"{thresholds['memory_free_percent']:g}% memory or "
+          f"{thresholds['disk_free_percent']:g}% disk is free"
+          + ("" if thresholds.get("enabled", True) else " (warnings off)"))
+    if jobs:
+        print(f"\nRunning jobs ({len(jobs)})")
+        print(f"  {'id':>4}  {'CPU':>6}  {'memory':>9}  {'procs':>5}  {'status':9}  name")
+        for job in jobs:
+            print(f"  {job['id']:>4}  "
+                  f"{job.get('cpu_percent_of_machine', 0):>5.0f}%  "
+                  f"{_fmt_bytes(job.get('rss_bytes', 0)):>9}  "
+                  f"{job.get('processes', 0):>5}  {job['status']:9}  {job['name']}")
+    else:
+        print("\nNo jobs are running.")
+    for warning in warnings:
+        print(f"\nWARNING: {warning['message']}")
+
+
+def _cmd_resources(args) -> int:
+    import json as _json
+
+    from . import resources
+
+    thresholds = _resource_thresholds_for(args.db)
+    storage = args.warc_root
+    from pathlib import Path as _P
+    if args.db and _P(args.db).exists():
+        from .store import Store
+        stored = (Store(args.db).get_setting("storage_root") or "").strip()
+        if stored:
+            storage = stored
+    snapshot = resources.system_snapshot(storage, cpu_interval=0.5)
+    jobs = _running_jobs(args.db)
+    warnings = resources.evaluate(snapshot, thresholds)
+    if args.json:
+        print(_json.dumps({"snapshot": snapshot, "thresholds": thresholds,
+                           "jobs": jobs, "warnings": warnings}, indent=2))
+    else:
+        _print_resource_report(snapshot, thresholds, jobs, warnings)
+    return 0
+
+
+def _resource_gate(output_dir, db_path: str, *, assume_yes: bool = False,
+                   wait: bool = False, ask=input, poll_seconds: float = 5.0) -> bool:
+    """Before a crawl starts: warn, and let the curator choose.
+
+    Returns True to start, False to cancel. With a shortage and no answer
+    given on the command line, an interactive terminal is asked to start,
+    wait or cancel; a non-interactive run starts, with the warning printed,
+    so an unattended crawl is never left hanging on a prompt.
+    """
+    import time as _t
+
+    from . import resources
+
+    thresholds = _resource_thresholds_for(db_path)
+    if not thresholds.get("enabled", True):
+        return True
+    snapshot = resources.system_snapshot(output_dir, cpu_interval=0.5)
+    warnings = resources.evaluate(snapshot, thresholds)
+    if not warnings:
+        return True
+    for warning in warnings:
+        print(f"WARNING: {warning['message']}", file=sys.stderr)
+    choice = "start" if assume_yes else "wait" if wait else None
+    if choice is None:
+        if not sys.stdin.isatty():
+            print("Not a terminal: starting anyway (use --wait or "
+                  "--no-resource-check to choose ahead of time).", file=sys.stderr)
+            return True
+        while choice is None:
+            answer = ask("Start anyway, wait until it is free, or cancel? [s/w/c] ").strip().lower()
+            choice = {"s": "start", "start": "start", "w": "wait", "wait": "wait",
+                      "c": "cancel", "cancel": "cancel", "": "cancel"}.get(answer)
+    if choice == "cancel":
+        print("Cancelled.", file=sys.stderr)
+        return False
+    if choice == "wait":
+        print("Waiting for the machine to have room; press Ctrl-C to give up.",
+              file=sys.stderr)
+        while warnings:
+            _t.sleep(poll_seconds)
+            snapshot = resources.system_snapshot(output_dir, cpu_interval=0.5)
+            warnings = resources.evaluate(snapshot, thresholds)
+        print("Resources are free again; starting.", file=sys.stderr)
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="swm",
@@ -230,6 +371,17 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl = sub.add_parser("crawl", help="Run a crawl from a YAML config")
     p_crawl.add_argument("config", help="Path to config.yaml")
     p_crawl.add_argument("-v", "--verbose", action="store_true")
+    p_crawl.add_argument("--db", default="./webarc-state/webarc.db",
+                         help="dashboard state file whose resource warning "
+                         "levels apply (defaults are used when it does not exist)")
+    p_crawl.add_argument("--yes", "-y", action="store_true",
+                         help="start even when the machine is short of a "
+                         "resource, without asking")
+    p_crawl.add_argument("--wait", action="store_true",
+                         help="when the machine is short of a resource, wait "
+                         "until it is free, then start")
+    p_crawl.add_argument("--no-resource-check", action="store_true",
+                         help="skip the CPU, memory and disk check")
 
     p_val = sub.add_parser("validate", help="Parse and print the resolved config")
     p_val.add_argument("config")
@@ -250,6 +402,16 @@ def main(argv: list[str] | None = None) -> int:
         help="permit interactive recording even when the dashboard is not "
         "bound to loopback (the browser opens on the SERVER's desktop)",
     )
+
+    p_res = sub.add_parser(
+        "resources",
+        help="Show spare CPU, memory and disk, and what running jobs use")
+    p_res.add_argument("--db", default="./webarc-state/webarc.db",
+                       help="dashboard state file listing the jobs")
+    p_res.add_argument("--warc-root", default="./warcs",
+                       help="disk to report when no default storage is set")
+    p_res.add_argument("--json", action="store_true",
+                       help="print the reading as JSON")
 
     p_rec = sub.add_parser(
         "record",
@@ -570,6 +732,9 @@ def main(argv: list[str] | None = None) -> int:
             print("\nStopped.")
         return 0
 
+    if args.command == "resources":
+        return _cmd_resources(args)
+
     if args.command == "serve":
         try:
             import uvicorn
@@ -594,6 +759,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     cfg = load_config(args.config)
+
+    if args.command == "crawl" and not args.no_resource_check:
+        if not _resource_gate(cfg.output_dir, args.db, assume_yes=args.yes,
+                              wait=args.wait):
+            return 2
 
     if args.command == "validate":
         for i, seed in enumerate(cfg.seeds, 1):

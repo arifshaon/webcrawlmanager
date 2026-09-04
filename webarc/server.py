@@ -16,6 +16,10 @@ Endpoints:
   POST /api/crawls/{id}/stop
   DELETE /api/crawls/{id}     -> remove record (and optionally WARCs)
   GET  /api/storage           -> aggregate storage usage
+  GET  /api/resources         -> spare CPU, memory and disk; usage per running job
+  GET  /api/resources/check   -> whether a new job should be warned before starting
+  POST /api/crawls/{id}/start -> launch a job that was told to wait
+  GET/PUT /api/settings       -> default storage location, resource warning levels
 
 A crawl runs as an isolated subprocess (webarc.worker). Pause/resume/stop are
 delivered through the store's control column, which the worker polls between
@@ -37,9 +41,10 @@ import yaml
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import resources
 from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
                     KIND_INSTAGRAM, KIND_RECORDING, PAUSED, PENDING, RUNNING,
-                    STOPPED, STOPPING, Store)
+                    STOPPED, STOPPING, WAITING, Store)
 
 log = logging.getLogger(__name__)
 
@@ -55,6 +60,7 @@ _PYWB = None            # lazily-started ReplayServer
 _REPLAY_ROOT = Path("./replay")
 _BIND_HOST = "127.0.0.1"
 _ALLOW_REMOTE_RECORDING = False
+_MONITOR: resources.ResourceMonitor | None = None
 
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -363,6 +369,93 @@ def _launch_worker(crawl_id: int) -> int:
     return proc.pid
 
 
+def _monitor() -> resources.ResourceMonitor:
+    assert _MONITOR is not None
+    return _MONITOR
+
+
+def _resource_thresholds() -> dict:
+    return resources.thresholds_from_settings(_store().get_setting)
+
+
+def _resource_check(storage_root: Path | None = None) -> dict:
+    """Whether a job should be warned before it starts, and why."""
+    snap = _monitor().snapshot(storage_root)
+    thresholds = _resource_thresholds()
+    warnings = resources.evaluate(snap, thresholds)
+    return {"ok": not warnings, "warnings": warnings, "snapshot": snap,
+            "thresholds": thresholds}
+
+
+def _job_usage(row: dict) -> dict | None:
+    """CPU and memory of a job's worker tree, when it has one."""
+    if _MONITOR is None or not _worker_alive(row):
+        return None
+    return _MONITOR.processes.usage(row.get("pid"))
+
+
+def _launch(crawl_id: int) -> None:
+    # pending until the worker reports running: a waiting job must leave
+    # the waiting state the moment it is launched, or the next tick would
+    # launch it again
+    _store().set_status(crawl_id, PENDING)
+    pid = _launch_worker(crawl_id)
+    _store().set_pid(crawl_id, pid)
+
+
+def _start_or_wait(crawl_id: int, payload: dict) -> None:
+    """Launch a job now, or hold it until the machine has room.
+
+    ``start`` in the request is "now" (the default) or "wait". A waiting
+    job is created in full -- its directory, its config -- and launched by
+    the monitor's next tick that finds every resource above its warning
+    level, or by hand from the dashboard.
+    """
+    choice = str(payload.get("start") or "now").strip().lower()
+    if choice not in ("now", "wait"):
+        raise HTTPException(400, "start must be 'now' or 'wait'")
+    if choice == "wait":
+        _store().set_status(crawl_id, WAITING)
+        return
+    _launch(crawl_id)
+
+
+def _sample_jobs() -> None:
+    """Keep each running job's reading warm.
+
+    CPU use is a rate between two readings, so a job read only when the
+    dashboard asks would show zero on every first look; the monitor reads
+    every worker on each tick instead.
+    """
+    for row in _store().list_crawls():
+        if row.get("status") in _ACTIVE_STATES + (PENDING,):
+            _job_usage(row)
+
+
+def _on_tick(snapshot: dict) -> None:
+    _sample_jobs()
+    _launch_waiting(snapshot)
+
+
+def _launch_waiting(snapshot: dict) -> None:
+    """Start the oldest waiting job if the machine has room for it.
+
+    One per tick: the job just started needs a sample or two before its
+    own use shows in the reading, and launching every waiting job at once
+    would recreate the shortage the curator chose to wait out.
+    """
+    waiting = [r for r in _store().list_crawls() if r.get("status") == WAITING]
+    if not waiting:
+        return
+    job = min(waiting, key=lambda r: r["id"])
+    check_snapshot = dict(snapshot)
+    check_snapshot["disk"] = resources.disk_snapshot(_crawl_dir(job))  # its own disk
+    if resources.evaluate(check_snapshot, _resource_thresholds()):
+        return
+    log.info("Resources are free again; starting waiting crawl %s", job["id"])
+    _launch(job["id"])
+
+
 def _crawl_view(row: dict) -> dict:
     row = _reconcile(row)
     progress = _store().get_progress(row["id"])
@@ -390,14 +483,23 @@ def _crawl_view(row: dict) -> dict:
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
+        # what this job's worker, browser and helpers are using right now
+        "resources": _job_usage(row),
     }
 
 
 def create_app(db_path: str, warc_root: str, simulate: bool = False,
                replay_root: str = "./replay", bind_host: str = "127.0.0.1",
-               allow_remote_recording: bool = False) -> FastAPI:
+               allow_remote_recording: bool = False,
+               monitor_resources: bool = True) -> FastAPI:
+    """Build the control server.
+
+    ``monitor_resources`` starts the sampling thread that keeps the machine
+    reading warm and launches jobs told to wait; tests pass False and drive
+    the monitor's ``tick()`` themselves.
+    """
     global _STORE, _WARC_ROOT, _SIMULATE, _REPLAY_ROOT, _BIND_HOST, \
-        _ALLOW_REMOTE_RECORDING
+        _ALLOW_REMOTE_RECORDING, _MONITOR
     _STORE = Store(db_path)
     _WARC_ROOT = Path(warc_root)
     _WARC_ROOT.mkdir(parents=True, exist_ok=True)
@@ -405,6 +507,11 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     _REPLAY_ROOT = Path(replay_root)
     _BIND_HOST = bind_host
     _ALLOW_REMOTE_RECORDING = allow_remote_recording
+    if _MONITOR is not None:
+        _MONITOR.stop()
+    _MONITOR = resources.ResourceMonitor(_WARC_ROOT, on_tick=_on_tick)
+    if monitor_resources:
+        _MONITOR.start()
 
     app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
                   version="0.3.0")
@@ -482,8 +589,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
 
-        pid = _launch_worker(crawl_id)
-        _store().set_pid(crawl_id, pid)
+        _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
 
@@ -497,7 +603,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return None
 
     def _launch_facebook_job(name: str, facebook: dict,
-                             storage_root: Path) -> JSONResponse:
+                             storage_root: Path, payload: dict) -> JSONResponse:
         """Validate, persist and launch one Facebook job configuration."""
         from .facebook import FacebookCaptureConfig
 
@@ -524,8 +630,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
-        pid = _launch_worker(crawl_id)
-        _store().set_pid(crawl_id, pid)
+        _start_or_wait(crawl_id, payload)
         return JSONResponse(
             status_code=201,
             content=_crawl_view(_store().get_crawl(crawl_id)),
@@ -604,7 +709,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             facebook["prior_newest_post_id"] = previous.get("newest_post_id")
             facebook["prior_newest_post_date"] = previous.get("newest_post_date")
         return _launch_facebook_job(
-            name, facebook, _storage_root_for(payload.get("storage_dir")))
+            name, facebook, _storage_root_for(payload.get("storage_dir")),
+            payload)
 
     @app.post("/api/config/parse")
     def parse_config(payload: dict = Body(...)):
@@ -651,8 +757,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
 
-        pid = _launch_worker(crawl_id)
-        _store().set_pid(crawl_id, pid)
+        _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
 
@@ -674,9 +779,23 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         _store().set_control(crawl_id, CTRL_RESUME)
         return {"ok": True, "control": CTRL_RESUME}
 
+    @app.post("/api/crawls/{crawl_id}/start")
+    def start_now(crawl_id: int):
+        """Launch a job that was told to wait, without waiting any longer."""
+        row = _require(crawl_id)
+        if row["status"] != WAITING:
+            raise HTTPException(409, "Only a job that is waiting to start can be started.")
+        _launch(crawl_id)
+        return {"ok": True, "status": RUNNING}
+
     @app.post("/api/crawls/{crawl_id}/stop")
     def stop(crawl_id: int):
         row = _require(crawl_id)
+        if row["status"] == WAITING:
+            # never launched: there is nothing to stop, only the wait to end
+            _store().set_status(crawl_id, STOPPED,
+                                "Cancelled before it started.")
+            return {"ok": True, "control": CTRL_NONE, "settled": True}
         if not _worker_alive(row):
             # nothing to ask: settle it now rather than wait for a report
             # that will never come
@@ -717,7 +836,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         # the current default is and whether or not this dashboard would let
         # a curator name that location today.
         return _launch_facebook_job(name[:200], facebook,
-                                    _crawl_dir(row).parent)
+                                    _crawl_dir(row).parent, {})
 
     @app.get("/api/instagram/state")
     def instagram_state(target: str):
@@ -810,8 +929,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
-        pid = _launch_worker(crawl_id)
-        _store().set_pid(crawl_id, pid)
+        _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
 
@@ -976,7 +1094,50 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "effective_storage_root": str(_default_storage_root()),
             "server_storage_root": str(_WARC_ROOT),
             "storage": _storage_is_curator_choosable(),
+            "resources": _resource_thresholds(),
+            "resources_measured": resources.psutil is not None,
         }
+
+    @app.get("/api/resources")
+    def resource_usage():
+        """The machine's spare CPU, memory and disk, and each running job's share."""
+        check = _resource_check(_default_storage_root())
+        jobs = []
+        for row in _store().list_crawls():
+            if row.get("status") not in _ACTIVE_STATES + (PENDING,):
+                continue
+            usage = _job_usage(row)
+            if usage is None:
+                continue
+            jobs.append({"id": row["id"], "name": row["name"],
+                         "kind": row.get("kind", "crawl"),
+                         "status": row["status"], **usage})
+        waiting = [{"id": r["id"], "name": r["name"]}
+                   for r in _store().list_crawls() if r.get("status") == WAITING]
+        return {
+            "measured": resources.psutil is not None,
+            "snapshot": check["snapshot"],
+            "thresholds": check["thresholds"],
+            "warnings": check["warnings"],
+            "jobs": jobs,
+            "jobs_total": {
+                "cpu_percent": sum(j["cpu_percent"] for j in jobs),
+                "cpu_percent_of_machine": sum(j["cpu_percent_of_machine"] for j in jobs),
+                "rss_bytes": sum(j["rss_bytes"] for j in jobs),
+                "processes": sum(j["processes"] for j in jobs),
+            },
+            "waiting": waiting,
+        }
+
+    @app.get("/api/resources/check")
+    def resource_check(storage_dir: str | None = None):
+        """Whether a job about to start should be warned, and why.
+
+        The dashboard asks before every start; a warning is the curator's
+        cue to start anyway, wait, or cancel. Never a refusal.
+        """
+        root = _storage_root_for(storage_dir) if storage_dir else _default_storage_root()
+        return _resource_check(root)
 
     @app.put("/api/settings")
     def write_settings(payload: dict = Body(...)):
@@ -986,16 +1147,28 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         directory it was written to, so a changed default applies to captures
         made after it.
         """
-        if "storage_root" not in payload:
-            raise HTTPException(400, "provide storage_root")
-        requested = str(payload.get("storage_root") or "").strip()
-        if requested:
-            choosable = _storage_is_curator_choosable()
-            if not choosable["available"]:
-                raise HTTPException(403, choosable["reason"])
-            _usable_directory(Path(requested),
-                              "That default storage location")
-        _store().set_setting(_STORAGE_ROOT_SETTING, requested)
+        if "storage_root" not in payload and "resources" not in payload:
+            raise HTTPException(400, "provide storage_root or resources")
+        if "storage_root" in payload:
+            requested = str(payload.get("storage_root") or "").strip()
+            if requested:
+                choosable = _storage_is_curator_choosable()
+                if not choosable["available"]:
+                    raise HTTPException(403, choosable["reason"])
+                _usable_directory(Path(requested),
+                                  "That default storage location")
+            _store().set_setting(_STORAGE_ROOT_SETTING, requested)
+        if "resources" in payload:
+            wanted = payload.get("resources")
+            if not isinstance(wanted, dict):
+                raise HTTPException(400, "resources must be an object")
+            try:
+                accepted = resources.validate_thresholds(wanted)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            for key, value in accepted.items():
+                text = ("true" if value else "false") if key == "enabled" else f"{value:g}"
+                _store().set_setting(resources.SETTING_PREFIX + key, text)
         return read_settings()
 
     @app.get("/api/storage")
@@ -1014,6 +1187,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "per_crawl": per_crawl,
             "disk": {"total": usage.total, "used": usage.used,
                      "free": usage.free},
+            "default_disk": resources.disk_snapshot(_default_storage_root()),
         }
 
     return app

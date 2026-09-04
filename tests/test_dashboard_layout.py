@@ -166,7 +166,7 @@ class StorageFieldTests(DashboardTestCase):
         for field in ("f-storage", "fb-storage", "ig-storage", "r-storage"):
             with self.subTest(field=field):
                 self.assertIn(f'$("#{field}").value.trim()', self.script)
-        self.assertEqual(self.script.count("body.storage_dir"), 4)
+        self.assertEqual(self.script.count("body.storage_dir = "), 4)
 
 
 if __name__ == "__main__":

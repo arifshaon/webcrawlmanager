@@ -87,6 +87,7 @@
   .g-stopped, .g-failed { background: var(--stop); }
   .g-blocked { background: var(--block); }
   .g-completed { background: var(--done); } .g-pending { background: var(--faint); }
+  .g-waiting { background: var(--pause); }
   .crawl .name { font-weight: 600; }
   .crawl .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 2px; }
   .crawl .meta .id { color: var(--faint); }
@@ -98,6 +99,28 @@
   .b-blocked { color: var(--block); background: var(--block-bg); }
   .b-completed { color: var(--done); background: var(--done-bg); }
   .b-pending { color: var(--muted); background: var(--surface); }
+  .b-waiting { color: var(--pause); background: var(--pause-bg); }
+  .storage .v .sub { font-size: 12px; color: var(--muted); }
+  .storage .low { color: var(--stop); }
+  .resource-settings { background: var(--paper); border: 1px solid var(--rule);
+    border-radius: 8px; padding: 14px 16px 16px; }
+  .resource-settings .levels { display: flex; gap: 18px; flex-wrap: wrap;
+    margin-top: 10px; align-items: flex-end; }
+  .resource-settings .levels label { display: flex; flex-direction: column;
+    gap: 4px; font-size: 12px; color: var(--muted); }
+  .resource-settings .levels input[type=number] { width: 6em; font-family: var(--mono); }
+  .resource-settings .help { display: block; margin-top: 8px; }
+  #resource-overlay { display: none; position: fixed; inset: 0; z-index: 998;
+    background: rgba(27,30,35,.35); align-items: center; justify-content: center;
+    padding: 24px; }
+  #resource-overlay.open { display: flex; }
+  .resource-card { background: var(--paper); border: 1px solid var(--rule);
+    border-radius: 10px; width: min(560px, 100%); padding: 20px 22px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+  .resource-card h2 { margin: 0 0 8px; font-size: 15px; }
+  .resource-card ul { margin: 8px 0 14px; padding-left: 20px; font-size: 13px; line-height: 1.5; }
+  .resource-card .choices { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  .resource-card .why { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
   .b-running::before { content: "●"; margin-right: 5px; animation: pulse 1.4s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
   .counts { font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
@@ -276,6 +299,8 @@
 </nav>
 <main>
   <section class="view" id="view-jobs">
+    <div class="eyebrow">This machine</div>
+    <div class="storage" id="resources"></div>
     <div class="eyebrow">Storage</div>
     <div class="storage" id="storage"></div>
     <div class="eyebrow">Crawls</div>
@@ -292,6 +317,24 @@
         <span class="msg" id="storage-msg"></span>
       </div>
       <span class="help" id="storage-help"></span>
+    </div>
+    <div class="eyebrow">Resource warnings</div>
+    <div class="resource-settings" id="resource-settings">
+      <label class="check-row" style="gap:6px">
+        <input type="checkbox" id="res-enabled">
+        <span class="check-copy"><strong>Warn before starting a job when the machine is short of a resource</strong><span>You then choose whether to start anyway, wait until it is free, or cancel.</span></span>
+      </label>
+      <div class="levels">
+        <label for="res-cpu">Warn when less than this % of CPU is free
+          <input type="number" id="res-cpu" min="0" max="100" step="1"></label>
+        <label for="res-memory">… of memory is free
+          <input type="number" id="res-memory" min="0" max="100" step="1"></label>
+        <label for="res-disk">… of disk space is free
+          <input type="number" id="res-disk" min="0" max="100" step="1"></label>
+        <button type="button" class="secondary" id="res-save">Save</button>
+        <span class="msg" id="res-msg"></span>
+      </div>
+      <span class="help" id="res-help"></span>
     </div>
   </section>
   <section class="view hidden" id="view-new">
@@ -815,6 +858,18 @@
     </div>
   </div>
 </div>
+<div id="resource-overlay" role="dialog" aria-modal="true" aria-labelledby="resource-title">
+  <div class="resource-card">
+    <h2 id="resource-title">This machine is short of a resource</h2>
+    <div class="why">Starting another job now may slow every running capture, or fail this one part-way. Levels are set under Settings.</div>
+    <ul id="resource-reasons"></ul>
+    <div class="choices">
+      <button type="button" class="secondary" id="resource-cancel">Cancel</button>
+      <button type="button" class="secondary" id="resource-wait" title="Create the job now; it starts by itself once every resource is above its warning level">Wait until it is free</button>
+      <button type="button" class="primary" id="resource-start">Start anyway</button>
+    </div>
+  </div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -1128,11 +1183,14 @@ async function startRecording() {
     if ($("#r-name").value.trim()) body.name = $("#r-name").value.trim();
     if ($("#r-operator").value.trim()) body.operator = $("#r-operator").value.trim();
     if ($("#r-storage").value.trim()) body.storage_dir = $("#r-storage").value.trim();
+    const choice = await resourceChoice(body.storage_dir);
+    if (!choice) { setRecMessage("Cancelled.", ""); return; }
+    body.start = choice;
     await api("/api/recordings", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
     });
-    setRecMessage("Recording started — a browser window is opening.", "ok");
+    setRecMessage(choice === "wait" ? "Recording created; the browser opens once the machine has room." : "Recording started — a browser window is opening.", "ok");
     // Its progress is on the job list, so go where it can be watched.
     showView("jobs");
     refresh();
@@ -1205,11 +1263,14 @@ async function startFacebook() {
   setFbMessage("Opening browser…");
   $("#facebook-start-btn").disabled = true;
   try {
+    const choice = await resourceChoice(body.storage_dir);
+    if (!choice) { setFbMessage("Cancelled.", ""); return; }
+    body.start = choice;
     await api("/api/facebook", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
     });
-    setFbMessage("Browser opened. Log in if needed, then start scrolling from the in-browser control.", "ok");
+    setFbMessage(choice === "wait" ? "Capture created; the browser opens once the machine has room." : "Browser opened. Log in if needed, then start scrolling from the in-browser control.", "ok");
     showView("jobs");
     refresh();
   } catch (error) {
@@ -1294,11 +1355,14 @@ async function startInstagram() {
   setMsg("Starting…");
   $("#instagram-start-btn").disabled = true;
   try {
+    const choice = await resourceChoice(body.storage_dir);
+    if (!choice) { setMsg("Cancelled.", ""); return; }
+    body.start = choice;
     await api("/api/instagram", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
     });
-    setMsg("Capture started. It runs in the background; a browser opens only if Instagram needs you.", "ok");
+    setMsg(choice === "wait" ? "Capture created; it starts once the machine has room." : "Capture started. It runs in the background; a browser opens only if Instagram needs you.", "ok");
     showView("jobs");
     refresh();
   } catch (error) {
@@ -1308,6 +1372,65 @@ async function startInstagram() {
   }
 }
 function statusClass(s) { return s.toLowerCase(); }
+
+// Ask the server whether the machine has room before creating a job. A
+// shortage is put to the curator: start anyway, create the job and let it
+// wait for room, or cancel. Resolves with "now", "wait", or null.
+let resourceDecision = null;
+function askResourceChoice(warnings) {
+  $("#resource-reasons").innerHTML = warnings.map(w =>
+    `<li><b>${escapeHtml(w.resource === "cpu" ? "CPU" : w.resource === "memory" ? "Memory" : "Disk")}</b> — ${escapeHtml(w.message)}</li>`).join("");
+  $("#resource-overlay").classList.add("open");
+  $("#resource-start").focus();
+  return new Promise(resolve => { resourceDecision = resolve; });
+}
+function settleResourceChoice(choice) {
+  $("#resource-overlay").classList.remove("open");
+  const resolve = resourceDecision;
+  resourceDecision = null;
+  if (resolve) resolve(choice);
+}
+async function resourceChoice(storageDir) {
+  let check;
+  try {
+    const query = storageDir ? `?storage_dir=${encodeURIComponent(storageDir)}` : "";
+    check = await api(`/api/resources/check${query}`);
+  } catch (_) {
+    return "now";          // a failed check must not stop a capture
+  }
+  if (check.ok || !check.warnings || !check.warnings.length) return "now";
+  return askResourceChoice(check.warnings);
+}
+$("#resource-cancel").addEventListener("click", () => settleResourceChoice(null));
+$("#resource-wait").addEventListener("click", () => settleResourceChoice("wait"));
+$("#resource-start").addEventListener("click", () => settleResourceChoice("now"));
+$("#resource-overlay").addEventListener("click", event => {
+  if (event.target.id === "resource-overlay") settleResourceChoice(null);
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape" && resourceDecision) settleResourceChoice(null);
+});
+async function startNow(id) {
+  try { await api(`/api/crawls/${id}/start`, {method:"POST"}); refresh(); }
+  catch (e) { alert("Start failed: " + e.message); }
+}
+function fmtPercent(value) {
+  return value == null ? "—" : `${Math.round(Number(value))}%`;
+}
+function renderResources(res) {
+  const snap = (res && res.snapshot) || {};
+  const cpu = snap.cpu || {}, mem = snap.memory || {}, disk = snap.disk || {};
+  const th = res.thresholds || {};
+  const low = (free, limit) => th.enabled !== false && free != null && limit != null && free < limit ? " low" : "";
+  const jobs = res.jobs || [];
+  const totals = res.jobs_total || {};
+  const measured = res.measured !== false;
+  $("#resources").innerHTML = `
+    <div class="cell"><div class="k">CPU free</div><div class="v${low(cpu.free_percent, th.cpu_free_percent)}">${measured ? fmtPercent(cpu.free_percent) : "not measured"}${cpu.count ? `<span class="sub"> · ${cpu.count} cores</span>` : ""}</div></div>
+    <div class="cell"><div class="k">Memory free</div><div class="v${low(mem.free_percent, th.memory_free_percent)}">${measured ? fmtPercent(mem.free_percent) : "not measured"}${mem.available != null ? `<span class="sub"> · ${fmtBytes(mem.available)}</span>` : ""}</div></div>
+    <div class="cell"><div class="k">Disk free</div><div class="v${low(disk.free_percent, th.disk_free_percent)}">${fmtPercent(disk.free_percent)}<span class="sub"> · ${fmtBytes(disk.free)}</span></div></div>
+    <div class="cell"><div class="k">Used by ${jobs.length} running job${jobs.length === 1 ? "" : "s"}</div><div class="v">${measured ? `${fmtPercent(totals.cpu_percent_of_machine)} CPU<span class="sub"> · ${fmtBytes(totals.rss_bytes)} · ${totals.processes || 0} processes</span>` : "not measured"}${res.waiting && res.waiting.length ? `<span class="sub"> · ${res.waiting.length} waiting</span>` : ""}</div></div>`;
+}
 function crawlRow(c) {
   const s = c.status;
   const isRec = c.kind === "recording";
@@ -1430,10 +1553,13 @@ async function start() {
       body = {config_yaml: $("#config-yaml").value};
     }
     if ($("#f-storage").value.trim()) body.storage_dir = $("#f-storage").value.trim();
+    const choice = await resourceChoice(body.storage_dir);
+    if (!choice) { setMessage("Cancelled.", ""); return; }
+    body.start = choice;
     await api("/api/crawls", {
       method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)
     });
-    setMessage("Crawl started.", "ok");
+    setMessage(choice === "wait" ? "Crawl created; it starts once the machine has room." : "Crawl started.", "ok");
     showView("jobs");
     refresh();
   } catch (e) {
@@ -1444,8 +1570,10 @@ async function start() {
 }
 async function refresh() {
   try {
-    const [crawls, storage] = await Promise.all([api("/api/crawls"), api("/api/storage")]);
+    const [crawls, storage, res] = await Promise.all([
+      api("/api/crawls"), api("/api/storage"), api("/api/resources")]);
     const active = crawls.filter(c => ["running","paused","blocked","stopping"].includes(c.status)).length;
+    renderResources(res);
     const diskPercent = storage.disk.total ? storage.disk.used/storage.disk.total*100 : 0;
     $("#storage").innerHTML = `
       <div class="cell"><div class="k">Captured total</div><div class="v">${fmtBytes(storage.total_bytes)}</div></div>
@@ -1453,7 +1581,9 @@ async function refresh() {
       <div class="cell"><div class="k">Disk free</div><div class="v">${fmtBytes(storage.disk.free)}</div></div>
       <div class="cell"><div class="k">Disk used</div><div class="v">${Math.round(diskPercent)}%</div>
         <div class="bar"><span style="width:${diskPercent.toFixed(1)}%"></span></div></div>`;
-    renderStorageDefault(await api("/api/settings"));
+    const settings = await api("/api/settings");
+    renderStorageDefault(settings);
+    renderResourceSettings(settings);
     $("#nav-active").textContent = active ? String(active) : "";
     $("#manifest").innerHTML = crawls.length
       ? crawls.map(crawlRow).join("")
@@ -1608,6 +1738,47 @@ async function saveStorageDefault() {
 
 $("#storage-root").addEventListener("input", () => storageRootEdited = true);
 $("#storage-save").addEventListener("click", saveStorageDefault);
+
+let resourceLevelsEdited = false;
+const RESOURCE_FIELDS = [["res-cpu", "cpu_free_percent"], ["res-memory", "memory_free_percent"], ["res-disk", "disk_free_percent"]];
+
+function renderResourceSettings(settings) {
+  const levels = settings.resources || {};
+  if (!resourceLevelsEdited) {
+    $("#res-enabled").checked = levels.enabled !== false;
+    RESOURCE_FIELDS.forEach(([id, key]) => { $(`#${id}`).value = levels[key] == null ? "" : levels[key]; });
+  }
+  $("#res-help").textContent = settings.resources_measured === false
+    ? "CPU and memory cannot be measured on this server (psutil is not installed); only disk space is checked."
+    : "Checked when a job is about to start, against the disk the job will write to. Running jobs are never paused by this.";
+}
+
+async function saveResourceSettings() {
+  const msg = $("#res-msg");
+  msg.textContent = "Saving…";
+  msg.className = "msg";
+  const resources = {enabled: $("#res-enabled").checked};
+  RESOURCE_FIELDS.forEach(([id, key]) => {
+    const raw = $(`#${id}`).value.trim();
+    if (raw !== "") resources[key] = Number(raw);
+  });
+  try {
+    const settings = await api("/api/settings", {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({resources}),
+    });
+    resourceLevelsEdited = false;
+    renderResourceSettings(settings);
+    msg.textContent = "Saved.";
+    msg.className = "msg ok";
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg err";
+  }
+}
+["res-enabled", "res-cpu", "res-memory", "res-disk"].forEach(id =>
+  $(`#${id}`).addEventListener("input", () => resourceLevelsEdited = true));
+$("#res-save").addEventListener("click", saveResourceSettings);
 $("#add-seed-btn").addEventListener("click", () => addSeed(""));
 $("#start-btn").addEventListener("click", start);
 $("#reset-btn").addEventListener("click", resetExample);

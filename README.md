@@ -589,7 +589,35 @@ Dashboard controls include:
 - **Replay** captured crawl data;
 - **Pause scrolling**, resume after login/verification, stop and continue a
   Facebook Page capture;
-- monitor progress, storage use and available disk space.
+- monitor progress, storage use and available disk space;
+- watch what the machine has left and what each running job is using.
+
+### Machine resources
+
+The *Jobs* page shows the machine's spare CPU, memory and disk space, and
+the CPU and memory used by all running jobs together; each running job's row
+shows its own share (its worker, its browser and any helper it started).
+The command line reports the same:
+
+```bash
+python -m webarc.cli resources            # add --json for the raw reading
+```
+
+Before a job starts, the dashboard checks the machine against warning levels
+set under *Settings → Resource warnings*: by default, less than 15 % of CPU
+or memory free, or less than 10 % of the disk the job will write to. When
+a level is crossed the dashboard asks whether to **start anyway**, **wait**
+or **cancel**. A job told to wait is created in full and shown as *waiting*;
+the server starts it by itself once every resource is back above its level
+(one waiting job per check, oldest first), or at once from its **Start now**
+button. Running jobs are never paused by this check.
+
+`swm crawl` makes the same check before it starts and, at a terminal, asks
+the same question. `--yes` starts without asking, `--wait` waits for room,
+`--no-resource-check` skips the check, and `--db` names the dashboard state
+file whose warning levels apply. A crawl run without a terminal starts
+anyway and prints the warning. CPU and memory come from `psutil`; without
+it only disk space is checked.
 
 Try the dashboard without starting a browser crawl:
 

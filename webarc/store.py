@@ -31,6 +31,9 @@ COMPLETED = "completed"
 STOPPED = "stopped"
 FAILED = "failed"
 BLOCKED = "blocked"
+# created but not launched: the curator chose to wait for the machine to
+# have room; the server starts it once the resource check passes
+WAITING = "waiting"
 
 # control commands the API can set; the worker polls and acts on these
 CTRL_NONE = "none"

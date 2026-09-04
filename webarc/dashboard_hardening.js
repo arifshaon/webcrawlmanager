@@ -14,7 +14,7 @@ function escapeHtml(value) {
 function statusClass(value) {
   const allowed = new Set([
     "pending", "running", "paused", "stopping", "stopped",
-    "completed", "failed", "blocked"
+    "completed", "failed", "blocked", "waiting"
   ]);
   const normalised = String(value || "pending").toLowerCase();
   return allowed.has(normalised) ? normalised : "pending";
@@ -48,9 +48,14 @@ function crawlRow(c) {
   const running = rawStatus === "running";
   const paused = rawStatus === "paused";
   const blocked = rawStatus === "blocked";
+  const waiting = rawStatus === "waiting";
   const canPause = running;
   const canResume = paused || blocked;
   const canStop = running || paused || blocked || rawStatus === "stopping";
+  const usage = c.resources && typeof c.resources === "object" ? c.resources : null;
+  const usageLine = usage
+    ? `<br><span title="this job's worker, browser and helpers">${Math.round(Number(usage.cpu_percent_of_machine) || 0)}% CPU · ${fmtBytes(Number(usage.rss_bytes) || 0)} RAM</span>`
+    : "";
   const isOpen = openState.has(id);
   const t = c.totals || {};
   const visited = Number(t.visited) || 0;
@@ -109,10 +114,14 @@ function crawlRow(c) {
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b>${Number(fb.media_expected) ? `/${Number(fb.media_expected)}` : ""} media<br>${Number(fb.warc_files) ? "rendered WARC · " : ""}${fmtBytes(bytes)}`
           : isFacebook
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b> media<br>${Number(fb.graphql_responses) || 0} API responses${Number(fb.pagination_failures) ? ` · ${Number(fb.pagination_failures)} failed` : ""} · ${fmtBytes(bytes)}`
-          : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}`}
+          : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}`}${usageLine}
       </div>
       <span class="badge b-${statusCss}">${status}</span>
     </div>
+    ${waiting ? `<div class="fb-phase">
+      <span class="fb-phase-label">Waiting</span>
+      <span>Created, not started: this machine was short of CPU, memory or disk space. It starts by itself once every resource is above its warning level, or now if you say so.</span>
+    </div>` : ""}
     ${isSocial && (fb.message || fb.phase) ? `<div class="fb-phase">
       <span class="fb-phase-label">${escapeHtml(facebookPhaseLabel(fb.phase))}</span>
       <span>${escapeHtml(fb.message || "")}</span>
@@ -120,7 +129,8 @@ function crawlRow(c) {
     <div class="actions">
       <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
       <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
-      <button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>
+      ${waiting ? `<button class="act" onclick="startNow(${id})">Start now</button>
+      <button class="act danger" onclick="ctl(${id},'stop')">Cancel</button>` : `<button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>`}
       ${rawStatus === "stopping" ? `<button class="act danger" onclick="forceStop(${id})" title="End the worker now if it is not answering">Force stop</button>` : ""}
       ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
       ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
