@@ -324,6 +324,14 @@ class _StreamingListing:
         cookies = lend_cookies(self.client.inner.cookie_jar()
                                if hasattr(self.client.inner, "cookie_jar") else [])
         write_netscape_cookies(cookies, self._scratch / "cookies.txt")
+        kept = None
+        if os.environ.get("SWM_KEEP_LENT_COOKIES"):
+            # for diagnosing a refused session by hand: the lent file is kept
+            # under SWM's state folder, never in the package
+            kept = Path(self.client.scratch_dir) / f"kept-cookies-{int(time.time())}.txt"
+            shutil.copy2(self._scratch / "cookies.txt", kept)
+            log.warning("Lent cookie file kept at %s (SWM_KEEP_LENT_COOKIES is set); "
+                        "treat it like a password and delete it when done.", kept)
         command = gallery_command(self._scratch / "cookies.txt", self.url,
                                   self.client.limit, self.cursor, self.client.module)
         self.commands.append(command)
@@ -338,7 +346,11 @@ class _StreamingListing:
             target=self._drain_stdout, args=(self.process, self._lines), daemon=True)
         self._stdout_thread.start()
         self._note("started", command=_elide_cookie_path(command),
-                   resumed_from_cursor=self.cursor)
+                   resumed_from_cursor=self.cursor,
+                   # names only, never values: what the session was lent as
+                   lent_cookies=sorted({str(c.get("name")) for c in cookies}),
+                   lent_cookie_domains=sorted({str(c.get("domain")) for c in cookies}),
+                   kept_copy=str(kept) if kept else None)
 
     def _drain_stdout(self, process: subprocess.Popen, lines: "queue.Queue") -> None:
         # Read on a thread so the pull can keep answering the curator's

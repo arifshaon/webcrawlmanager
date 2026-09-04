@@ -364,6 +364,8 @@ class EvidenceTests(StreamingTestCase):
         events = {e["event"]: e for e in meta["events"]}
         self.assertIn("<lent cookies>", events["started"]["command"])
         self.assertNotIn("cookies.txt", " ".join(events["started"]["command"]))
+        self.assertEqual(events["started"]["lent_cookies"], ["datr", "sessionid"])
+        self.assertNotIn("1%3Aabc", json.dumps(meta))          # names, never values
         self.assertEqual(events["finished"]["outcome"], "exhausted")
         self.assertTrue(evidence.with_suffix(".log").exists())
         checksums = (out / "checksums.sha256").read_text()
