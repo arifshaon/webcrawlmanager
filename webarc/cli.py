@@ -289,6 +289,8 @@ def _print_resource_report(snapshot: dict, thresholds: dict, jobs: list[dict],
         print("\nNo jobs are running.")
     for warning in warnings:
         print(f"\nWARNING: {warning['message']}")
+    if snapshot.get("note"):
+        print(f"\nNote: {snapshot['note']}")
 
 
 def _cmd_resources(args) -> int:

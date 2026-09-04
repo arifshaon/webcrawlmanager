@@ -512,6 +512,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     _MONITOR = resources.ResourceMonitor(_WARC_ROOT, on_tick=_on_tick)
     if monitor_resources:
         _MONITOR.start()
+    if resources.measurement_note():
+        log.warning("%s", resources.measurement_note())
 
     app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
                   version="0.3.0")
@@ -1095,7 +1097,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "server_storage_root": str(_WARC_ROOT),
             "storage": _storage_is_curator_choosable(),
             "resources": _resource_thresholds(),
-            "resources_measured": resources.psutil is not None,
+            "resources_measured": _monitor().snapshot().get("measured", False),
+            "resources_note": resources.measurement_note(),
         }
 
     @app.get("/api/resources")
@@ -1115,7 +1118,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         waiting = [{"id": r["id"], "name": r["name"]}
                    for r in _store().list_crawls() if r.get("status") == WAITING]
         return {
-            "measured": resources.psutil is not None,
+            "measured": check["snapshot"].get("measured", False),
+            "jobs_measured": resources.psutil is not None,
+            "note": resources.measurement_note(),
             "snapshot": check["snapshot"],
             "thresholds": check["thresholds"],
             "warnings": check["warnings"],

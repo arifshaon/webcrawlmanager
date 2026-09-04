@@ -301,6 +301,7 @@
   <section class="view" id="view-jobs">
     <div class="eyebrow">This machine</div>
     <div class="storage" id="resources"></div>
+    <span class="help" id="resources-note"></span>
     <div class="eyebrow">Storage</div>
     <div class="storage" id="storage"></div>
     <div class="eyebrow">Crawls</div>
@@ -1424,100 +1425,20 @@ function renderResources(res) {
   const low = (free, limit) => th.enabled !== false && free != null && limit != null && free < limit ? " low" : "";
   const jobs = res.jobs || [];
   const totals = res.jobs_total || {};
-  const measured = res.measured !== false;
+  const measured = snap.measured !== false;
+  // CPU use is the busy share between two readings: the first one alone
+  // says nothing, so the figure arrives with the next refresh.
+  const cpuText = !measured ? "not measured" : cpu.free_percent == null ? "reading…" : fmtPercent(cpu.free_percent);
+  const memText = !measured || mem.free_percent == null ? "not measured" : fmtPercent(mem.free_percent);
+  const jobsText = res.jobs_measured === false
+    ? `<span class="sub" title="${escapeHtml(res.note || "")}">not measured (psutil missing)</span>`
+    : `${fmtPercent(totals.cpu_percent_of_machine)} CPU<span class="sub"> · ${fmtBytes(totals.rss_bytes)} · ${totals.processes || 0} processes</span>`;
   $("#resources").innerHTML = `
-    <div class="cell"><div class="k">CPU free</div><div class="v${low(cpu.free_percent, th.cpu_free_percent)}">${measured ? fmtPercent(cpu.free_percent) : "not measured"}${cpu.count ? `<span class="sub"> · ${cpu.count} cores</span>` : ""}</div></div>
-    <div class="cell"><div class="k">Memory free</div><div class="v${low(mem.free_percent, th.memory_free_percent)}">${measured ? fmtPercent(mem.free_percent) : "not measured"}${mem.available != null ? `<span class="sub"> · ${fmtBytes(mem.available)}</span>` : ""}</div></div>
+    <div class="cell"><div class="k">CPU free</div><div class="v${low(cpu.free_percent, th.cpu_free_percent)}">${cpuText}${cpu.count ? `<span class="sub"> · ${cpu.count} cores</span>` : ""}</div></div>
+    <div class="cell"><div class="k">Memory free</div><div class="v${low(mem.free_percent, th.memory_free_percent)}">${memText}${mem.available != null ? `<span class="sub"> · ${fmtBytes(mem.available)}</span>` : ""}</div></div>
     <div class="cell"><div class="k">Disk free</div><div class="v${low(disk.free_percent, th.disk_free_percent)}">${fmtPercent(disk.free_percent)}<span class="sub"> · ${fmtBytes(disk.free)}</span></div></div>
-    <div class="cell"><div class="k">Used by ${jobs.length} running job${jobs.length === 1 ? "" : "s"}</div><div class="v">${measured ? `${fmtPercent(totals.cpu_percent_of_machine)} CPU<span class="sub"> · ${fmtBytes(totals.rss_bytes)} · ${totals.processes || 0} processes</span>` : "not measured"}${res.waiting && res.waiting.length ? `<span class="sub"> · ${res.waiting.length} waiting</span>` : ""}</div></div>`;
-}
-function crawlRow(c) {
-  const s = c.status;
-  const isRec = c.kind === "recording";
-  const isFacebook = c.kind === "facebook";
-  const running = s === "running", paused = s === "paused", blocked = s === "blocked";
-  const canPause = running, canResume = paused || blocked;
-  const canStop = running || paused || blocked || s === "stopping";
-  const isOpen = openState.has(c.id);
-  const t = c.totals;
-  const fb = isFacebook && c.seeds[0] ? (c.seeds[0].details || {}) : {};
-  const seedRows = c.seeds.map(sd => `
-    <div class="seed">
-      <div>
-        <div class="url">${sd.seed_url}</div>
-        ${sd.current_url ? `<div class="cur">▸ ${sd.current_url}</div>` : ""}
-      </div>
-      <div class="st">${sd.status} · ${sd.visited} pages · ${fmtBytes(sd.bytes)}</div>
-    </div>`).join("");
-  return `
-  <div class="crawl ${isOpen ? "open" : ""}" data-id="${c.id}">
-    <div class="row" onclick="toggle(${c.id})">
-      <div class="gutter g-${statusClass(s)}"></div>
-      <div>
-        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : ""}${c.name}</div>
-        <div class="meta"><span class="id">#${c.id}</span> · ${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : `${c.seeds_total} seed(s)`} · ${c.created_at}</div>
-      </div>
-      <div class="counts">
-        ${isRec
-          ? `<b>${t.visited}</b> pages<br>${fmtBytes(t.bytes)}`
-          : isFacebook
-          ? `<b>${fb.posts_exported || 0}</b> posts · <b>${fb.comments_exported || 0}</b> comments<br>${fb.pagination_failures || 0} pagination failures · ${fmtBytes(t.bytes)}`
-          : `<b>${t.visited}</b> pages · <b>${t.queued}</b> queued${t.failed ? ` · ${t.failed} failed` : ""}<br>${fmtBytes(t.bytes)}`}
-      </div>
-      <span class="badge b-${statusClass(s)}">${s}</span>
-    </div>
-    <div class="actions">
-      <button class="act" onclick="ctl(${c.id},'pause')"  ${canPause?"":"disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
-      <button class="act" onclick="ctl(${c.id},'resume')" ${canResume?"":"disabled"}>${isFacebook ? (blocked ? "I have resolved it — continue" : "Resume scrolling") : "Resume"}</button>
-      <button class="act danger" onclick="ctl(${c.id},'stop')" ${canStop?"":"disabled"}>${isFacebook ? "Stop and save" : "Stop"}</button>
-      ${isFacebook ? `<button class="act" onclick="continueFacebook(${c.id})" ${(["stopped","failed"].includes(s))?"":"disabled"}>Continue</button>` : ""}
-      <button class="act replay" onclick="replay(${c.id})" ${t.bytes>0?"":"disabled"}>Replay</button>
-      <button class="act danger" onclick="del(${c.id})" ${(running||paused||blocked)?"disabled":""}>Delete</button>
-    </div>
-    <div class="seeds">${seedRows}</div>
-  </div>`;
-}
-async function continueFacebook(id) {
-  try {
-    await api(`/api/crawls/${id}/continue`, {method:"POST"});
-    refresh();
-  } catch (e) { alert("Continuation failed: " + e.message); }
-}
-function toggle(id) {
-  if (openState.has(id)) openState.delete(id); else openState.add(id);
-  const el = document.querySelector(`.crawl[data-id="${id}"]`);
-  if (el) el.classList.toggle("open");
-}
-function busy(text) {
-  let node = document.getElementById("busy-overlay");
-  if (!node) {
-    node = document.createElement("div");
-    node.id = "busy-overlay";
-    node.innerHTML = '<div class="busy-card"><div class="busy-spin"></div>' +
-      '<div class="busy-text"></div></div>';
-    document.body.appendChild(node);
-  }
-  node.querySelector(".busy-text").textContent = text;
-  node.style.display = "flex";
-  return () => { node.style.display = "none"; };
-}
-async function replay(id, want) {
-  const done = busy(want === "pages"
-    ? "Building the pages for this capture. Large captures take a moment."
-    : "Preparing the WARC for replay. Large archives take a moment.");
-  try {
-    const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
-    // A Facebook capture can offer both: replay of the archived exchanges,
-    // and the pages built from its records.
-    const url = want === "pages" ? (r.pages_url || r.replay_url)
-                                 : (r.replay_url || r.pages_url);
-    if (!url) throw new Error("nothing to open for this capture");
-    window.open(url, "_blank");
-  } catch (e) {
-    alert("Could not open: " + e.message);
-  } finally {
-    done();
-  }
+    <div class="cell"><div class="k">Used by ${jobs.length} running job${jobs.length === 1 ? "" : "s"}</div><div class="v">${jobsText}${res.waiting && res.waiting.length ? `<span class="sub"> · ${res.waiting.length} waiting</span>` : ""}</div></div>`;
+  $("#resources-note").textContent = res.note || "";
 }
 async function ctl(id, cmd) {
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }
@@ -1748,9 +1669,10 @@ function renderResourceSettings(settings) {
     $("#res-enabled").checked = levels.enabled !== false;
     RESOURCE_FIELDS.forEach(([id, key]) => { $(`#${id}`).value = levels[key] == null ? "" : levels[key]; });
   }
-  $("#res-help").textContent = settings.resources_measured === false
-    ? "CPU and memory cannot be measured on this server (psutil is not installed); only disk space is checked."
-    : "Checked when a job is about to start, against the disk the job will write to. Running jobs are never paused by this.";
+  $("#res-help").textContent = (settings.resources_note ? settings.resources_note + " " : "")
+    + (settings.resources_measured === false
+      ? "Only disk space is checked here until CPU and memory can be measured."
+      : "Checked when a job is about to start, against the disk the job will write to. Running jobs are never paused by this.");
 }
 
 async function saveResourceSettings() {

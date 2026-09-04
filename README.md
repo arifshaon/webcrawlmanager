@@ -616,8 +616,10 @@ button. Running jobs are never paused by this check.
 the same question. `--yes` starts without asking, `--wait` waits for room,
 `--no-resource-check` skips the check, and `--db` names the dashboard state
 file whose warning levels apply. A crawl run without a terminal starts
-anyway and prints the warning. CPU and memory come from `psutil`; without
-it only disk space is checked.
+anyway and prints the warning. The machine's CPU and memory are read
+directly from Windows or Linux; each job's own share needs `psutil`, which
+`requirements.txt` installs (re-run `pip install -r requirements.txt` in an
+existing environment, then restart the server).
 
 Try the dashboard without starting a browser crawl:
 

@@ -358,3 +358,58 @@ class CommandLineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WithoutPsutilTests(unittest.TestCase):
+    """A machine without psutil still reads its own CPU and memory."""
+
+    def setUp(self):
+        patcher = mock.patch.object(resources, "psutil", None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        resources._last_cpu_times = None
+
+    @unittest.skipUnless(cli.sys.platform.startswith("linux"), "reads /proc")
+    def test_linux_reads_proc(self):
+        first = resources.system_snapshot(".")
+        second = resources.system_snapshot(".", cpu_interval=0.2)
+
+        self.assertTrue(first["measured"])
+        self.assertIsNone(first["cpu"]["free_percent"])     # nothing to compare with yet
+        self.assertIsNotNone(second["cpu"]["free_percent"])
+        self.assertGreater(second["memory"]["free_percent"], 0)
+        self.assertIn("psutil is not installed", second["note"])
+
+    def test_windows_reads_kernel32(self):
+        import ctypes
+
+        class FakeKernel32:
+            calls = 0
+
+            def GetSystemTimes(self, idle, kernel, user):
+                FakeKernel32.calls += 1
+                tick = FakeKernel32.calls * 1000
+                idle._obj.dwLowDateTime = tick // 2          # half idle
+                kernel._obj.dwLowDateTime = tick               # kernel includes idle
+                user._obj.dwLowDateTime = tick
+                return 1
+
+            def GlobalMemoryStatusEx(self, status):
+                status._obj.ullTotalPhys = 8 * 2**30
+                status._obj.ullAvailPhys = 2 * 2**30
+                return 1
+
+        windll = mock.Mock(kernel32=FakeKernel32())
+        with mock.patch.object(resources.sys, "platform", "win32"), \
+                mock.patch.object(ctypes, "windll", windll, create=True):
+            first = resources.system_snapshot(".")
+            second = resources.system_snapshot(".")
+
+        self.assertIsNone(first["cpu"]["free_percent"])
+        self.assertAlmostEqual(second["cpu"]["used_percent"], 75.0)   # (2t - t/2) / 2t
+        self.assertAlmostEqual(second["memory"]["free_percent"], 25.0)
+        self.assertTrue(second["measured"])
+
+    def test_a_job_reports_no_usage_and_the_reading_says_why(self):
+        self.assertIsNone(resources.ProcessUsage().usage(os.getpid()))
+        self.assertIn("pip install -r requirements.txt", resources.measurement_note())

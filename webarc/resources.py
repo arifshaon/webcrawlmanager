@@ -6,15 +6,17 @@ the command line both show the system's spare CPU, memory and disk and the
 share each running job takes, and warn before a new job starts when any of
 the three is below a threshold the curator sets.
 
-Measurement comes from psutil where it is installed. Without it, disk
-space is still measured (the standard library can), CPU and memory are
-reported as unmeasured, and no warning is raised for them: a missing
-library must not stop captures.
+Measurement comes from psutil where it is installed. Without it, the
+machine's CPU and memory are still read through the operating system
+directly (Windows and Linux), disk space is always read, and only the
+per-job figures are unavailable; nothing here ever stops a capture.
 """
 
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
@@ -110,33 +112,146 @@ def disk_snapshot(path: Path | str) -> dict:
             "used": usage.used, "free_percent": free_percent}
 
 
+# --- reading the machine without psutil ------------------------------------
+#
+# CPU use is the busy share of the time between two readings; the first
+# reading alone says nothing, so it is kept here and the next one, two
+# seconds later from the sampler, gives the figure. Windows and Linux are
+# covered; elsewhere psutil is needed.
+
+_cpu_times_lock = threading.Lock()
+_last_cpu_times: tuple[float, float] | None = None       # (busy, total)
+
+
+def _cpu_times() -> tuple[float, float] | None:
+    """(busy, total) CPU time so far, in any consistent unit."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+        idle, kernel, user = wintypes.FILETIME(), wintypes.FILETIME(), wintypes.FILETIME()
+        if not ctypes.windll.kernel32.GetSystemTimes(
+                ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            return None
+        as_int = lambda ft: (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+        total = as_int(kernel) + as_int(user)             # kernel includes idle
+        return total - as_int(idle), total
+    try:
+        with open("/proc/stat", encoding="ascii") as fh:
+            first = fh.readline().split()
+    except OSError:
+        return None
+    if not first or first[0] != "cpu":
+        return None
+    fields = [float(x) for x in first[1:]]
+    idle = fields[3] + (fields[4] if len(fields) > 4 else 0)   # idle + iowait
+    total = sum(fields)
+    return total - idle, total
+
+
+def _cpu_used_percent(interval: float | None) -> float | None:
+    global _last_cpu_times
+    now = _cpu_times()
+    if now is None:
+        return None
+    if interval:
+        time.sleep(interval)
+        later = _cpu_times()
+        if later is None:
+            return None
+        before, now = now, later
+    else:
+        with _cpu_times_lock:
+            before, _last_cpu_times = _last_cpu_times, now
+        if before is None:
+            return None                     # nothing to compare with yet
+    busy = now[0] - before[0]
+    total = now[1] - before[1]
+    if total <= 0:
+        return None
+    return max(0.0, min(100.0, busy / total * 100))
+
+
+def _memory() -> tuple[int, int] | None:
+    """(total, available) bytes."""
+    if sys.platform == "win32":
+        import ctypes
+
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        status = MEMORYSTATUSEX()
+        status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return None
+        return int(status.ullTotalPhys), int(status.ullAvailPhys)
+    try:
+        with open("/proc/meminfo", encoding="ascii") as fh:
+            found = {}
+            for line in fh:
+                key, _, rest = line.partition(":")
+                if key in ("MemTotal", "MemAvailable"):
+                    found[key] = int(rest.split()[0]) * 1024
+    except (OSError, ValueError, IndexError):
+        return None
+    if "MemTotal" in found and "MemAvailable" in found:
+        return found["MemTotal"], found["MemAvailable"]
+    return None
+
+
+def measurement_note() -> str | None:
+    """Why part of the reading is missing, when it is."""
+    if psutil is not None:
+        return None
+    if sys.platform == "win32" or sys.platform.startswith("linux"):
+        return ("psutil is not installed, so each job's own CPU and memory "
+                "cannot be shown: run  pip install -r requirements.txt  "
+                "and restart the server.")
+    return ("psutil is not installed, so CPU and memory cannot be measured "
+            "on this system: run  pip install -r requirements.txt  and "
+            "restart the server.")
+
+
 def system_snapshot(storage_path: Path | str, cpu_interval: float | None = None) -> dict:
     """The machine's spare CPU, memory and disk right now.
 
-    ``cpu_interval`` of None reads psutil's running average since the last
+    ``cpu_interval`` of None reads the running average since the last
     call (the sampler keeps that warm); a number blocks that long for a
     one-shot reading, which the command line uses.
     """
     snap: dict = {
         "sampled_at": time.time(),
-        "measured": psutil is not None,
-        "cpu": {"used_percent": None, "free_percent": None, "count": None},
+        "measured": False,
+        "cpu": {"used_percent": None, "free_percent": None, "count": os.cpu_count()},
         "memory": {"total": None, "available": None, "used_percent": None,
                    "free_percent": None},
         "disk": disk_snapshot(storage_path),
     }
-    if psutil is None:
-        return snap
+    note = measurement_note()
+    if note:
+        snap["note"] = note
     try:
-        used = psutil.cpu_percent(interval=cpu_interval)
-        snap["cpu"] = {"used_percent": used, "free_percent": max(0.0, 100.0 - used),
-                       "count": psutil.cpu_count() or None}
-        mem = psutil.virtual_memory()
-        snap["memory"] = {"total": mem.total, "available": mem.available,
-                          "used_percent": mem.percent,
-                          "free_percent": mem.available / mem.total * 100 if mem.total else None}
+        if psutil is not None:
+            used = psutil.cpu_percent(interval=cpu_interval)
+            count = psutil.cpu_count() or snap["cpu"]["count"]
+            mem = psutil.virtual_memory()
+            total, available = mem.total, mem.available
+        else:
+            used = _cpu_used_percent(cpu_interval)
+            count = snap["cpu"]["count"]
+            memory = _memory()
+            total, available = memory if memory else (None, None)
+        if used is not None:
+            snap["cpu"] = {"used_percent": used, "free_percent": max(0.0, 100.0 - used),
+                           "count": count}
+        if total:
+            snap["memory"] = {"total": total, "available": available,
+                              "used_percent": (total - available) / total * 100,
+                              "free_percent": available / total * 100}
+        snap["measured"] = total is not None or used is not None
     except Exception as exc:                # pragma: no cover - platform oddities
-        snap["measured"] = False
         snap["error"] = str(exc)
     return snap
 
