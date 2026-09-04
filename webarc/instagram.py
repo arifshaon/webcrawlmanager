@@ -245,6 +245,16 @@ class InstagramError(Exception):
     """Base for the conditions the engine has a response to."""
 
 
+class BorrowedSessionRejected(InstagramError):
+    """A listing tool presented the browser's session and Instagram refused
+    it, while the browser itself is (or may be) signed in. Not a sign-out:
+    signing in again would not change it."""
+
+    def __init__(self, message: str, browser_session_valid: Optional[bool] = None):
+        super().__init__(message)
+        self.browser_session_valid = browser_session_valid
+
+
 class RateLimited(InstagramError):
     def __init__(self, wait_seconds: float = 300.0, detail: str = ""):
         super().__init__(detail or "Instagram is limiting requests.")
@@ -1221,6 +1231,22 @@ class InstagramCaptureSession:
                 if callable(close):
                     close()
             self._drain_client_anomalies()
+            self._note_listing_report(target, username, surface)
+
+    def _note_listing_report(self, target: InstagramTarget, username: str,
+                             surface: str) -> None:
+        """What listed this surface, and whether it was what was asked for."""
+        report = getattr(self.client, "listing_report", None)
+        if not callable(report):
+            return
+        outcome = report(username, surface)
+        if not isinstance(outcome, dict) or not outcome:
+            return
+        listings = self.target_status[target.key].setdefault("listings", {})
+        listings[surface] = outcome
+        if outcome.get("listing_used") != outcome.get("listing_requested"):
+            self.archive.event("listing_fallback", target=target.label,
+                               surface=surface, **outcome)
 
     def _drain_client_anomalies(self) -> None:
         """What the client could not make sense of belongs in the events."""

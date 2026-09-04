@@ -198,6 +198,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parts = urlsplit(self.path)
         segs = [s for s in parts.path.split("/") if s]
+        if not segs:
+            # the home page: a signed-in browser sees it, a signed-out one
+            # is sent to sign in, as Instagram does
+            if "sessionid=" in (self.headers.get("Cookie") or ""):
+                return self._send(b"<html><head><title>Instagram</title></head>"
+                                  b"<body>Home</body></html>")
+            self.send_response(302)
+            self.send_header("Location", "/accounts/login/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
         if len(segs) == 1 and segs[0] in PROFILES:
             profile, timeline, cursor = PROFILES[segs[0]]
             first = self._fix(timeline[:PAGE_SIZE])

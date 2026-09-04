@@ -736,6 +736,20 @@ class InstagramBrowserClient:
     def session(self) -> Optional[dict]:
         return self._session
 
+    def session_is_live(self) -> bool:
+        """Whether Instagram still accepts the browser's session: asked of
+        Instagram through the browser, not inferred from a cookie's presence.
+        The cookies are re-read afterwards."""
+        try:
+            self._goto(self.base_url + "/")
+        except LoginRequired:
+            self.refresh()
+            return False
+        except InstagramError:
+            pass
+        self.refresh()
+        return self.signed_in
+
     def cookie_jar(self) -> list[dict]:
         """The browser's Instagram cookies, for lending to a listing tool."""
         try:

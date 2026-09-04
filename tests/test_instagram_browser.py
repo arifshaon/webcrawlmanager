@@ -563,6 +563,12 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         with self.assertRaises(TargetUnavailable):
             self.client().post("Cnope0000")
 
+    def test_a_signed_in_browser_says_its_session_is_live(self):
+        self.assertTrue(self.client().session_is_live())
+
+    def test_a_signed_out_browser_says_its_session_is_not_live(self):
+        self.assertFalse(self.client(signed_in=False).session_is_live())
+
     def test_instagrams_sign_in_page_is_the_engines_login_condition(self):
         client = self.client(signed_in=False)
 

@@ -41,8 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Optional
 
-from .instagram import (InstagramError, InstagramPost, LoginRequired, MediaItem,
-                        RateLimited, TargetUnavailable)
+from .instagram import (BorrowedSessionRejected, InstagramError, InstagramPost,
+                        LoginRequired, MediaItem, RateLimited, TargetUnavailable)
 from .redaction import redact_body
 
 log = logging.getLogger(__name__)
@@ -131,26 +131,40 @@ def clear_stale_scratch(scratch_dir: Path) -> int:
     return removed
 
 
+def gallery_api() -> str:
+    """Which of gallery-dl's Instagram APIs to ask: REST unless the
+    SWM_GALLERY_DL_API environment variable says graphql, for comparing
+    which one Instagram accepts the browser's session from."""
+    chosen = (os.environ.get("SWM_GALLERY_DL_API") or "rest").strip().lower()
+    return "graphql" if chosen == "graphql" else "rest"
+
+
 def gallery_command(cookie_file: Path, url: str, limit: Optional[int],
                     cursor: Optional[str] = None,
-                    module: str = GALLERY_DL_MODULE) -> list[str]:
+                    module: str = GALLERY_DL_MODULE,
+                    user_agent: Optional[str] = None,
+                    api: Optional[str] = None) -> list[str]:
     """The gallery-dl command, with every setting SWM relies on stated.
 
     The user's own gallery-dl configuration is ignored so a listing means
     the same on every machine; output streams as JSON Lines; the log is
     verbose so the cursor after each page is reported; Instagram's refusals
     are not retried inside gallery-dl, since the engine waits and resumes.
+    The browser's own User-Agent is lent with its cookies, so the session
+    is presented closer to the client that made it.
     """
     command = [sys.executable, "-m", module, "--config-ignore", "--no-input",
                "-v", "-C", str(cookie_file), "-j",
                "-o", "output.jsonl=true", "-o", "output.private=false",
                "-o", "output.ascii=false",
-               "-o", "extractor.instagram.api=rest",
+               "-o", f"extractor.instagram.api={api or gallery_api()}",
                "-o", "extractor.instagram.pinned=true",
                "-o", "extractor.instagram.videos=true",
                "-o", "extractor.instagram.previews=false",
                "-o", "extractor.instagram.retries=0",
                "-o", "extractor.instagram.sleep-429=0"]
+    if user_agent:
+        command += ["-o", f"extractor.instagram.user-agent={user_agent}"]
     if limit:
         command += ["-o", f"extractor.instagram.max-posts={limit}"]
     if cursor:
@@ -305,6 +319,7 @@ class _StreamingListing:
         self._cursor_history: list[str] = []
         self._buffer: list[InstagramPost] = []     # complete posts held over a pause
         self._suspended = False
+        self._logins = 0          # sign-ins asked of the curator for this listing
 
     # -- the process --------------------------------------------------------
     def _start(self) -> None:
@@ -332,8 +347,12 @@ class _StreamingListing:
             shutil.copy2(self._scratch / "cookies.txt", kept)
             log.warning("Lent cookie file kept at %s (SWM_KEEP_LENT_COOKIES is set); "
                         "treat it like a password and delete it when done.", kept)
+        user_agent = None
+        if not os.environ.get("SWM_GALLERY_DL_NO_UA"):
+            user_agent = getattr(self.client.inner, "user_agent", None)
         command = gallery_command(self._scratch / "cookies.txt", self.url,
-                                  self.client.limit, self.cursor, self.client.module)
+                                  self.client.limit, self.cursor, self.client.module,
+                                  user_agent=user_agent)
         self.commands.append(command)
         self.client.commands.append(command)
         self.process = self.client.launcher(command)
@@ -521,6 +540,35 @@ class _StreamingListing:
     def _signed_out(self) -> bool:
         return any(_SIGNED_OUT_RE.search(line) for line in self._stderr_tail)
 
+    def _refused(self, status: int) -> None:
+        """Instagram refused the borrowed session. The browser is the
+        authority on whether that is a sign-out: if it is signed out, the
+        curator is asked to sign in, once; if it is signed in, the session is
+        valid in Chrome and refused from gallery-dl, and signing in again
+        would change nothing."""
+        live: Optional[bool] = None
+        check = getattr(self.client.inner, "session_is_live", None)
+        if callable(check):
+            try:
+                live = bool(check())
+            except Exception as exc:
+                log.debug("Could not ask the browser about its session: %s", exc)
+        self._note("failed", status=status, reason="borrowed_session_refused",
+                   browser_session_valid=live, logins_asked=self._logins,
+                   log_tail=list(self._stderr_tail)[-20:])
+        if live is False and self._logins < 1:
+            self._logins += 1
+            raise LoginRequired(
+                "gallery-dl could not use the browser's Instagram session, and "
+                "the browser is signed out. Sign in in the browser window, then "
+                "continue; gallery-dl is tried once more with the fresh session.")
+        raise BorrowedSessionRejected(
+            "gallery-dl could not use the browser's Instagram session"
+            + (": the session is valid in Chrome, but Instagram refuses it "
+               "from gallery-dl" if live else
+               " even after a sign-in" if self._logins else ""),
+            browser_session_valid=live)
+
     def _failed(self, status: int) -> None:
         """Raise the engine's condition for how gallery-dl ended."""
         text = "\n".join(self._stderr_tail).lower()
@@ -578,13 +626,7 @@ class _StreamingListing:
                         and self._pending is None and self._signed_out():
                     # gallery-dl was answered as signed out and ended with
                     # nothing: not an empty profile, a refused session
-                    self._note("failed", status=status, reason="signed_out",
-                               log_tail=list(self._stderr_tail)[-20:])
-                    raise LoginRequired(
-                        "Instagram answered gallery-dl's listing request with "
-                        "a sign-out redirect: the browser's session was not "
-                        "accepted from it. Sign in again in the browser, then "
-                        "continue; the next run is lent the fresh session.")
+                    self._refused(status)
                 if status != 0 or errored:
                     # a post complete when the run failed -- its files come
                     # right after it, before the next page is asked for --
@@ -642,6 +684,58 @@ class _StreamingListing:
 # The client: gallery-dl for the listing, the browser for the rest
 # ---------------------------------------------------------------------------
 
+class _FallbackListing:
+    """gallery-dl's listing, with the browser's behind it.
+
+    A rejection of the borrowed session must not stop an archival job: the
+    posts come from the browser's own listing instead, and what happened is
+    recorded so the package says which listing it was and why.
+    """
+
+    def __init__(self, gallery: _StreamingListing,
+                 browser_listing: Callable[[], Iterator[InstagramPost]],
+                 report: dict):
+        self.gallery = gallery
+        self._browser_listing = browser_listing
+        self.source: Iterator[InstagramPost] = gallery
+        self.report = report
+        self.report.update({"listing_requested": "gallery-dl",
+                            "listing_used": "gallery-dl"})
+
+    def __iter__(self):
+        return self
+
+    def __next__(self) -> InstagramPost:
+        if self.source is self.gallery:
+            try:
+                return next(self.gallery)
+            except BorrowedSessionRejected as exc:
+                log.warning("%s; listing @%s through the browser instead.",
+                            exc, self.gallery.username)
+                self.gallery.close()
+                self.report.update({
+                    "listing_used": "browser",
+                    "fallback_reason": "gallery_session_rejected",
+                    "browser_session_valid": exc.browser_session_valid,
+                    "posts_listed_before_fallback": self.gallery.listed,
+                    "detail": str(exc)})
+                self.source = self._browser_listing()
+        return next(self.source)
+
+    def close(self) -> None:
+        self.gallery.close()
+        close = getattr(self.source, "close", None)
+        if callable(close) and self.source is not self.gallery:
+            close()
+
+    @property
+    def process(self):
+        return self.gallery.process
+
+    def __getattr__(self, name):
+        return getattr(self.gallery, name)
+
+
 class GalleryListingClient:
     """The browser client, with profile listings answered by gallery-dl.
 
@@ -669,6 +763,7 @@ class GalleryListingClient:
         self._evidence_opener: Optional[Callable[[str], object]] = None
         self.commands: list[list[str]] = []
         self._active: Optional[_StreamingListing] = None
+        self.reports: dict[tuple[str, str], dict] = {}
         # the engine's controls, consulted while a pull waits on gallery-dl
         self.tick: Callable[[], None] = lambda: None
         self.stopping: Callable[[], bool] = lambda: False
@@ -699,16 +794,24 @@ class GalleryListingClient:
             self._active.suspend()
 
     def profile_posts(self, username: str) -> Iterator[InstagramPost]:
-        return self._listing(username, f"{self.base_url}/{username}/posts/", "posts")
+        return self._listing(username, f"{self.base_url}/{username}/posts/", "posts",
+                             lambda: self.inner.profile_posts(username))
 
     def profile_reels(self, username: str) -> Iterator[InstagramPost]:
-        return self._listing(username, f"{self.base_url}/{username}/reels/", "reels")
+        return self._listing(username, f"{self.base_url}/{username}/reels/", "reels",
+                             lambda: self.inner.profile_reels(username))
 
-    def _listing(self, username: str, url: str, surface: str) -> _StreamingListing:
+    def _listing(self, username: str, url: str, surface: str,
+                 browser_listing: Callable[[], Iterator[InstagramPost]]) -> _FallbackListing:
         if self._active is not None:
             self._active.close()
         self._active = _StreamingListing(self, username, url, surface)
-        return self._active
+        report = self.reports.setdefault((username.lower(), surface), {})
+        return _FallbackListing(self._active, browser_listing, report)
+
+    def listing_report(self, username: str, surface: str) -> dict:
+        """Which listing served a surface, and why, for the package."""
+        return dict(self.reports.get((username.lower(), surface), {}))
 
     def close(self) -> None:
         if self._active is not None:

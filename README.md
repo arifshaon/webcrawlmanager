@@ -374,7 +374,11 @@ suggestions and other profiles' listings; none of that is the profile's.
   configuration ignored and every setting stated, reads its output as it
   streams so the capture's stopping rules apply post by post, stops it once
   the capture has what it asked for, and resumes from the cursor it reported
-  after a rate limit rather than starting again. Post discovery and listing
+  after a rate limit rather than starting again. The browser is the authority
+  on the session: if Instagram refuses the borrowed session while the browser
+  is signed out, the curator is asked to sign in once; if it refuses it while
+  the browser is signed in, the capture lists through the browser instead and
+  the manifest records the fallback and why. Post discovery and listing
   metadata come from gallery-dl and are kept under `evidence/listings/` as
   its output, not as Instagram's responses. Selected media is fetched through
   the browser where possible; comments are collected from the browser. Needs

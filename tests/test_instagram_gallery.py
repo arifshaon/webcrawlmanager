@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from webarc.instagram import (InstagramCaptureConfig, InstagramCaptureSession,
+from webarc.instagram import (BLOCKED, InstagramCaptureConfig, InstagramCaptureSession,
                               LoginRequired, RateLimited, TargetUnavailable)
 from webarc.instagram_gallery import (SCRATCH_PREFIX, GalleryListingClient,
                                       clear_stale_scratch, discovery_limit,
@@ -121,6 +121,11 @@ class _Inner(FakeInstagram):
 
     session_value = "1%3Aabc"        # what the browser's sessionid cookie holds now
     identity_cookie = "datr"         # the browser's identifying cookie, lent with it
+    live = True                      # what Instagram says to the browser itself
+    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/151.0.0.0 Safari/537.36"
+
+    def session_is_live(self):
+        return self.live
 
     def cookie_jar(self):
         jar = [{"name": "sessionid", "value": self.session_value, "domain": ".instagram.com",
@@ -143,8 +148,11 @@ class StreamingTestCase(unittest.TestCase):
         self.inner.add_profile("qatarballers", [
             post(code, "2026-09-01T00:00:00Z", owner="qatarballers") for code in FIXTURE_CODES])
         # the recorded listing names the real account's id; the profile the
-        # browser reads must agree, or the engine rightly skips the posts
+        # browser reads, and the fake browser's own posts, must agree, or
+        # the engine rightly skips the posts as another account's
         self.inner.profiles["qatarballers"].user_id = "4267196155"
+        for own in self.inner.posts_by_user["qatarballers"]:
+            own.owner_id = "4267196155"
         self._env = {}
         self.addCleanup(self._restore_env)
 
@@ -246,20 +254,77 @@ class RecoveryTests(StreamingTestCase):
         self.assertEqual(codes, FIXTURE_CODES)
         self.assertEqual(len(listing.commands), 2)
 
-    def test_a_sign_out_redirect_with_no_posts_is_not_an_empty_profile(self):
-        """Instagram answers a session lent without the browser's identifying
-        cookies with a redirect home and gallery-dl ends with nothing; that
-        is a refused session, raised as such, not a profile with no posts."""
+    def test_a_refused_session_with_the_browser_signed_out_asks_for_one_sign_in(self):
+        """gallery-dl is refused and the browser says it is signed out: the
+        curator is asked to sign in, once, and gallery-dl is tried again with
+        the fresh session."""
         self.env(FAKE_GALLERY_DL_REQUIRE_COOKIE="datr")
         self.inner.identity_cookie = None
+        self.inner.live = False
         listing = self.client().profile_posts("qatarballers")
 
         with self.assertRaises(LoginRequired) as refused:
             next(listing)
-        self.assertIn("sign-out redirect", str(refused.exception))
+        self.assertIn("signed out", str(refused.exception))
 
-        self.inner.identity_cookie = "datr"          # the whole jar, as lent now
+        self.inner.identity_cookie = "datr"          # the curator signed in
+        self.inner.live = True
         self.assertEqual([p.shortcode for p in listing], FIXTURE_CODES)
+        self.assertEqual(listing.report["listing_used"], "gallery-dl")
+
+    def test_a_refused_session_with_the_browser_signed_in_falls_back_to_the_browser(self):
+        """The browser is signed in, so signing in again would change
+        nothing: the posts come from the browser's own listing, and the
+        package says so."""
+        self.env(FAKE_GALLERY_DL_REQUIRE_COOKIE="datr")
+        self.inner.identity_cookie = None
+        self.inner.live = True
+        client = self.client()
+        cfg = InstagramCaptureConfig.from_dict({
+            "targets": ["qatarballers"], "mode": "until_stopped", "surfaces": ["posts"],
+            "listing": "gallery-dl", "capture_media": False})
+        states_seen = []
+        session = InstagramCaptureSession(
+            config=cfg, client=client, output_dir=self.tmp / "out", crawl_id=1,
+            crawl_name="t", sleep=lambda _s: None,
+            control_poll=lambda: (states_seen.append(session.state), "resume")[1])
+
+        session.run()
+
+        self.assertEqual(list(session.archive.posts), FIXTURE_CODES)   # via the fake browser
+        self.assertNotIn(BLOCKED, states_seen)                          # no sign-in asked
+        manifest = json.loads((self.tmp / "out" / "instagram-manifest.json").read_text())
+        listing = manifest["capture"]["targets"][0]["listings"]["posts"]
+        self.assertEqual(listing["listing_requested"], "gallery-dl")
+        self.assertEqual(listing["listing_used"], "browser")
+        self.assertEqual(listing["fallback_reason"], "gallery_session_rejected")
+        self.assertTrue(listing["browser_session_valid"])
+        events = [json.loads(l)["event"] for l in
+                  (self.tmp / "out" / "instagram-events.jsonl").read_text().splitlines()]
+        self.assertIn("listing_fallback", events)
+        rows = [json.loads(l) for l in (self.tmp / "out" / "instagram-posts.jsonl").read_text().splitlines()]
+        self.assertTrue(all(r["source"] != "gallery-dl" for r in rows))
+
+    def test_still_refused_after_one_sign_in_falls_back_without_asking_again(self):
+        self.env(FAKE_GALLERY_DL_REQUIRE_COOKIE="datr")
+        self.inner.identity_cookie = None                # never accepted
+        self.inner.live = False
+        listing = self.client().profile_posts("qatarballers")
+
+        with self.assertRaises(LoginRequired):
+            next(listing)
+        self.inner.live = True                            # the curator signed in
+        codes = [p.shortcode for p in listing]            # no second hold
+
+        self.assertEqual(codes, FIXTURE_CODES)
+        self.assertEqual(listing.report["listing_used"], "browser")
+
+    def test_the_browsers_user_agent_is_lent_with_its_cookies(self):
+        listing = self.client().profile_posts("qatarballers")
+        next(listing)
+
+        self.assertIn(f"extractor.instagram.user-agent={self.inner.user_agent}",
+                      listing.commands[0])
 
     def test_the_engine_recovers_a_gallery_dl_sign_in_through_the_curator(self):
         self.inner.session_value = "old-session"
