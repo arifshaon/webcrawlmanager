@@ -1400,11 +1400,23 @@ async function ctl(id, cmd) {
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }
   catch (e) { alert("Action failed: " + e.message); }
 }
+async function forceStop(id) {
+  if (!confirm("Force stop crawl #"+id+"? Its worker is ended now; what was written so far is kept.")) return;
+  try { await api(`/api/crawls/${id}/kill`, {method:"POST"}); refresh(); }
+  catch (e) { alert("Force stop failed: " + e.message); }
+}
 async function del(id) {
   if (!confirm("Delete crawl #"+id+"? WARC files are kept unless you purge.")) return;
   const purge = confirm("Also delete captured WARC files from disk? OK = delete files, Cancel = keep files.");
   try { await api(`/api/crawls/${id}?purge=${purge}`, {method:"DELETE"}); refresh(); }
-  catch (e) { alert("Delete failed: " + e.message); }
+  catch (e) {
+    if (String(e.message).includes("still running")
+        && confirm("Its worker is still running. End the worker and delete anyway?")) {
+      try { await api(`/api/crawls/${id}?purge=${purge}&force=true`, {method:"DELETE"}); refresh(); return; }
+      catch (e2) { alert("Delete failed: " + e2.message); return; }
+    }
+    alert("Delete failed: " + e.message);
+  }
 }
 async function start() {
   setMessage("Starting…");

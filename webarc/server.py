@@ -37,7 +37,7 @@ import yaml
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from .store import (BLOCKED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
+from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
                     KIND_INSTAGRAM, KIND_RECORDING, PAUSED, PENDING, RUNNING,
                     STOPPED, STOPPING, Store)
 
@@ -255,6 +255,77 @@ def _pid_alive(pid: int | None) -> bool:
         return False
 
 
+def _pid_is_worker(pid: int) -> bool:
+    """Whether ``pid`` is an SWM worker, not another process that inherited
+    the number after a restart. Best effort: where the platform will not say,
+    a live pid is taken to be the worker."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            PROCESS_QUERY_LIMITED = 0x1000
+            h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED, False, pid)
+            if not h:
+                return False
+            try:
+                size = ctypes.c_ulong(1024)
+                buffer = ctypes.create_unicode_buffer(size.value)
+                if ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                        h, 0, buffer, ctypes.byref(size)):
+                    return "python" in buffer.value.lower()
+            finally:
+                ctypes.windll.kernel32.CloseHandle(h)
+            return True
+        cmdline = Path(f"/proc/{pid}/cmdline")
+        if cmdline.exists():
+            text = cmdline.read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+            return "webarc" in text
+    except Exception:
+        pass
+    return True
+
+
+def _worker_alive(row: dict) -> bool:
+    pid = row.get("pid")
+    return bool(pid) and _pid_alive(pid) and _pid_is_worker(pid)
+
+
+_ACTIVE_STATES = (RUNNING, PAUSED, BLOCKED, STOPPING)
+_ORPHAN_GRACE_SECONDS = 60
+_LOST_WORKER = ("The worker process is not running: it ended without reporting "
+                "a result, or the server was restarted while it ran.")
+
+
+def _reconcile(row: dict) -> dict:
+    """Bring a crawl's stored state in line with whether its worker exists.
+
+    A worker reports its own final state; one that died, or was lost when
+    the server restarted, never will, and the crawl would stay running,
+    paused, blocked or stopping forever -- unstoppable and undeletable. A
+    crawl in such a state with no worker behind it, and no report for a
+    minute, is settled here: stopping becomes stopped, the others failed,
+    and the reason is recorded.
+    """
+    status = row.get("status")
+    if status not in _ACTIVE_STATES or _worker_alive(row):
+        return row
+    try:
+        from datetime import datetime, timezone
+        seen = datetime.fromisoformat(str(row.get("updated_at")))
+        if seen.tzinfo is None:
+            seen = seen.replace(tzinfo=timezone.utc)
+        idle = (datetime.now(timezone.utc) - seen).total_seconds()
+    except (TypeError, ValueError):
+        idle = _ORPHAN_GRACE_SECONDS + 1
+    if idle < _ORPHAN_GRACE_SECONDS:
+        return row
+    settled = STOPPED if status == STOPPING else FAILED
+    _store().set_status(row["id"], settled, _LOST_WORKER)
+    _store().clear_control(row["id"])
+    log.warning("Crawl %s was %s with no worker behind it; marked %s",
+                row["id"], status, settled)
+    return _store().get_crawl(row["id"]) or row
+
+
 def _terminate(pid: int) -> None:
     if os.name == "nt":
         import ctypes
@@ -265,7 +336,13 @@ def _terminate(pid: int) -> None:
             ctypes.windll.kernel32.CloseHandle(h)
         return
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        group = os.getpgid(pid)
+        if group == os.getpgid(0):
+            # a worker that shares our group (a test's stand-in, a worker
+            # started without its own session) is ended alone, never with us
+            os.kill(pid, signal.SIGTERM)
+        else:
+            os.killpg(group, signal.SIGTERM)
     except OSError:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -287,6 +364,7 @@ def _launch_worker(crawl_id: int) -> int:
 
 
 def _crawl_view(row: dict) -> dict:
+    row = _reconcile(row)
     progress = _store().get_progress(row["id"])
     crawl_dir = _crawl_dir(row)
     disk_bytes = _dir_size(crawl_dir)
@@ -294,10 +372,7 @@ def _crawl_view(row: dict) -> dict:
     visited = sum(p["visited"] for p in progress)
     queued = sum(p["queued"] for p in progress)
     failed = sum(p["failed"] for p in progress)
-    # reconcile "running" flag with actual process liveness
     status = row["status"]
-    if status in (RUNNING,) and not _pid_alive(row["pid"]):
-        status = row["status"]  # leave as-is; worker updates final state itself
     return {
         "id": row["id"],
         "kind": row.get("kind", "crawl"),
@@ -333,6 +408,13 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
     app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
                   version="0.2.0")
+
+    # crawls left mid-flight by a previous server are settled at once
+    for stale in _STORE.list_crawls():
+        try:
+            _reconcile(stale)
+        except Exception as exc:               # pragma: no cover
+            log.warning("Could not reconcile crawl %s: %s", stale.get("id"), exc)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
@@ -594,7 +676,14 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
     @app.post("/api/crawls/{crawl_id}/stop")
     def stop(crawl_id: int):
-        _require(crawl_id)
+        row = _require(crawl_id)
+        if not _worker_alive(row):
+            # nothing to ask: settle it now rather than wait for a report
+            # that will never come
+            if row["status"] in _ACTIVE_STATES:
+                _store().set_status(crawl_id, STOPPED, _LOST_WORKER)
+            _store().clear_control(crawl_id)
+            return {"ok": True, "control": CTRL_NONE, "settled": True}
         _store().set_control(crawl_id, CTRL_STOP)
         _store().set_status(crawl_id, STOPPING)
         return {"ok": True, "control": CTRL_STOP}
@@ -728,23 +817,27 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
     @app.post("/api/crawls/{crawl_id}/kill")
     def kill(crawl_id: int):
-        """Hard-kill fallback if a worker won't stop gracefully."""
+        """Force stop: end the worker if it is one of ours, settle the state."""
         row = _require(crawl_id)
-        pid = row["pid"]
-        if _pid_alive(pid):
-            _terminate(pid)
-        _store().set_status(crawl_id, STOPPED)
+        if _worker_alive(row):
+            _terminate(row["pid"])
+        _store().set_status(crawl_id, STOPPED, "Stopped by force from the dashboard.")
+        _store().clear_control(crawl_id)
         return {"ok": True}
 
     @app.delete("/api/crawls/{crawl_id}")
-    def delete(crawl_id: int, purge: bool = False):
+    def delete(crawl_id: int, purge: bool = False, force: bool = False):
         row = _require(crawl_id)
-        if _pid_alive(row["pid"]):
-            raise HTTPException(409, "crawl is still running; stop it first")
+        if _worker_alive(row):
+            if not force:
+                raise HTTPException(
+                    409, "crawl is still running; stop it first, or delete "
+                         "with force to end its worker")
+            _terminate(row["pid"])
         if purge:
             shutil.rmtree(_crawl_dir(row), ignore_errors=True)
         _store().delete_crawl(crawl_id)
-        return {"ok": True, "purged": purge}
+        return {"ok": True, "purged": purge, "forced": force}
 
     @app.get("/captures/{crawl_id}/{kind}/{path:path}")
     def capture_file(crawl_id: int, kind: str, path: str):

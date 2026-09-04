@@ -121,6 +121,7 @@ function crawlRow(c) {
       <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
       <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
       <button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>
+      ${rawStatus === "stopping" ? `<button class="act danger" onclick="forceStop(${id})" title="End the worker now if it is not answering">Force stop</button>` : ""}
       ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
       ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
       <button class="act replay" onclick="replay(${id},'warc')" ${bytes > 0 ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
