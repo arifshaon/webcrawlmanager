@@ -868,7 +868,7 @@
       <div class="form-section">
         <div class="section-head">
           <span class="section-title">Capture Instagram profiles, posts or reels</span>
-          <span class="section-hint">Runs in the background. A browser window opens only if Instagram needs you to sign in or clear a verification.</span>
+          <span class="section-hint">A Chrome window opens and stays for the run; sign in there if Instagram asks.</span>
         </div>
         <div class="section-body form-grid">
           <div class="field wide">
@@ -884,14 +884,6 @@
             <label class="field-label" for="ig-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="ig-operator">?</button></label>
             <input type="text" id="ig-operator" placeholder="webarc">
             <span class="help">Stored in the capture manifest.</span>
-          </div>
-          <div class="field">
-            <label class="field-label">How it runs <button type="button" class="tip" aria-label="What is this for?" data-help="ig-run">?</button></label>
-            <label class="check-row">
-              <input type="checkbox" id="ig-headless">
-              <span class="check-copy"><strong>Run in the background</strong><span>No window: the same signed-in Chrome scrolls the profile unseen. A window opens only if Instagram needs you to sign in or clear a verification, and then stays for the run.</span></span>
-            </label>
-            <span class="help">Letting Instagram's own web application build the requests in a real Chrome keeps client-compatibility failures to a minimum; Instagram can still rate-limit or challenge the account. Either way SWM opens the profile in Chrome, scrolls it, and collects from what Instagram loads; with the WARC option on, every exchange is written as it happens.</span>
           </div>
           <div class="field">
             <label class="field-label" for="ig-listing">Profile listing <button type="button" class="tip" aria-label="What is this for?" data-help="ig-listing">?</button></label>
@@ -1537,7 +1529,6 @@ async function startInstagram() {
     targets, mode, surfaces,
     browser: $("#ig-browser").value,
     listing: $("#ig-listing").value,
-    headless: $("#ig-headless").checked,
     from_date: $("#ig-from").value || null,
     to_date: $("#ig-to").value || null,
     latest_n: Number($("#ig-latest-n").value || 100),
@@ -1562,7 +1553,7 @@ async function startInstagram() {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body)
     });
-    setMsg(choice === "wait" ? "Capture created; it starts once the machine has room." : "Capture started. It runs in the background; a browser opens only if Instagram needs you.", "ok");
+    setMsg(choice === "wait" ? "Capture created; it starts once the machine has room." : "Capture started. A Chrome window opens for the run; sign in there if Instagram asks.", "ok");
     showView("jobs");
     refresh();
   } catch (error) {

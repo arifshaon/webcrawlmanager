@@ -39,7 +39,7 @@ SWM is designed around two complementary approaches to web archiving:
 |---|---|---|---|
 | Interactive recording | The operator | `headed`, `native` | Command line and dashboard |
 | Facebook Page capture | SWM scrolls; the curator handles login, verification and manual overrides | `headed`, `native` | Dashboard |
-| Instagram capture | SWM drives the signed-in browser, with a window or without; the curator handles sign-in and verification | `headed`, `native` | Dashboard |
+| Instagram capture | SWM drives the signed-in browser in a window; the curator handles sign-in and verification | `headed`, `native` | Dashboard |
 | Automated crawling | SWM, using human-like browser behaviour | `headless`, `headed`, `native` | Command line and dashboard |
 | Replay and QA | The operator | Default browser | Command line; replay also available from the dashboard |
 
@@ -355,9 +355,9 @@ hand to the curator, never as completeness. Explore, hashtag and
 location results are refused as targets: they are selected by Instagram's
 ranking and cannot be presented as an archive of anything.
 
-The run needs no window: **Run in the background** scrolls the same signed-in
-profile unseen, and a window opens only when Instagram needs a person -- a
-sign-in or a verification -- and then stays for the run. A profile is
+A Chrome window opens for the run and stays until it ends; sign in there,
+or clear a verification, when Instagram asks. (A run without a window was
+offered once and did not hold up, so it is no longer an option.) A profile is
 identified by its numeric id once read, and a post is the profile's only when
 the profile's own listing request returned it, under its timeline connection,
 and it names no other owner. A signed-in page carries the viewer's feed,

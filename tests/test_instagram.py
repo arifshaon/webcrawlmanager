@@ -865,11 +865,13 @@ class BrowserChoiceTests(unittest.TestCase):
         self.assertEqual(config.browser_mode, "headed")
         self.assertFalse(config.headless)
 
-    def test_a_run_can_be_asked_to_have_no_window(self):
+    def test_a_run_cannot_be_asked_to_have_no_window(self):
+        """The option existed once; a stored config that still carries it
+        runs with a window like every other."""
         config = InstagramCaptureConfig.from_dict({"targets": ["qnl"],
                                                    "headless": True})
 
-        self.assertTrue(config.headless)
+        self.assertFalse(config.headless)
 
     def test_anything_else_is_refused(self):
         with self.assertRaises(ValueError):

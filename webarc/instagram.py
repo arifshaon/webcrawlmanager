@@ -418,7 +418,9 @@ class InstagramCaptureConfig:
             browser_mode=(str((raw.get("browser") or {}).get("mode")
                               or raw.get("browser_mode") or "headed")),
             chrome_path=(raw.get("browser") or {}).get("chrome_path"),
-            headless=bool(raw.get("headless", False)),
+            # a window, always: a run without one was offered once and did
+            # not hold up; Instagram's checks land on the account either way
+            headless=False,
         )
 
 

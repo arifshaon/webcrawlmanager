@@ -82,8 +82,6 @@ ig-name: >-
   A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the site and the month, is best. Left empty, one is made up from the target.
 ig-operator: >-
   Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
-ig-run: >-
-  Whether a browser window is on screen while the capture works. Ticked, it runs unseen and a window appears only when Instagram needs you.
 ig-listing: >-
   How the list of a profile's posts is found. Browser scrolls the profile like a person would and needs nothing extra. gallery-dl is a separate tool that can be faster; it must be installed, and if Instagram refuses it the capture falls back to the browser.
 ig-browser: >-

@@ -456,14 +456,15 @@ class InstagramApiTests(StorageTestCase):
 
         self.assertEqual(stored["instagram"]["browser"]["mode"], "native")
 
-    def test_a_run_is_visible_unless_asked_to_be_background(self):
+    def test_a_run_always_has_a_window(self):
+        """A run without a window was offered once and did not hold up."""
         visible = self.create().json()
-        background = self.create(headless=True).json()
+        asked = self.create(headless=True).json()
         stored = lambda made: json.loads(  # noqa: E731
             srv._store().get_crawl(made["id"])["config_json"])["instagram"]
 
-        self.assertFalse(stored(visible)["headless"])
-        self.assertTrue(stored(background)["headless"])
+        self.assertNotIn("headless", stored(visible))
+        self.assertNotIn("headless", stored(asked))
 
     def test_the_listing_source_is_stored_and_checked(self):
         from unittest import mock
