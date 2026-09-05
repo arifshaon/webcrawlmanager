@@ -134,32 +134,6 @@ MORE_COMMENTS = [
 ]
 
 
-def _dom_comments(code: str) -> str:
-    """Comment rows already present in the rendered permalink DOM.
-
-    The action-bar "Comment 5" button deliberately looks tempting but is not
-    an expansion control; clicking it is recorded so the browser test can
-    prove the collector leaves it alone.
-    """
-    return f"""
-<section id="dom-comments">
-  <button id="comment-action" type="button"
-          onclick="window.commentActionClicked = true">Comment 5</button>
-  <div class="comment-row">
-    <a href="/dom_reader/"><span dir="auto">dom_reader</span></a>
-    <span dir="auto">Lovely from DOM</span>
-    <a href="/p/{code}/c/9101/"><time datetime="2026-08-15T02:45:30.000Z">3w</time></a>
-    <span role="button">Reply</span>
-  </div>
-  <div class="comment-row">
-    <a href="/emoji_reader/"><span dir="auto">emoji_reader</span></a>
-    <span dir="auto">🇮🇷🇮🇷</span>
-    <a href="/p/{code}/c/9102/"><time datetime="2026-06-20T03:56:29.000Z">11w</time></a>
-    <span role="button">Reply</span>
-  </div>
-</section>"""
-
-
 def _page(title: str, payload: dict, script: str, extra_html: str = "") -> bytes:
     return (f"<!doctype html><html><head><title>{title}</title></head><body>"
             f"<h1>{title}</h1><div style='height:2400px'>scroll me</div>{extra_html}"
@@ -271,32 +245,19 @@ class Handler(BaseHTTPRequestHandler):
             # the post, its first comments, and -- as Instagram's post pages
             # do -- more posts from the same account, with their thumbnails
             others = [n for n in TIMELINE if n["code"] != code][:3]
-            data = {
-                "xdt_api__v1__media__shortcode__web_info": {"items": [self._fix(match)]},
-                "xdt_api__v1__profile_timeline": {
-                    "profile_grid_items": [{"media": n} for n in self._fix(others)]},
-                "initialRouteInfo": {
-                    "route": {"params": {**ROUTE_PARAMS, "shortcode": code}}},
-            }
-            # One post deliberately has no comment connection in its embedded
-            # payload and makes no comment pagination request: its comments
-            # exist only in the rendered DOM, matching the observed Instagram
-            # permalink that motivated this regression test.
-            dom_only = code == TIMELINE[4]["code"]
-            if not dom_only:
-                data["xdt_api__v1__media__media_id__comments__connection"] = {
-                    "edges": [{"node": c} for c in self._fix(COMMENTS)],
-                    "page_info": {"has_next_page": True, "end_cursor": "k1"},
-                }
-            payload = {"data": data}
+            payload = {"data": {"xdt_api__v1__media__shortcode__web_info": {"items": [self._fix(match)]},
+                       "xdt_api__v1__media__media_id__comments__connection": {
+                           "edges": [{"node": c} for c in self._fix(COMMENTS)],
+                           "page_info": {"has_next_page": True, "end_cursor": "k1"}},
+                       "xdt_api__v1__profile_timeline": {
+                           "profile_grid_items": [{"media": n} for n in self._fix(others)]},
+                       "initialRouteInfo": {"route": {"params": {**ROUTE_PARAMS, "shortcode": code}}}}}
             thumbnails = "".join(
                 f"<img src='http://{self.host}/pic/{n['code']}-s.jpg' alt=''>"
                 for n in others)
-            script = "" if dom_only else SCROLL_JS % {
-                "vars": {}, "cursor": json.dumps("k1"),
-                "name": "PolarisPostCommentsPaginationQuery"}
-            extra_html = thumbnails + (_dom_comments(code) if dom_only else "")
-            return self._send(_page(code, payload, script, extra_html))
+            return self._send(_page(code, payload, SCROLL_JS % {"vars": "{}", 
+                "cursor": json.dumps("k1"), "name": "PolarisPostCommentsPaginationQuery"},
+                thumbnails))
         if segs[:1] == ["accounts"]:
             return self._send(b"<html><head><title>Login</title></head><body>Log in</body></html>")
         if segs[:1] == ["pic"]:
