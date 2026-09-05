@@ -424,3 +424,20 @@ class HelpEndpointTests(ServerTestCase):
 
         self.assertEqual(seen["f-max-depth"], "Ours.")
         self.assertIn("f-operator", seen)
+
+
+class ServerLogNoiseTests(unittest.TestCase):
+    """A browser hanging up is not an error the dashboard's log should shout."""
+
+    def test_a_dropped_connection_is_not_logged_as_an_error(self):
+        import logging
+        from webarc.cli import _DroppedConnectionFilter
+        keep = _DroppedConnectionFilter()
+
+        def record(msg):
+            return logging.LogRecord("asyncio", logging.ERROR, __file__, 1, msg, (), None)
+
+        self.assertFalse(keep.filter(record(
+            "Exception in callback _ProactorBasePipeTransport._call_connection_lost()")))
+        self.assertFalse(keep.filter(record("socket.send() raised exception.")))
+        self.assertTrue(keep.filter(record("Task was destroyed but it is pending!")))

@@ -397,6 +397,26 @@ def _resource_gate(output_dir, db_path: str, *, assume_yes: bool = False,
     return True
 
 
+class _DroppedConnectionFilter(logging.Filter):
+    """Keep a browser hanging up out of the server log.
+
+    On Windows, asyncio's proactor loop logs an ERROR with a traceback
+    every time a browser drops a connection the dashboard still held --
+    when a tab is closed, or a new one opens for replay. Nothing failed:
+    the request was answered and the socket is gone. Those two messages
+    are dropped; every other asyncio message still shows.
+    """
+
+    NOISE = ("_call_connection_lost", "socket.send() raised exception")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        return not any(sign in message for sign in self.NOISE)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="swm",
@@ -796,6 +816,7 @@ def main(argv: list[str] | None = None) -> int:
         app = create_app(args.db, args.warc_root, simulate=args.simulate,
                          bind_host=args.host,
                          allow_remote_recording=args.allow_remote_recording)
+        logging.getLogger("asyncio").addFilter(_DroppedConnectionFilter())
         mode = "SIMULATE (no browser)" if args.simulate else "live"
         print(f"{APP_NAME} dashboard → http://{args.host}:{args.port} [{mode}]")
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
