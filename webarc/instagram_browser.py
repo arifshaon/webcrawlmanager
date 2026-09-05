@@ -1009,11 +1009,95 @@ class InstagramBrowserClient:
         raise TargetUnavailable(
             f"Instagram opened /p/{shortcode}/ but served no post record.")
 
+    def _harvest_rendered_comments(self, shortcode: str) -> int:
+        """Read comment rows Instagram has already rendered on the permalink.
+
+        A permalink can contain comments in the live DOM even when opening
+        them causes no comment network request. The stable fact used here is
+        the comment permalink (/p/<shortcode>/c/<comment-id>/); its anchor
+        identifies the row, but its own text is the age ("3w", "11w"), never
+        the comment body. The body and author are therefore read from
+        separate elements in the containing row.
+
+        JSON/GraphQL comments remain authoritative when present: this method
+        only adds ids the response collector has not already observed.
+        """
+        if self._page is None:
+            return 0
+        try:
+            rows = self._page.evaluate(_DOM_COMMENTS_JS, {"shortcode": shortcode})
+        except Exception as exc:
+            log.debug("Rendered comment scan failed for %s: %s", shortcode, exc)
+            return 0
+        if not isinstance(rows, list):
+            return 0
+
+        comments: list[InstagramComment] = []
+        unreadable: list[str] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            comment_id = str(row.get("comment_id") or "").strip()
+            text = row.get("text")
+            if not comment_id:
+                continue
+            if not isinstance(text, str) or not text.strip():
+                unreadable.append(comment_id)
+                continue
+            username = row.get("username")
+            if not isinstance(username, str) or not username.strip():
+                username = None
+            created = row.get("datetime")
+            if not isinstance(created, str) or not created.strip():
+                created = None
+            href = row.get("permalink")
+            if not isinstance(href, str):
+                href = None
+            comments.append(InstagramComment(
+                comment_id=comment_id,
+                post_shortcode=shortcode,
+                author_username=username,
+                text=text.strip(),
+                created_time=created,
+                depth=0,
+                raw={
+                    "source": "rendered-dom",
+                    "comment_permalink": href,
+                    "timestamp_text": row.get("timestamp_text"),
+                    "datetime": created,
+                    "username": username,
+                    "text": text.strip(),
+                    "row_text": row.get("row_text"),
+                },
+                provenance={
+                    "url": self.current_url or self._page.url,
+                    "decoder": "rendered-dom",
+                    "navigation": self.navigation,
+                    "response": None,
+                    "path": f"comment-permalink:{href or comment_id}",
+                }))
+
+        before = len(self.observed.comments_in(self.navigation))
+        self.observed.take([], comments, [], self.navigation)
+        after = len(self.observed.comments_in(self.navigation))
+        if unreadable:
+            self.anomalies.append({
+                "what": "rendered_comment_body_unreadable",
+                "shortcode": shortcode,
+                "comment_ids": unreadable,
+                "navigation": self.navigation,
+            })
+        return max(0, after - before)
+
     def comments(self, shortcode: str,
                  include_replies: bool) -> Iterator[InstagramComment]:
         url = f"{self.base_url}/p/{shortcode}/"
         if self.current_url != url:
             self._goto(url)
+        # Do this before looking for a reveal control. Instagram can serve
+        # comment rows in the initial permalink DOM and clicking "Comment N"
+        # in the action bar merely focuses the composer.
+        self._harvest_rendered_comments(shortcode)
         return _ScrollingComments(self, self.navigation, shortcode,
                                   include_replies)
 
@@ -1213,6 +1297,124 @@ async ({url, credentials}) => {
 }
 """
 
+# Comment rows in Instagram's permalink DOM are identified by their stable
+# comment permalink, not by CSS class names. Classes are generated and
+# change frequently; /p/<shortcode>/c/<id>/ is the durable relationship the
+# page itself exposes.
+_DOM_COMMENTS_JS = r"""
+({shortcode}) => {
+  const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+  const commentPrefix = '/p/' + String(shortcode || '') + '/c/';
+  const excludedRoots = new Set([
+    'p', 'reel', 'reels', 'tv', 'explore', 'accounts', 'direct', 'stories'
+  ]);
+
+  const profileIn = root => {
+    if (!root || !root.querySelectorAll) return null;
+    for (const link of Array.from(root.querySelectorAll('a[href]'))) {
+      let path = '';
+      try {
+        path = new URL(link.getAttribute('href') || '', location.origin).pathname;
+      } catch (_) {
+        continue;
+      }
+      const parts = path.split('/').filter(Boolean);
+      if (parts.length !== 1) continue;
+      const username = decodeURIComponent(parts[0]);
+      if (!username || excludedRoots.has(username.toLowerCase())) continue;
+      return {link, username};
+    }
+    return null;
+  };
+
+  const bodyCandidates = (root, profileLink, username, stampAnchor) => {
+    const stampText = clean(stampAnchor && stampAnchor.textContent);
+    const candidates = [];
+    if (!root || !root.querySelectorAll) return candidates;
+    for (const span of Array.from(
+        root.querySelectorAll('span[dir="auto"], span[dir="ltr"], span[dir="rtl"]'))) {
+      if (profileLink && (profileLink.contains(span) || span.contains(profileLink))) continue;
+      if (stampAnchor && stampAnchor.contains(span)) continue;
+      const ownerAnchor = span.closest('a[href]');
+      if (ownerAnchor && (ownerAnchor.getAttribute('href') || '').includes(commentPrefix)) continue;
+      const text = clean(span.innerText || span.textContent);
+      if (!text || text === username || text === stampText) continue;
+      if (/^(?:reply|edited|see translation|like|likes?|view replies?|hide replies?)$/i.test(text)) continue;
+      if (/^(?:\d+[smhdw]|(?:\d+\s+)?(?:second|minute|hour|day|week|month|year)s?\s+ago)$/i.test(text)) continue;
+      candidates.push(text);
+    }
+    return Array.from(new Set(candidates)).sort((a, b) => b.length - a.length);
+  };
+
+  const fallbackBody = (root, username, stampText) => {
+    if (!root) return null;
+    const pieces = String(root.innerText || '').split(/\n+/).map(clean).filter(Boolean)
+      .filter(text => text !== username && text !== stampText)
+      .filter(text => !/^(?:reply|edited|see translation|like|likes?|view replies?|hide replies?)$/i.test(text))
+      .filter(text => !/^(?:\d+[smhdw]|(?:\d+\s+)?(?:second|minute|hour|day|week|month|year)s?\s+ago)$/i.test(text));
+    pieces.sort((a, b) => b.length - a.length);
+    return pieces[0] || null;
+  };
+
+  const found = [];
+  const seen = new Set();
+  for (const anchor of Array.from(document.querySelectorAll('a[href]'))) {
+    const href = anchor.getAttribute('href') || '';
+    const marker = href.indexOf(commentPrefix);
+    if (marker < 0) continue;
+    const commentId = href.slice(marker + commentPrefix.length).split(/[/?#]/)[0];
+    if (!commentId || seen.has(commentId)) continue;
+
+    const time = anchor.querySelector('time');
+    const timestampText = clean(
+      (time && (time.innerText || time.textContent)) || anchor.innerText || anchor.textContent
+    );
+    const datetime = time ? clean(time.getAttribute('datetime')) || null : null;
+
+    let node = anchor.parentElement;
+    let row = null;
+    let profile = null;
+    let body = null;
+    for (let depth = 0; node && depth < 9; depth += 1, node = node.parentElement) {
+      const textLength = clean(node.innerText || node.textContent).length;
+      if (textLength > 20000) break;
+      const candidateProfile = profileIn(node);
+      if (!candidateProfile) continue;
+      const bodies = bodyCandidates(
+        node, candidateProfile.link, candidateProfile.username, anchor
+      );
+      if (bodies.length) {
+        row = node;
+        profile = candidateProfile;
+        body = bodies[0];
+        break;
+      }
+      if (!row && textLength < 8000) {
+        row = node;
+        profile = candidateProfile;
+      }
+    }
+
+    if (row && profile && !body) {
+      body = fallbackBody(row, profile.username, timestampText);
+    }
+    if (!row || !profile) continue;
+
+    seen.add(commentId);
+    found.push({
+      comment_id: commentId,
+      permalink: href,
+      username: profile.username,
+      text: body,
+      datetime,
+      timestamp_text: timestampText || null,
+      row_text: clean(row.innerText || row.textContent).slice(0, 12000),
+    });
+  }
+  return found;
+}
+"""
+
 
 def _shortcode_in(url: str) -> Optional[str]:
     match = re.search(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)", url or "")
@@ -1393,16 +1595,31 @@ class _ScrollingComments:
         return None
 
     def _load_more(self) -> None:
+        # First retain anything already rendered. A reveal control is
+        # optional: on some permalinks the rows are in the initial DOM.
+        self.client._harvest_rendered_comments(self.shortcode)
         # The thread lives in its own scroll container on a permalink; the
         # window may not move. Scroll the deepest scrollable region as well,
-        # and press any "load more comments" control that is offered.
+        # and press only a genuine expansion control. In particular, an
+        # action-bar "Comment 5" button is not one: it focuses the composer.
         try:
             self.client._page.evaluate("""
               () => {
-                const controls = Array.from(document.querySelectorAll('button, [role="button"]'));
+                const controls = Array.from(document.querySelectorAll(
+                  'button, [role="button"], [role="link"], a, span'));
+                const expansion = /^(?:load more comments?|view more comments?|more comments?|view all \\d+ comments?)$/i;
                 for (const c of controls) {
-                  const label = (c.innerText || c.getAttribute('aria-label') || '').toLowerCase();
-                  if (/load more comments|view more comments|more comments|view all \\d+ comments/.test(label)) { c.click(); break; }
+                  const label = String(
+                    c.innerText || c.getAttribute('aria-label') || ''
+                  ).replace(/\\s+/g, ' ').trim();
+                  if (!expansion.test(label)) continue;
+                  const target = c.closest(
+                    'button, [role="button"], [role="link"], a'
+                  ) || c;
+                  if (target.getClientRects().length) {
+                    target.click();
+                    break;
+                  }
                 }
                 const boxes = Array.from(document.querySelectorAll('div, ul, section'))
                   .filter(el => el.scrollHeight > el.clientHeight + 80 &&
@@ -1414,6 +1631,7 @@ class _ScrollingComments:
         except Exception:
             pass
         self.client._settle()
+        self.client._harvest_rendered_comments(self.shortcode)
 
     def __next__(self) -> InstagramComment:
         found = self._pending()

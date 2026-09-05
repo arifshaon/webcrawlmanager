@@ -549,6 +549,25 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         self.assertIn("9003", ids)                            # loaded on scroll
         self.assertTrue(all(c.post_shortcode == code for c in comments))
 
+    def test_comments_already_in_the_dom_are_read_without_clicking_comment_count(self):
+        client = self.client()
+        code = serve.TIMELINE[4]["code"]
+
+        comments = list(client.comments(code, include_replies=True))
+
+        by_id = {c.comment_id: c for c in comments}
+        self.assertEqual(set(by_id), {"9101", "9102"})
+        self.assertEqual(by_id["9101"].author_username, "dom_reader")
+        self.assertEqual(by_id["9101"].text, "Lovely from DOM")
+        self.assertEqual(by_id["9101"].created_time,
+                         "2026-08-15T02:45:30.000Z")
+        self.assertEqual(by_id["9102"].author_username, "emoji_reader")
+        self.assertEqual(by_id["9102"].text, "🇮🇷🇮🇷")
+        self.assertNotIn(by_id["9101"].text, {"3w", "11w"})
+        self.assertEqual(by_id["9101"].provenance["decoder"], "rendered-dom")
+        self.assertFalse(client._page.evaluate(
+            "() => Boolean(window.commentActionClicked)"))
+
     def test_the_comment_grade_follows_the_pages_own_count_and_paging(self):
         """The post reports 3 comments; two are on the page, the third
         arrives on scroll with a closed page: complete against the count."""
