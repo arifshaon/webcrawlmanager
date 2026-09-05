@@ -228,7 +228,7 @@
     background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center; }
   .busy-card { background: var(--paper); border: 1px solid var(--rule);
     border-radius: 10px; padding: 22px 26px; display: flex; align-items: center;
-    gap: 14px; max-width: 26rem; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
+    gap: 14px; max-width: 26rem; flex-wrap: wrap; box-shadow: 0 8px 30px rgba(0,0,0,.18); }
   .busy-spin { width: 18px; height: 18px; border-radius: 50%; flex: none;
     border: 2px solid var(--rule); border-top-color: var(--run);
     animation: busy-turn .8s linear infinite; }
@@ -1936,31 +1936,34 @@ function busy(text) {
   if (!node) {
     node = document.createElement("div");
     node.id = "busy-overlay";
-    node.innerHTML = '<div class="busy-card"><div class="busy-spin"></div>' +
-      '<div class="busy-text"></div></div>';
     document.body.appendChild(node);
   }
+  node.innerHTML = '<div class="busy-card"><div class="busy-spin"></div>' +
+    '<div class="busy-text"></div></div>';
   node.querySelector(".busy-text").textContent = text;
   node.style.display = "flex";
   return () => { node.style.display = "none"; };
 }
+function offerOpen(url, text) {
+  // A browser lets a click open a new tab only for a few seconds. When the
+  // build took longer and the tab was refused, the wait dialog becomes a
+  // button: a fresh click, so the tab is allowed.
+  const node = document.getElementById("busy-overlay");
+  node.innerHTML = `<div class="busy-card"><div class="busy-text">${escapeHtml(text)}</div>`
+    + `<button type="button" class="primary" id="busy-open">Open in a new tab</button>`
+    + `<button type="button" class="secondary" id="busy-close">Close</button></div>`;
+  node.style.display = "flex";
+  const close = () => { node.style.display = "none"; node.innerHTML = ""; };
+  const open = node.querySelector("#busy-open");
+  open.dataset.url = url;
+  open.addEventListener("click", () => { close(); if (!window.open(url, "_blank")) location.assign(url); });
+  node.querySelector("#busy-close").addEventListener("click", close);
+  open.focus();
+}
 async function replay(id, want) {
-  // The tab is opened here, inside the click: a browser lets a click open
-  // a new tab only for a few seconds, and building the replay copy of a
-  // large archive takes longer than that, after which window.open is
-  // blocked without a word. The tab shows a note until the replay is
-  // ready, then goes there; on failure it closes and the reason is shown.
   const message = want === "pages"
     ? "Building the pages for this capture. Large captures take a moment."
     : "Preparing the WARC for replay. Large archives take a moment.";
-  const tab = window.open("", "_blank");
-  if (tab) {
-    try {
-      tab.document.write(`<!doctype html><title>Preparing… — SWM</title><body style="font:14px system-ui;padding:2em;color:#334">`
-        + `<p>${message} This tab opens job #${Number(id)} when it is ready.</p>`);
-      tab.document.close();
-    } catch (_) { /* a tab we cannot write to still navigates */ }
-  }
   const done = busy(message);
   try {
     const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
@@ -1969,13 +1972,11 @@ async function replay(id, want) {
     const url = want === "pages" ? (r.pages_url || r.replay_url)
                                  : (r.replay_url || r.pages_url);
     if (!url) throw new Error("nothing to open for this capture");
-    if (tab && !tab.closed) tab.location.href = url;
-    else if (!window.open(url, "_blank")) location.assign(url);
+    if (window.open(url, "_blank")) { done(); return; }
+    offerOpen(url, want === "pages" ? "The pages are ready." : "The replay is ready.");
   } catch (e) {
-    if (tab && !tab.closed) tab.close();
-    alert("Could not open: " + e.message);
-  } finally {
     done();
+    alert("Could not open: " + e.message);
   }
 }
 async function ctl(id, cmd) {
