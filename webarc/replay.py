@@ -425,7 +425,23 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
     return site_dir
 
 
+class _ReplayTCPServer(socketserver.ThreadingTCPServer):
+    """A threading server the process can leave.
+
+    The stdlib default runs each connection on a foreground thread and
+    joins them all when the server closes. ReplayWeb.page keeps
+    connections open for as long as its tab lives, so stopping the server
+    -- or Ctrl+C on the dashboard -- waited for a browser that never hangs
+    up. Connection threads here are background threads, closing does not
+    wait for them, and an idle connection is dropped after a minute.
+    """
+    daemon_threads = True
+    block_on_close = False
+    allow_reuse_address = True
+
+
 class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+    timeout = 60                 # an idle keep-alive connection is let go
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
         ".js": "text/javascript",
@@ -543,20 +559,20 @@ class ReplayServer:
     def _bind(self):
         """Bind the requested port, or the next free one above it."""
         handler = functools.partial(_QuietHandler, directory=str(self.replay_root))
-        socketserver.TCPServer.allow_reuse_address = True
         last_error: OSError | None = None
         for port in range(self.port, self.port + self.PORT_TRIES):
             if self._port_answers(port):
                 last_error = OSError(f"port {port} is in use by another program")
                 continue
             try:
-                httpd = socketserver.ThreadingTCPServer((self.host, port), handler)
+                httpd = _ReplayTCPServer((self.host, port), handler)
             except OSError as exc:
                 last_error = exc
                 continue
-            if port != self.port:
+            bound = httpd.server_address[1]          # port 0 means "any free one"
+            if port and port != self.port:
                 log.warning("Replay port %d is in use; using %d instead", self.port, port)
-            self.port = port
+            self.port = bound
             return httpd
         raise OSError(f"no free port for the replay server between {self.port} and "
                       f"{self.port + self.PORT_TRIES - 1}: {last_error}")
@@ -581,7 +597,11 @@ class ReplayServer:
         return f"http://{self.host}:{self.port}/{coll}/index.html"
 
     def stop(self) -> None:
-        if self._httpd:
-            self._httpd.shutdown()
-            self._httpd.server_close()
-            self._httpd = None
+        """Stop serving; returns at once, whatever a browser still holds open."""
+        httpd, self._httpd = self._httpd, None
+        if httpd is None:
+            return
+        if self._thread is not None and self._thread.is_alive():
+            httpd.shutdown()          # ends serve_forever on the thread
+        httpd.server_close()
+        self._thread = None

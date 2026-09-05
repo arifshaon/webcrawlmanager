@@ -592,6 +592,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         except Exception as exc:               # pragma: no cover
             log.warning("Could not reconcile crawl %s: %s", stale.get("id"), exc)
 
+    @app.on_event("shutdown")
+    def _leave_cleanly() -> None:
+        """Ctrl+C must end the process: stop what the dashboard started."""
+        global _PYWB
+        if _PYWB is not None:
+            try:
+                _PYWB.stop()
+            except Exception as exc:               # pragma: no cover
+                log.debug("Replay server did not stop cleanly: %s", exc)
+            _PYWB = None
+        if _MONITOR is not None:
+            _MONITOR.stop()
+
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
         html = DASHBOARD.read_text(encoding="utf-8")
