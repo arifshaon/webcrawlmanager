@@ -1920,6 +1920,48 @@ function renderResources(res) {
     <div class="cell"><div class="k">Used by ${jobs.length} running job${jobs.length === 1 ? "" : "s"}</div><div class="v">${jobsText}${res.waiting && res.waiting.length ? `<span class="sub"> · ${res.waiting.length} waiting</span>` : ""}</div></div>`;
   $("#resources-note").textContent = res.note || "";
 }
+async function continueFacebook(id) {
+  try {
+    await api(`/api/crawls/${id}/continue`, {method:"POST"});
+    refresh();
+  } catch (e) { alert("Continuation failed: " + e.message); }
+}
+function toggle(id) {
+  if (openState.has(id)) openState.delete(id); else openState.add(id);
+  const el = document.querySelector(`.crawl[data-id="${id}"]`);
+  if (el) el.classList.toggle("open");
+}
+function busy(text) {
+  let node = document.getElementById("busy-overlay");
+  if (!node) {
+    node = document.createElement("div");
+    node.id = "busy-overlay";
+    node.innerHTML = '<div class="busy-card"><div class="busy-spin"></div>' +
+      '<div class="busy-text"></div></div>';
+    document.body.appendChild(node);
+  }
+  node.querySelector(".busy-text").textContent = text;
+  node.style.display = "flex";
+  return () => { node.style.display = "none"; };
+}
+async function replay(id, want) {
+  const done = busy(want === "pages"
+    ? "Building the pages for this capture. Large captures take a moment."
+    : "Preparing the WARC for replay. Large archives take a moment.");
+  try {
+    const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
+    // A Facebook or Instagram capture can offer both: replay of the
+    // archived exchanges, and the pages built from its records.
+    const url = want === "pages" ? (r.pages_url || r.replay_url)
+                                 : (r.replay_url || r.pages_url);
+    if (!url) throw new Error("nothing to open for this capture");
+    window.open(url, "_blank");
+  } catch (e) {
+    alert("Could not open: " + e.message);
+  } finally {
+    done();
+  }
+}
 async function ctl(id, cmd) {
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }
   catch (e) { alert("Action failed: " + e.message); }

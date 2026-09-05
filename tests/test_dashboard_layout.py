@@ -67,6 +67,27 @@ class ElementReferenceTests(DashboardTestCase):
         self.assertEqual(missing, [])
 
 
+class HandlerTests(DashboardTestCase):
+    """Every onclick in the page or the row renderer names a function the
+    page script defines. A row button whose function is gone fails only
+    when it is pressed, silently, so this is checked without a browser."""
+
+    def defined(self):
+        return set(re.findall(r'^(?:async )?function (\w+)\(', self.script, re.M))
+
+    def test_every_row_action_has_a_handler(self):
+        source = self.markup + HARDENING.read_text(encoding="utf-8")
+        called = set(re.findall(r'onclick="(\w+)\(', source))
+
+        self.assertTrue(called)
+        self.assertEqual(sorted(called - self.defined()), [])
+
+    def test_the_replay_and_pages_actions_are_wired(self):
+        for name in ("replay", "toggle", "editMetadata", "startNow", "forceStop", "del", "ctl"):
+            with self.subTest(handler=name):
+                self.assertIn(name, self.defined())
+
+
 class NavigationTests(DashboardTestCase):
     """One page per job of work: set one up, watch them run, change settings."""
 
