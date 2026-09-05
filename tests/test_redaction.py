@@ -52,6 +52,47 @@ class RedactBodyTests(unittest.TestCase):
         self.assertEqual(safe, code)
         self.assertEqual(fields, [])
 
+    def test_a_template_string_in_a_bundle_is_left_whole(self):
+        """X's client bundle builds a URL as `${S}?access_token=${e}` inside
+        a template string. A query-string rule anchored on "?" matched it
+        and swallowed the code that followed, up to the next ">", and the
+        bundle no longer parsed: the profile page showed "Something went
+        wrong. Try reloading." at replay. Code is never touched."""
+        code = (b'N.current=null;let t=`${S}?access_token=${e.access_token}`;'
+                b'fetch(t).then(e=>{ei(t)}).catch(e=>{ei(t)});break}')
+
+        for content_type in ("application/javascript; charset=utf-8",
+                             "text/javascript", "application/ecmascript"):
+            with self.subTest(content_type=content_type):
+                safe, fields = redact_body(code, content_type)
+                self.assertEqual(safe, code)
+                self.assertEqual(fields, [])
+
+    def test_a_lower_case_user_id_in_a_targets_record_is_kept(self):
+        """Meta's bootstrap names the capturing account as USER_ID in upper
+        case; X's records name their owner as user_id in lower case. Only
+        the former is the session's."""
+        body = b'{"USER_ID":"424242","user_id":"1387952802","user_id_str":"1387952802"}'
+
+        safe, fields = redact_body(body, "application/json")
+
+        self.assertIn(b'"user_id":"1387952802"', safe)
+        self.assertIn(b'"user_id_str":"1387952802"', safe)
+        self.assertNotIn(b'"USER_ID":"424242"', safe)
+        self.assertEqual(fields, ["capturing_user_id"])
+
+    def test_xs_session_object_loses_the_capturing_accounts_id(self):
+        body = (b'{"session":{"isRestrictedSession":false,"language":"en","ssoInitTokens":{},'
+                b'"superFollowersCount":0,"user_id":"424242","userFeatures":{"a":true}},'
+                b'"entities":{"users":{"entities":{"1387952802":{"user_id":"1387952802"}}}}}')
+
+        safe, fields = redact_body(body, "text/html")
+
+        self.assertNotIn(b'"user_id":"424242"', safe)
+        self.assertIn(b'"user_id":"1387952802"', safe)
+        self.assertIn(b'"userFeatures"', safe)
+        self.assertEqual(fields, ["x_session_user_id"])
+
     def test_a_secret_in_a_query_string_or_form_body_is_still_removed(self):
         for body, ctype in (
             (b'{"u":"/ajax/qm/?__a=1&__user=42&__comet_req=7&jazoest=999"}', "text/html"),

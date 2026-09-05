@@ -1,9 +1,9 @@
 """A small site in the shape of X's web client, for tests.
 
 The HTML pages carry nothing but a script: like X's client, they resolve
-the account with ``UserByScreenName``, list its posts with ``UserTweets``
-(``UserTweetsAndReplies`` on the Replies tab, ``UserMedia`` on the Media
-tab), page by sending the bottom cursor back on scroll, open a post with
+the account with ``UserByScreenName``, list its posts with ``UserOriginalsTimeline``
+(``UserRepliesTimeline`` on the Replies tab, ``UserVideoTimeline`` on the
+Media tab; the names X's client sent in September 2026), page by sending the bottom cursor back on scroll, open a post with
 ``TweetDetail`` and a search with ``SearchTimeline`` -- every call a GET to
 ``/i/api/graphql/<id>/<Name>`` with ``variables`` as a JSON query parameter.
 The responses follow X's instruction/entry shapes: a pinned entry, tweet
@@ -19,13 +19,19 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
-USER = {"__typename": "User", "rest_id": "100",
-        "legacy": {"screen_name": "qnl", "name": "Qatar National Library",
-                   "description": "Books.", "followers_count": 1200,
-                   "friends_count": 5, "statuses_count": 12, "protected": False,
-                   "created_at": "Mon Jan 01 00:00:00 +0000 2018",
-                   "profile_image_url_https": "http://MEDIAHOST/profile_images/100/avatar_normal.jpg",
-                   "pinned_tweet_ids_str": ["1000000000000000050"]},
+# the account, in the shape X serves now: no legacy block; core,
+# relationship_counts, tweet_counts, profile_bio, avatar, privacy
+USER = {"__typename": "User", "rest_id": "100", "id": "VXNlcjoxMDA=",
+        "core": {"screen_name": "qnl", "name": "Qatar National Library",
+                 "created_at": "Mon Jan 01 00:00:00 +0000 2018"},
+        "profile_bio": {"description": "Books.", "entities": {"description": {}}},
+        "relationship_counts": {"followers": 1200, "following": 5},
+        "tweet_counts": {"media_tweets": 3, "tweets": 12},
+        "privacy": {"protected": False}, "verification": {"verified": False},
+        "avatar": {"image_url": "http://MEDIAHOST/profile_images/100/avatar_normal.jpg"},
+        "banner": {"image_url": "http://MEDIAHOST/profile_banners/100/1"},
+        "location": {"location": "Doha"}, "website": {"url": "https://qnl.qa/"},
+        "pinned_items": ["1000000000000000050"],
         "is_blue_verified": True}
 OTHER = {"__typename": "User", "rest_id": "777",
          "legacy": {"screen_name": "someone_else", "name": "Someone Else",
@@ -47,7 +53,7 @@ def _id(n: int) -> str:
     return str(1000000000000000000 + (1000 - n))
 
 
-USER["legacy"]["pinned_tweet_ids_str"] = [_id(50)]
+USER["pinned_items"] = [_id(50)]
 
 
 def _created(n: int) -> str:
@@ -282,12 +288,12 @@ class Handler(BaseHTTPRequestHandler):
         if segs[0] == "nobody":
             return self._send(b"<html><body>This account doesn\xe2\x80\x99t exist</body></html>")
         if segs[0] in ("qnl", "someone_else", "quiet"):
-            op = {"with_replies": "UserTweetsAndReplies", "media": "UserMedia"}.get(
-                segs[1] if len(segs) > 1 else "", "UserTweets")
+            op = {"with_replies": "UserRepliesTimeline", "media": "UserVideoTimeline"}.get(
+                segs[1] if len(segs) > 1 else "", "UserOriginalsTimeline")
             user_id = {"qnl": "100", "someone_else": "777", "quiet": "300"}[segs[0]]
             ops = [["UserByScreenName", {"screen_name": segs[0]}],
                    [op, {"userId": user_id, "count": 20}]]
-            if segs[0] == "qnl" and op == "UserTweets":
+            if segs[0] == "qnl" and op == "UserOriginalsTimeline":
                 # the signed-in client also fetches the viewer's own things
                 ops.insert(0, ["HomeTimeline", {"count": 20}])
             return self._send(self._page(segs[0], ops, op, {"userId": user_id, "count": 20}))
@@ -305,7 +311,7 @@ class Handler(BaseHTTPRequestHandler):
             body = {"data": {"home": {"home_timeline_urt": {"instructions": [
                 {"type": "TimelineAddEntries", "entries": [entry(self._fix(READER_POST)),
                                                           entry(self._fix(PLAIN[0]))]}]}}}}
-        elif name == "UserTweets":
+        elif name == "UserOriginalsTimeline":
             if variables.get("userId") == "300":
                 # an account that has posted nothing: X still answers with a
                 # cursor, as it does on any timeline
@@ -332,11 +338,11 @@ class Handler(BaseHTTPRequestHandler):
                     {"type": "TimelineAddEntries", "entries":
                         first[:2] + [promoted_entry(self._fix(PROMOTED)), who_to_follow()]
                         + first[2:] + [cursor("Top", "t1"), cursor("Bottom", "b1")]}])
-        elif name == "UserTweetsAndReplies":
+        elif name == "UserRepliesTimeline":
             body = timeline_response([{"type": "TimelineAddEntries", "entries": [
                 module("profile-conversation-70", [self._fix(READER_POST), self._fix(REPLY_BY_ACCOUNT)]),
                 entry(self._fix(PLAIN[1])), cursor("Bottom", "r-end")]}])
-        elif name == "UserMedia":
+        elif name == "UserVideoTimeline":
             body = timeline_response([{"type": "TimelineAddEntries", "entries": [
                 entry(self._fix(PHOTO)), entry(self._fix(VIDEO)), cursor("Bottom", "m-end")]}])
         elif name == "TweetDetail":

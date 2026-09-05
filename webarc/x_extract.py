@@ -27,17 +27,26 @@ _GRAPHQL_PATH_RE = re.compile(r"/i/api/graphql/(?P<id>[^/]+)/(?P<name>[A-Za-z0-9
 # record read from each is evidence of. Anything else the signed-in client
 # fetches (the home feed, notifications, recommendations) is recorded in the
 # WARC but never produces a record.
-PROFILE_LISTINGS = ("UserTweets", "UserTweetsAndReplies", "UserMedia")
-SEARCH_LISTINGS = ("SearchTimeline",)
-DETAIL_OPERATIONS = ("TweetDetail", "TweetResultByRestId")
+# X renames these from time to time: the names on the left are what the
+# client sent in September 2026 (observed on the first capture), the ones
+# on the right are what the open-source readers knew before. Both are
+# accepted; a name is never hard-coded on the request side.
+OPERATIONS_OF_SURFACE = {
+    "posts": ("UserOriginalsTimeline", "UserTweets"),
+    "replies": ("UserRepliesTimeline", "UserTweetsAndReplies"),
+    "media": ("UserVideoTimeline", "UserMediaTimeline", "UserMedia"),
+    "conversation": ("TweetDetail", "TweetResultByRestId"),
+    "search": ("SearchTimeline",),
+}
+PROFILE_LISTINGS = (OPERATIONS_OF_SURFACE["posts"] + OPERATIONS_OF_SURFACE["replies"]
+                    + OPERATIONS_OF_SURFACE["media"])
+SEARCH_LISTINGS = OPERATIONS_OF_SURFACE["search"]
+DETAIL_OPERATIONS = OPERATIONS_OF_SURFACE["conversation"]
 USER_LOOKUPS = ("UserByScreenName", "UserByRestId")
 TARGET_OPERATIONS = PROFILE_LISTINGS + SEARCH_LISTINGS + DETAIL_OPERATIONS + USER_LOOKUPS
 
-SURFACE_OF_OPERATION = {
-    "UserTweets": "posts", "UserTweetsAndReplies": "replies",
-    "UserMedia": "media", "TweetDetail": "conversation",
-    "TweetResultByRestId": "conversation", "SearchTimeline": "search",
-}
+SURFACE_OF_OPERATION = {name: surface for surface, names in OPERATIONS_OF_SURFACE.items()
+                        for name in names}
 
 # Entries injected into a timeline that are not posts of it.
 _INJECTED_PREFIXES = ("who-to-follow-", "module-", "messageprompt-", "cursor-",
@@ -285,33 +294,43 @@ def user_from_result(result: object, provenance: Optional[dict] = None) -> Optio
         return None
     if str(result.get("__typename") or "User") not in ("User",):
         return None
-    user_id = _string(result.get("rest_id")) or _string((result.get("legacy") or {}).get("id_str"))
-    legacy = result.get("legacy") if isinstance(result.get("legacy"), dict) else {}
-    core = result.get("core") if isinstance(result.get("core"), dict) else {}
+    # Two shapes: the older one keeps everything under ``legacy``; the one
+    # X serves now spreads it over core, relationship_counts, tweet_counts,
+    # profile_bio, avatar, privacy and verification, with no legacy at all.
+    def section(name: str) -> dict:
+        value = result.get(name)
+        return value if isinstance(value, dict) else {}
+    legacy, core = section("legacy"), section("core")
+    user_id = _string(result.get("rest_id")) or _string(legacy.get("id_str"))
     handle = _string(legacy.get("screen_name")) or _string(core.get("screen_name"))
     if not user_id or not handle:
         return None
-    avatar = result.get("avatar") if isinstance(result.get("avatar"), dict) else {}
-    location = result.get("location") if isinstance(result.get("location"), dict) else {}
-    privacy = result.get("privacy") if isinstance(result.get("privacy"), dict) else {}
-    verification = result.get("verification") if isinstance(result.get("verification"), dict) else {}
+    counts, tweets = section("relationship_counts"), section("tweet_counts")
+    bio, website = section("profile_bio"), section("website")
     pinned = legacy.get("pinned_tweet_ids_str")
+    if not isinstance(pinned, list):
+        items = result.get("pinned_items")
+        pinned = [(i.get("rest_id") or i.get("id")) if isinstance(i, dict) else i
+                  for i in items] if isinstance(items, list) else []
     return XUser(
         user_id=user_id, handle=handle,
         name=_string(legacy.get("name")) or _string(core.get("name")),
-        description=_string(legacy.get("description")),
-        location=_string(legacy.get("location")) or _string(location.get("location")),
-        url=_string(legacy.get("url")),
+        description=_string(legacy.get("description")) or _string(bio.get("description")),
+        location=_string(legacy.get("location")) or _string(section("location").get("location")),
+        url=_string(legacy.get("url")) or _string(website.get("url")),
         created_time=x_time_to_iso(legacy.get("created_at") or core.get("created_at")),
-        followers_count=_int(legacy.get("followers_count")),
-        following_count=_int(legacy.get("friends_count")),
-        posts_count=_int(legacy.get("statuses_count")),
-        is_protected=bool(legacy.get("protected") or privacy.get("protected")),
+        followers_count=_int(legacy.get("followers_count")) if "followers_count" in legacy
+        else _int(counts.get("followers")),
+        following_count=_int(legacy.get("friends_count")) if "friends_count" in legacy
+        else _int(counts.get("following")),
+        posts_count=_int(legacy.get("statuses_count")) if "statuses_count" in legacy
+        else _int(tweets.get("tweets")),
+        is_protected=bool(legacy.get("protected") or section("privacy").get("protected")),
         is_verified=bool(result.get("is_blue_verified") or legacy.get("verified")
-                         or verification.get("verified")),
+                         or section("verification").get("verified")),
         profile_image_url=_string(legacy.get("profile_image_url_https"))
-        or _string(avatar.get("image_url")),
-        pinned_post_ids=[str(p) for p in pinned if _string(p)] if isinstance(pinned, list) else [],
+        or _string(section("avatar").get("image_url")),
+        pinned_post_ids=[str(p) for p in pinned if _string(p)],
         raw=result, provenance=dict(provenance or {}))
 
 

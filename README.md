@@ -431,7 +431,7 @@ The dashboard's **X** tab captures an account's posts, a single post with
 its conversation, or what X shows for a hashtag or search, through a
 Chrome the curator has signed in to. It is built the way the Instagram
 mode is, and X makes it simpler: every request X's web client makes names
-its operation in the URL (`/i/api/graphql/<id>/UserTweets`), so SWM
+its operation in the URL (`/i/api/graphql/<id>/UserOriginalsTimeline`), so SWM
 recognises the operations it wants from the page's own traffic and reads
 the answers. The rotating operation ids, drifting feature flags and
 obfuscated transaction header that every home-made X client chases never
@@ -447,9 +447,14 @@ are refused.
 
 Attribution follows the rule that fixed Instagram's contamination: the
 account is resolved to its numeric id first, and a post is the account's
-only when one of the account's own listing operations (`UserTweets`,
-`UserTweetsAndReplies`, `UserMedia`, keyed by that id) returned it and
-its author is that id. The home feed, notifications and recommendations
+only when one of the account's own listing operations (keyed by that id)
+returned it and its author is that id. X renames these operations from
+time to time: the first capture, in September 2026, showed
+`UserOriginalsTimeline`, `UserRepliesTimeline` and `UserVideoTimeline`
+where the open-source readers knew `UserTweets`, `UserTweetsAndReplies`
+and `UserMedia`; SWM accepts both sets, and a capture that lists nothing
+records every operation the page made under `client_anomaly` in its
+events so the next rename is visible. The home feed, notifications and recommendations
 the signed-in client fetches beside the target are written to the WARC
 (a WARC without them replays with errors the page never showed), counted
 in the manifest under `operations_observed`, and never produce records.
@@ -498,7 +503,12 @@ Every run writes `x-posts.jsonl`/`.csv`, `x-users.json`, `x-media.json`,
 record or media file was read from, session material removed) with
 `raw/posts/` and `raw/users/`, `pages/` built from the records, and
 optionally a WARC with `x-csrf-token`, `x-client-transaction-id`, the
-bearer and the cookies redacted on the request side. The design and its
+bearer and the cookies redacted on the request side, and the signed-in
+account's id removed from the page's session object. JavaScript is never
+rewritten: X's bundle builds a URL as `?access_token=${…}` inside a
+template string, and a redaction that landed there once left a bundle
+that no longer parsed, so replay showed "Something went wrong. Try
+reloading." Captures made before that fix need to be run again. The design and its
 reasoning are in `docs/research/x-capture.md`.
 
 ## Automated crawling

@@ -191,12 +191,33 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(read.posts[1].relationship, "reply")
         self.assertEqual(read.posts[1].provenance["module"], "profile-conversation-70")
 
-    def test_the_user_is_read_from_a_lookup(self):
+    def test_the_user_is_read_from_a_lookup_in_either_shape(self):
         read = read_timeline([{"data": {"user": {"result": self.fixture(serve.USER)}}}])
-        self.assertEqual(read.users[0].user_id, "100")
-        self.assertEqual(read.users[0].pinned_post_ids, [serve.PINNED["rest_id"]])
-        self.assertEqual(read.users[0].followers_count, 1200)
+        user = read.users[0]
+        self.assertEqual((user.user_id, user.handle, user.name), ("100", "qnl", "Qatar National Library"))
+        self.assertEqual(user.pinned_post_ids, [serve.PINNED["rest_id"]])
+        self.assertEqual((user.followers_count, user.following_count, user.posts_count), (1200, 5, 12))
+        self.assertEqual((user.description, user.location, user.url), ("Books.", "Doha", "https://qnl.qa/"))
+        self.assertTrue(user.profile_image_url.endswith("avatar_normal.jpg"))
         self.assertIsNone(user_from_result({"__typename": "UserUnavailable"}))
+        older = user_from_result({"__typename": "User", "rest_id": "5", "legacy": {
+            "screen_name": "old", "name": "Old Shape", "followers_count": 7, "friends_count": 1,
+            "statuses_count": 3, "protected": True, "pinned_tweet_ids_str": ["9"]}})
+        self.assertEqual((older.handle, older.followers_count, older.posts_count,
+                          older.is_protected, older.pinned_post_ids), ("old", 7, 3, True, ["9"]))
+
+    def test_the_operations_x_sends_now_and_the_older_names_are_both_listings(self):
+        from webarc.x_extract import SURFACE_OF_OPERATION
+        for name, surface in (("UserOriginalsTimeline", "posts"), ("UserTweets", "posts"),
+                              ("UserRepliesTimeline", "replies"), ("UserVideoTimeline", "media"),
+                              ("UserMedia", "media"), ("SearchTimeline", "search")):
+            with self.subTest(name=name):
+                self.assertEqual(SURFACE_OF_OPERATION[name], surface)
+                asked = describe_graphql_request(
+                    f"https://x.com/i/api/graphql/q/{name}?variables=%7B%22userId%22%3A%22100%22%7D")
+                self.assertTrue(asked["listing"])
+        self.assertFalse(describe_graphql_request(
+            "https://x.com/i/api/graphql/q/ProfileSpotlightsQuery?variables=%7B%7D")["target_operation"])
 
     def test_times_are_read_from_created_at_and_from_the_id(self):
         self.assertEqual(x_time_to_iso("Wed Oct 10 20:19:24 +0000 2018"), "2018-10-10T20:19:24Z")

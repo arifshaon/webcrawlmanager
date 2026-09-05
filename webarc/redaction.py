@@ -26,12 +26,18 @@ _BODY_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("server_nonce", re.compile(r'("ServerNonce"\s*:\s*")([^"]+)(")', re.I)),
     ("navigation_session_id", re.compile(r'("sessionID"\s*:\s*")([^"]+)(")', re.I)),
     ("capturing_user_eimu", re.compile(r'("IG_USER_EIMU"\s*:\s*")([^"]+)(")', re.I)),
-    ("capturing_user_id", re.compile(r'("USER_ID"\s*:\s*")([^"]+)(")', re.I)),
-    ("capturing_account_id", re.compile(r'("ACCOUNT_ID"\s*:\s*")([^"]+)(")', re.I)),
+    # Meta's upper-case keys, exactly: X's JSON carries lower-case user_id
+    # fields that belong to the target, not to the session
+    ("capturing_user_id", re.compile(r'("USER_ID"\s*:\s*")([^"]+)(")')),
+    ("capturing_account_id", re.compile(r'("ACCOUNT_ID"\s*:\s*")([^"]+)(")')),
     ("mrequest_dtsg", re.compile(r'("MRequestConfig".{0,1400}?"dtsg"\s*:\s*\{\s*"token"\s*:\s*")([^"]+)(")', re.I | re.S)),
     ("mrequest_dtsg_ag", re.compile(r'("MRequestConfig".{0,1800}?"dtsg_ag"\s*:\s*\{\s*"token"\s*:\s*")([^"]+)(")', re.I | re.S)),
     ("eqmc_dtsg", re.compile(r'(<script[^>]+id="__eqmc"[^>]*>.*?"f"\s*:\s*")([^"]+)(")', re.I | re.S)),
     ("meta_auth_token", re.compile(r'()((?:NA|Ad)[A-Za-z0-9_-]{20,}:\d{10,}:\d{10,})(?=["&<\s])')),
+    # X's page bootstrap names the signed-in account in its session object,
+    # the one field that sits right before userFeatures; a target's own
+    # user_id fields elsewhere are never followed by that key
+    ("x_session_user_id", re.compile(r'("user_id"\s*:\s*")([^"]+)("\s*,\s*"userFeatures")')),
 )
 # A secret in a query string or a form body: the key sits at the start of
 # the body or right after ? or & (or its HTML form). Nothing else counts --
@@ -43,6 +49,11 @@ _QUERY_SECRET = re.compile(
     r"(?P<key>fb_dtsg(?:_ag)?|lsd|jazoest|__user|__s|__hsi|access_token"
     r"|auth_token|csrftoken|sessionid|ct0)=(?P<value>[^&\"'\\\s<>]+)")
 _TEXTUAL = ("text/", "json", "javascript", "xml", "x-www-form-urlencoded")
+# Code is never rewritten: a client bundle is full of names ending in these
+# words followed by "=" (X's carries `?access_token=${...}` in a template
+# string), and a redaction that lands inside code leaves a bundle that no
+# longer parses, so the page's client never starts at replay.
+_CODE = ("javascript", "ecmascript", "text/jscript", "application/wasm")
 
 
 def is_textual(content_type: str, body: bytes) -> bool:
@@ -54,13 +65,18 @@ def is_textual(content_type: str, body: bytes) -> bool:
     return body[:1] in (b"<", b"{", b"[", b"f")     # unknown type: sniff
 
 
+def is_code(content_type: str) -> bool:
+    lowered = (content_type or "").lower()
+    return any(marker in lowered for marker in _CODE)
+
+
 def redact_body(body: bytes, content_type: str = "") -> tuple[bytes, list[str]]:
     """The body with session material removed, and what was removed.
 
-    A body that is not text, or that carries none of the known material,
-    comes back unchanged with an empty list.
+    A body that is not text, that is code, or that carries none of the
+    known material, comes back unchanged with an empty list.
     """
-    if not body or not is_textual(content_type, body):
+    if not body or is_code(content_type) or not is_textual(content_type, body):
         return body, []
     try:
         text = body.decode("utf-8")

@@ -47,8 +47,9 @@ from .facebook import _CAPTURE_ARGS
 from .instagram_browser import _PAGE_FETCH_JS
 from .x import (CheckpointRequired, LoginRequired, RateLimited, TargetUnavailable,
                 XError, search_url)
-from .x_extract import (SURFACE_OF_OPERATION, XAbsence, XCursor, XPost, XUser,
-                        describe_graphql_request, rate_limit_reset, read_timeline)
+from .x_extract import (OPERATIONS_OF_SURFACE, SURFACE_OF_OPERATION, XAbsence,
+                        XCursor, XPost, XUser, describe_graphql_request,
+                        rate_limit_reset, read_timeline)
 
 log = logging.getLogger(__name__)
 
@@ -56,8 +57,6 @@ _X_HOSTS = ("x.com", "twitter.com")
 _MEDIA_HOST_MARKERS = ("twimg.com",)
 _SESSION_COOKIES = ("auth_token", "ct0", "twid", "kdt", "att")
 
-_OPERATION_OF_SURFACE = {"posts": "UserTweets", "replies": "UserTweetsAndReplies",
-                         "media": "UserMedia"}
 _PATH_OF_SURFACE = {"posts": "", "replies": "/with_replies", "media": "/media"}
 
 
@@ -499,7 +498,8 @@ class XBrowserClient:
         if self.current_url != url:
             self._goto(url)
         return _ScrollingTimeline(self, self.navigation,
-                                  operations={_OPERATION_OF_SURFACE.get(surface, "UserTweets")},
+                                  operations=set(OPERATIONS_OF_SURFACE.get(
+                                      surface, OPERATIONS_OF_SURFACE["posts"])),
                                   user_id=user.user_id or None, handle=user.handle)
 
     def post(self, post_id: str) -> XPost:
@@ -524,7 +524,8 @@ class XBrowserClient:
     def search(self, query: str, product: str) -> Iterator[XPost]:
         url = search_url(query, product).replace("https://x.com", self.base_url, 1)
         self._goto(url)
-        return _ScrollingTimeline(self, self.navigation, operations={"SearchTimeline"},
+        return _ScrollingTimeline(self, self.navigation,
+                                  operations=set(OPERATIONS_OF_SURFACE["search"]),
                                   raw_query=query, product=product)
 
     def conversation_context(self, post_id: str) -> list[XPost]:
@@ -753,7 +754,7 @@ class _ScrollingConversation:
                 continue
             self.handed.add(post_id)
             origin = post.provenance or {}
-            if origin.get("operation") not in ("TweetDetail", "TweetResultByRestId"):
+            if origin.get("operation") not in OPERATIONS_OF_SURFACE["conversation"]:
                 continue
             if str(origin.get("focal_id") or "") not in ("", self.focal_id):
                 continue

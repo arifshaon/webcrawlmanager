@@ -92,7 +92,7 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         ids = [p.post_id for p in client.timeline(user, "posts")]
 
         self.assertEqual(ids, [serve.PINNED["rest_id"]] + [t["rest_id"] for t in serve.TIMELINE])
-        self.assertGreaterEqual(client.observed.operations["UserTweets"], 2)   # the scroll
+        self.assertGreaterEqual(client.observed.operations["UserOriginalsTimeline"], 2)   # the scroll
         # what the signed-in client fetched beside the target is counted, never listed
         self.assertEqual(client.observed.operations["HomeTimeline"], 1)
         self.assertNotIn(serve.READER_POST["rest_id"], ids)
@@ -176,7 +176,7 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
                         requests.append(record.http_headers.headers)
                     if record.rec_type == "response":
                         urls.append(record.rec_headers.get_header("WARC-Target-URI"))
-        self.assertTrue(any("/i/api/graphql/" in u and "UserTweets" in u for u in urls))
+        self.assertTrue(any("/i/api/graphql/" in u and "UserOriginalsTimeline" in u for u in urls))
         self.assertTrue(any("/media/" in u for u in urls))
         graphql_requests = [h for h in requests if any(
             k.lower() == "x-csrf-token" for k, _ in h)]

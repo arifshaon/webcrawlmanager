@@ -34,6 +34,7 @@ independent sources agree, the text says so.
 - [What breaks most often](#what-breaks-most-often-and-what-swm-is-immune-to)
 - [Mapping onto SWM](#mapping-onto-swm)
 - [Amendments after review](#amendments-after-review)
+- [Observed on the first capture](#observed-on-the-first-capture)
 - [Evidence](#evidence)
 - [Sources](#sources)
 
@@ -581,6 +582,47 @@ responses:
              |
           SHA-256
 ```
+
+## Observed on the first capture
+
+*Added 5 September 2026, from the first capture of a live profile with
+the implementation of this report.*
+
+- **Operation names have moved on.** The profile page's client sent
+  `UserOriginalsTimeline` for the Posts tab, `UserRepliesTimeline` for
+  Replies and `UserVideoTimeline` for Media, beside `UserByScreenName`,
+  `ProfileSpotlightsQuery`, `ProfileSeasonSchedule`, `ProfileTeamRoster`,
+  `DataSaverMode`, `CreatorStudioTabBarItemQuery` and `ConnectTabTimeline`.
+  None of the three listing names in this report (`UserTweets`,
+  `UserTweetsAndReplies`, `UserMedia`) appeared. The implementation
+  accepts both sets and reports every operation observed when a listing
+  is not recognised, which is how this was found.
+- **The user record has no `legacy` block.** `UserByScreenName` answers
+  with `core` (`screen_name`, `name`, `created_at`), `relationship_counts`
+  (`followers`, `following`), `tweet_counts` (`tweets`, `media_tweets`),
+  `profile_bio.description`, `avatar.image_url`, `banner.image_url`,
+  `privacy.protected`, `verification.verified`, `location.location`,
+  `website`, `pinned_items` and `rest_id`. The extractor reads both shapes.
+- **An empty timeline still carries a `who-to-follow-` module and top and
+  bottom cursors**, and ends with `TimelineTerminateTimeline`; the skip
+  rule by prefix (item 3 above) was confirmed on it.
+- **The HTML bootstrap uses no `data-content-len` blocks.** Its session
+  object names the signed-in account as a lower-case `user_id` beside
+  `userFeatures`; that field is redacted, and lower-case `user_id` fields
+  elsewhere (a target's own) are left alone.
+- **Replay broke once, on the redaction, not on matching.** The client
+  bundle builds a URL as `` `${S}?access_token=${e}` ``, and the
+  query-string redaction anchored on `?` swallowed code after it; the
+  bundle no longer parsed and the page showed "Something went wrong. Try
+  reloading." JavaScript bodies are now never rewritten. The GraphQL
+  responses themselves were found by ReplayWeb.page as the report
+  expected.
+- Rate-limit headers (`x-rate-limit-limit`, `-remaining`, `-reset`) were
+  present on every GraphQL response, as verified.
+
+Still to confirm on a profile that has posts: the tweet result's shape
+under `UserOriginalsTimeline`, the pinned entry, and how a promoted item
+marks itself.
 
 ## Evidence
 
