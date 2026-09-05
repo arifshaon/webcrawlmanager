@@ -1950,16 +1950,18 @@ async function replay(id, want) {
   // large archive takes longer than that, after which window.open is
   // blocked without a word. The tab shows a note until the replay is
   // ready, then goes there; on failure it closes and the reason is shown.
-  const label = want === "pages" ? "the pages for this capture" : "the WARC for replay";
+  const message = want === "pages"
+    ? "Building the pages for this capture. Large captures take a moment."
+    : "Preparing the WARC for replay. Large archives take a moment.";
   const tab = window.open("", "_blank");
   if (tab) {
     try {
       tab.document.write(`<!doctype html><title>Preparing… — SWM</title><body style="font:14px system-ui;padding:2em;color:#334">`
-        + `<p>Preparing ${label} for job #${Number(id)}. Large archives take a moment; this tab opens it when ready.</p>`);
+        + `<p>${message} This tab opens job #${Number(id)} when it is ready.</p>`);
       tab.document.close();
     } catch (_) { /* a tab we cannot write to still navigates */ }
   }
-  const done = busy(`Preparing ${label}. Large archives take a moment.`);
+  const done = busy(message);
   try {
     const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
     // A Facebook or Instagram capture can offer both: replay of the
