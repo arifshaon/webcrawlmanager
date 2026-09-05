@@ -411,10 +411,12 @@ Every run writes:
 
 The redaction removes the capturing session's tokens and ids from page
 bootstrap data and from query strings and form bodies; it never rewrites
-JavaScript. (Captures made with versions between the introduction of body
-redaction and 5 September 2026 had names inside Instagram's script bundles
-rewritten too, and their WARCs replay as an empty page with the logo; such
-a capture needs to be run again.)
+JavaScript, and a bootstrap block that states its own byte length is made
+to state the new one, since the page's client discards a block whose
+number no longer matches. (Captures made with versions between the
+introduction of body redaction and 5 September 2026 lack both safeguards,
+and their WARCs replay as an empty page with the logo; such a capture
+needs to be run again.)
 
 Comments are opt-in. Each post carries a grade of what its comment
 collection can support as evidence: complete against Instagram's reported

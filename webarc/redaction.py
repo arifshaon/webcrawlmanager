@@ -81,4 +81,20 @@ def redact_body(body: bytes, content_type: str = "") -> tuple[bytes, list[str]]:
     text = _QUERY_SECRET.sub(replace_query, text)
     if not changed:
         return body, []
-    return text.encode("utf-8"), sorted(set(changed))
+    return restate_content_lengths(text).encode("utf-8"), sorted(set(changed))
+
+
+# Meta's pages carry their bootstrap data in JSON blocks that state their
+# own byte length; the page's client checks the number before it reads a
+# block, and a block that no longer matches is thrown away, so the client
+# never starts and replay shows nothing but the logo. A redaction changes
+# the length; the number is brought back into line.
+_SIZED_BLOCK = re.compile(
+    r'(<script\b[^>]*?\bdata-content-len=")(\d+)("[^>]*>)(.*?)(</script>)', re.S)
+
+
+def restate_content_lengths(text: str) -> str:
+    def restate(match: re.Match) -> str:
+        length = len(match.group(4).encode("utf-8"))
+        return f"{match.group(1)}{length}{match.group(3)}{match.group(4)}{match.group(5)}"
+    return _SIZED_BLOCK.sub(restate, text)

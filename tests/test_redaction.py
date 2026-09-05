@@ -67,6 +67,23 @@ class RedactBodyTests(unittest.TestCase):
         self.assertIn(b"other=kept", redact_body(
             b'fb_dtsg=abc&other=kept', "application/x-www-form-urlencoded")[0])
 
+    def test_a_sized_bootstrap_block_states_its_new_length(self):
+        """Meta's pages check each JSON block's data-content-len before
+        reading it; a redacted block must say its new length or the client
+        throws it away and the replay shows only the logo."""
+        block = '["LSD",[],{"token":"lsd-secret"}]'
+        page = (f'<script type="application/json" data-content-len="{len(block)}" data-sjs>'
+                f'{block}</script><script type="application/json" data-content-len="7" data-sjs>'
+                '{"a":1}</script>').encode("utf-8")
+
+        safe, fields = redact_body(page, "text/html")
+
+        text = safe.decode("utf-8")
+        self.assertIn("lsd", fields)
+        redacted_block = '["LSD",[],{"token":"' + REDACTED + '"}]'
+        self.assertIn(f'data-content-len="{len(redacted_block)}" data-sjs>{redacted_block}</script>', text)
+        self.assertIn('data-content-len="7" data-sjs>{"a":1}</script>', text)
+
     def test_a_body_with_nothing_to_redact_is_returned_as_it_is(self):
         body = b'{"data": {"posts": []}}'
         safe, fields = redact_body(body, "application/json")
