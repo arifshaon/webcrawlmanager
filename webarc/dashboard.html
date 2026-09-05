@@ -1945,9 +1945,21 @@ function busy(text) {
   return () => { node.style.display = "none"; };
 }
 async function replay(id, want) {
-  const done = busy(want === "pages"
-    ? "Building the pages for this capture. Large captures take a moment."
-    : "Preparing the WARC for replay. Large archives take a moment.");
+  // The tab is opened here, inside the click: a browser lets a click open
+  // a new tab only for a few seconds, and building the replay copy of a
+  // large archive takes longer than that, after which window.open is
+  // blocked without a word. The tab shows a note until the replay is
+  // ready, then goes there; on failure it closes and the reason is shown.
+  const label = want === "pages" ? "the pages for this capture" : "the WARC for replay";
+  const tab = window.open("", "_blank");
+  if (tab) {
+    try {
+      tab.document.write(`<!doctype html><title>Preparing… — SWM</title><body style="font:14px system-ui;padding:2em;color:#334">`
+        + `<p>Preparing ${label} for job #${Number(id)}. Large archives take a moment; this tab opens it when ready.</p>`);
+      tab.document.close();
+    } catch (_) { /* a tab we cannot write to still navigates */ }
+  }
+  const done = busy(`Preparing ${label}. Large archives take a moment.`);
   try {
     const r = await api(`/api/crawls/${id}/replay`, {method:"POST"});
     // A Facebook or Instagram capture can offer both: replay of the
@@ -1955,8 +1967,10 @@ async function replay(id, want) {
     const url = want === "pages" ? (r.pages_url || r.replay_url)
                                  : (r.replay_url || r.pages_url);
     if (!url) throw new Error("nothing to open for this capture");
-    window.open(url, "_blank");
+    if (tab && !tab.closed) tab.location.href = url;
+    else if (!window.open(url, "_blank")) location.assign(url);
   } catch (e) {
+    if (tab && !tab.closed) tab.close();
     alert("Could not open: " + e.message);
   } finally {
     done();

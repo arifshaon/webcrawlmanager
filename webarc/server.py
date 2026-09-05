@@ -532,7 +532,17 @@ def _crawl_view(row: dict) -> dict:
         # what this job's worker, browser and helpers are using right now
         "resources": _job_usage(row),
         "metadata_fields": _metadata_count(row),
+        # replay needs an archive, not just a described folder: metadata.json
+        # alone gives a job a size but nothing to replay
+        "warc_files": _warc_count(crawl_dir),
     }
+
+
+def _warc_count(crawl_dir: Path) -> int:
+    try:
+        return sum(1 for _ in crawl_dir.glob("*.warc.gz")) + sum(1 for _ in crawl_dir.glob("*.warc"))
+    except OSError:
+        return 0
 
 
 def _metadata_count(row: dict) -> int:
@@ -1157,11 +1167,17 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         try:
             build_replay_site(warcs, _REPLAY_ROOT / coll,
                               seed_url=row_seed_url(crawl_id))
-            if _PYWB is None:
-                _PYWB = ReplayServer(_REPLAY_ROOT, port=8091)
-                _PYWB.start_background()
         except Exception as exc:
             raise HTTPException(500, f"replay setup failed: {exc}") from exc
+        if _PYWB is None or not _PYWB.is_running():
+            server = ReplayServer(_REPLAY_ROOT, port=8091)
+            try:
+                server.start_background()
+            except OSError as exc:
+                # nothing kept: the next click tries again
+                raise HTTPException(
+                    500, f"the replay server could not start: {exc}") from exc
+            _PYWB = server
 
         return {"collection": coll, "replay_url": _PYWB.replay_url(coll),
                 "pages_url": pages_url}

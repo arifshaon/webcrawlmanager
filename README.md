@@ -545,6 +545,10 @@ By default, ReplayWeb.page assets are loaded from a pinned jsDelivr package. For
 an offline machine, place compatible `ui.js` and `sw.js` files in
 `./replay/vendor/` and use `--self-host`.
 
+When the port is already taken, by another SWM or any other program, the
+replay server steps up to the next free port (up to ten above) and says so;
+the dashboard and the command line always link to the port actually served.
+
 ## Dashboard
 
 The optional dashboard manages **automated crawls**, **interactive recording

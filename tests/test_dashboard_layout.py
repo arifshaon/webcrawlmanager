@@ -82,6 +82,16 @@ class HandlerTests(DashboardTestCase):
         self.assertTrue(called)
         self.assertEqual(sorted(called - self.defined()), [])
 
+    def test_the_replay_tab_is_opened_at_the_click_not_after_the_build(self):
+        """A click may open a tab for only a few seconds; the replay copy
+        of a large archive takes longer, so the tab must open first."""
+        start = self.script.index("async function replay(id, want) {")
+        body = self.script[start:self.script.index("\nasync function ctl(", start)]
+
+        self.assertLess(body.index('window.open("", "_blank")'), body.index("await api("))
+        self.assertIn("tab.location.href = url", body)
+        self.assertIn("tab.close()", body)
+
     def test_the_replay_and_pages_actions_are_wired(self):
         for name in ("replay", "toggle", "editMetadata", "startNow", "forceStop", "del", "ctl"):
             with self.subTest(handler=name):

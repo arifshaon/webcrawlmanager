@@ -293,6 +293,18 @@ def _print_resource_report(snapshot: dict, thresholds: dict, jobs: list[dict],
         print(f"\nNote: {snapshot['note']}")
 
 
+def _serve_until_interrupted(server) -> None:
+    """Keep a started replay server up until Ctrl-C."""
+    import time as _t
+    try:
+        while True:
+            _t.sleep(3600)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    finally:
+        server.stop()
+
+
 def _cmd_metadata(args) -> int:
     from pathlib import Path as _P
 
@@ -695,8 +707,8 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             server = ReplayServer(facebook_site.parent, port=args.port,
                                   host=args.host)
-            url = (f"http://{args.host}:{args.port}/"
-                   f"{facebook_site.name}/index.html")
+            server.start_background()          # binds now; the port may step up
+            url = server.replay_url(facebook_site.name)
             print(f"\nNo WARC in this capture; serving its pages instead.")
             print(f"  Open: {url}")
             print("\nPress Ctrl+C to stop the server.")
@@ -704,10 +716,7 @@ def main(argv: list[str] | None = None) -> int:
                 webbrowser.open(url)
             except Exception:
                 pass
-            try:
-                server.serve_forever()
-            except KeyboardInterrupt:
-                print("\nStopped.")
+            _serve_until_interrupted(server)
             return 0
         coll = args.collection or collection_name(warc_dir.resolve().name)
         replay_root = _P(args.replay_root)
@@ -745,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
                 alias_warc.unlink(missing_ok=True)
 
         server = ReplayServer(replay_root, port=args.port, host=args.host)
+        server.start_background()              # binds now; the port may step up
         url = server.replay_url(coll)
         print(f"\nReplaying {len(warcs)} WARC(s) as '{coll}' (ReplayWeb.page)")
         print(f"  Open: {url}")
@@ -759,10 +769,7 @@ def main(argv: list[str] | None = None) -> int:
             webbrowser.open(url)
         except Exception:
             pass
-        try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            print("\nStopped.")
+        _serve_until_interrupted(server)
         return 0
 
     if args.command == "resources":

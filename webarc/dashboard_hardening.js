@@ -62,6 +62,7 @@ function crawlRow(c) {
   const queued = Number(t.queued) || 0;
   const failed = Number(t.failed) || 0;
   const bytes = Number(t.bytes) || 0;
+  const hasWarc = Number(c.warc_files) > 0;
   const seeds = Array.isArray(c.seeds) ? c.seeds : [];
   const fb = isSocial && seeds[0] && seeds[0].details
     ? seeds[0].details : {};
@@ -134,10 +135,10 @@ function crawlRow(c) {
       ${rawStatus === "stopping" ? `<button class="act danger" onclick="forceStop(${id})" title="End the worker now if it is not answering">Force stop</button>` : ""}
       ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
       ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
-      <button class="act replay" onclick="replay(${id},'warc')" ${bytes > 0 ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
+      <button class="act replay" onclick="replay(${id},'warc')" ${hasWarc ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
       : isInstagram ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
       <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How Instagram presented the captured posts">Replay WARC</button>`
-      : `<button class="act replay" onclick="replay(${id})" ${bytes > 0 ? "" : "disabled"}>Replay</button>`}
+      : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
       <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
     </div>

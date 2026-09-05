@@ -522,21 +522,56 @@ class ReplayServer:
         self._httpd: socketserver.TCPServer | None = None
         self._thread: threading.Thread | None = None
 
+    # how many ports above the requested one are tried when it is taken
+    PORT_TRIES = 10
+
+    def _port_answers(self, port: int) -> bool:
+        """Whether something already accepts connections on the port.
+
+        Binding alone does not tell: with address reuse on, Windows lets a
+        second server bind a port another process is serving, and the
+        other process keeps the connections -- a replay page from a stale
+        server, or nothing at all, with no error anywhere.
+        """
+        import socket
+        try:
+            with socket.create_connection((self.host, port), timeout=0.2):
+                return True
+        except OSError:
+            return False
+
+    def _bind(self):
+        """Bind the requested port, or the next free one above it."""
+        handler = functools.partial(_QuietHandler, directory=str(self.replay_root))
+        socketserver.TCPServer.allow_reuse_address = True
+        last_error: OSError | None = None
+        for port in range(self.port, self.port + self.PORT_TRIES):
+            if self._port_answers(port):
+                last_error = OSError(f"port {port} is in use by another program")
+                continue
+            try:
+                httpd = socketserver.ThreadingTCPServer((self.host, port), handler)
+            except OSError as exc:
+                last_error = exc
+                continue
+            if port != self.port:
+                log.warning("Replay port %d is in use; using %d instead", self.port, port)
+            self.port = port
+            return httpd
+        raise OSError(f"no free port for the replay server between {self.port} and "
+                      f"{self.port + self.PORT_TRIES - 1}: {last_error}")
+
     def start_background(self) -> None:
         if self._httpd is not None:
             return
-        handler = functools.partial(_QuietHandler, directory=str(self.replay_root))
-        socketserver.TCPServer.allow_reuse_address = True
-        self._httpd = socketserver.ThreadingTCPServer((self.host, self.port), handler)
+        self._httpd = self._bind()
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
         log.info("Replay server on http://%s:%d (root=%s)",
                  self.host, self.port, self.replay_root)
 
     def serve_forever(self) -> None:
-        handler = functools.partial(_QuietHandler, directory=str(self.replay_root))
-        socketserver.TCPServer.allow_reuse_address = True
-        self._httpd = socketserver.ThreadingTCPServer((self.host, self.port), handler)
+        self._httpd = self._bind()
         self._httpd.serve_forever()
 
     def is_running(self) -> bool:
