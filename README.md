@@ -68,6 +68,7 @@ SWM is designed around two complementary approaches to web archiving:
 - [Architecture](#architecture)
 - [WAF and bot-block handling](#waf-and-bot-block-handling)
 - [Known limitations](#known-limitations)
+- [Research notes](#research-notes)
 - [Licence and citation](#licence-and-citation)
 
 ## Quick start
@@ -797,6 +798,16 @@ honest identifying User-Agent from the website owner.
   complete.
 - Facebook Page capture is limited to Pages in v1. Comment limits are
   best-effort because one Facebook response can return several comments.
+
+## Research notes
+
+Design research that shaped, or will shape, a capture mode lives under
+`docs/research/`:
+
+- [X capture, the Instagram way](docs/research/x-capture.md): how an X
+  (formerly Twitter) mode would read the signed-in web client, with the
+  endpoints to observe, the timeline anatomy, attribution and media rules,
+  and what breaks. Each finding is marked verified or unverified.
 
 ## Licence and citation
 
