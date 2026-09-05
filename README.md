@@ -409,6 +409,13 @@ Every run writes:
   comments and the media fetched are in it; the profile listing is not,
   since the browser did not do that part.
 
+The redaction removes the capturing session's tokens and ids from page
+bootstrap data and from query strings and form bodies; it never rewrites
+JavaScript. (Captures made with versions between the introduction of body
+redaction and 5 September 2026 had names inside Instagram's script bundles
+rewritten too, and their WARCs replay as an empty page with the logo; such
+a capture needs to be run again.)
+
 Comments are opt-in. Each post carries a grade of what its comment
 collection can support as evidence: complete against Instagram's reported
 count, partial, limited by the capture's cap, none reported, or exhausted but

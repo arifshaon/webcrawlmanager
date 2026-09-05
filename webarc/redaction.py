@@ -33,8 +33,14 @@ _BODY_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
     ("eqmc_dtsg", re.compile(r'(<script[^>]+id="__eqmc"[^>]*>.*?"f"\s*:\s*")([^"]+)(")', re.I | re.S)),
     ("meta_auth_token", re.compile(r'()((?:NA|Ad)[A-Za-z0-9_-]{20,}:\d{10,}:\d{10,})(?=["&<\s])')),
 )
+# A secret in a query string or a form body: the key sits at the start of
+# the body or right after ? or & (or its HTML form). Nothing else counts --
+# minified JavaScript is full of names ending in these words followed by
+# "=" (getSessionId=function..., fb_dtsg="..."), and rewriting code breaks
+# the page's client at replay. Keys are lower case in the real URLs.
 _QUERY_SECRET = re.compile(
-    r"(?i)(?P<key>fb_dtsg(?:_ag)?|lsd|jazoest|__user|__s|__hsi|access_token"
+    r"(?:^|(?<=[?&])|(?<=&amp;))"
+    r"(?P<key>fb_dtsg(?:_ag)?|lsd|jazoest|__user|__s|__hsi|access_token"
     r"|auth_token|csrftoken|sessionid)=(?P<value>[^&\"'\\\s<>]+)")
 _TEXTUAL = ("text/", "json", "javascript", "xml", "x-www-form-urlencoded")
 
