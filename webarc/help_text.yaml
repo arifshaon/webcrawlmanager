@@ -102,6 +102,30 @@ ig-comment-max: >-
   A ceiling on comments per post, so one very busy post does not take all day. The number reached is written into the record.
 ig-reply-max: >-
   How many replies to keep under each comment, so long threads stay manageable.
+x-targets: >-
+  What to capture, one per line: a handle, a profile address, the address of a single post, a hashtag, or a search written as “search: words”. A profile collects the account's posts using the mode below; a post address collects that post and its conversation; a hashtag or search collects what X showed this account for it.
+x-name: >-
+  A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the account and the month, is best. Left empty, one is made up from the targets.
+x-operator: >-
+  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+x-browser: >-
+  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+x-search-product: >-
+  Which results tab a hashtag or search reads. Latest lists posts newest first as X served them. Top is X's own ranked pick, which changes from one moment and account to the next.
+x-storage: >-
+  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+x-mode: >-
+  What to collect: posts between two dates, the newest N posts, everything until you stop it or the timeline stops offering new posts, or only what has appeared since the last capture of this target.
+x-surfaces: >-
+  Which tabs of a profile to walk: Posts, Replies, or Media. The Replies tab keeps the posts the account answered as context, so the replies make sense.
+x-dates: >-
+  The dates to keep. Posts outside this range are passed over on the way but not kept. From is required so the capture knows when to stop scrolling; To is optional.
+x-latest-n: >-
+  How many of the newest posts to keep. The pinned post sits at the top regardless of date, so it is not counted in this number.
+x-options: >-
+  What to keep alongside the posts: media at the best rendition X serves, reposts, each post's conversation, and the raw browser traffic.
+x-reply-max: >-
+  A ceiling on replies kept per post, so one very busy post does not take all day. The number reached is written into the record.
 
 # Settings
 storage-root: >-
@@ -132,6 +156,8 @@ fb-metadata: >-
   like; Title, Identifier, Date, Type and Collector are filled from the job
   where left empty. It is written into metadata.json, the manifest and the
   archive, and can be changed later from the job list.
+x-metadata: >-
+  What these accounts, posts or searches are, in the words a catalogue would use: a title, who runs the account, what it is about, who holds the rights. Fill in what you like; Title, Identifier, Date, Type and Collector are filled from the job.
 ig-metadata: >-
   What these profiles or posts are, in the words a catalogue would use: a
   title, who runs the account, what it is about, who holds the rights. Fill

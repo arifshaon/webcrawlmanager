@@ -109,6 +109,9 @@ _GRAPHQL_PATH_PARTS = ("/api/graphql", "/graphql")
 _PRIVATE_REQUEST_HEADERS = {
     "authorization", "cookie", "proxy-authorization", "x-csrf-token",
     "x-fb-lsd",
+    # X: the per-request transaction id is derived from the session's page
+    # and the client bundle; the guest token stands in for a session
+    "x-client-transaction-id", "x-guest-token",
 }
 _PRIVATE_RESPONSE_HEADERS = {"set-cookie", "set-cookie2"}
 _PRIVATE_FORM_FIELDS = {

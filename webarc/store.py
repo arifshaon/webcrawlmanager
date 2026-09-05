@@ -21,6 +21,7 @@ KIND_CRAWL = "crawl"
 KIND_RECORDING = "recording"
 KIND_FACEBOOK = "facebook"
 KIND_INSTAGRAM = "instagram"
+KIND_X = "x"
 
 # crawl lifecycle states
 PENDING = "pending"
@@ -125,6 +126,28 @@ CREATE TABLE IF NOT EXISTS instagram_posts (
     first_seen_at  TEXT NOT NULL,
     last_seen_at   TEXT NOT NULL,
     PRIMARY KEY (target_key, media_id)
+);
+
+CREATE TABLE IF NOT EXISTS x_targets (
+    target_key        TEXT PRIMARY KEY,
+    target_url        TEXT NOT NULL,
+    handle            TEXT,
+    user_id           TEXT,
+    newest_post_id    TEXT,
+    newest_post_date  TEXT,
+    last_crawl_id     INTEGER,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS x_posts (
+    target_key     TEXT NOT NULL,
+    post_id        TEXT NOT NULL,
+    post_date      TEXT,
+    first_crawl_id INTEGER NOT NULL,
+    last_crawl_id  INTEGER NOT NULL,
+    first_seen_at  TEXT NOT NULL,
+    last_seen_at   TEXT NOT NULL,
+    PRIMARY KEY (target_key, post_id)
 );
 """
 
@@ -433,6 +456,63 @@ class Store:
                     "last_seen_at=excluded.last_seen_at",
                     (key, media_id, post.get("shortcode"),
                      post.get("created_time"), crawl_id, crawl_id, ts, ts))
+
+    # -- x -------------------------------------------------------------------
+    def get_x_target(self, target_key: str) -> Optional[dict]:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM x_targets WHERE target_key=?",
+                            (target_key,)).fetchone()
+            return dict(row) if row else None
+
+    def get_x_post_ids(self, target_key: str) -> set[str]:
+        with self._conn() as c:
+            rows = c.execute("SELECT post_id FROM x_posts WHERE target_key=?",
+                             (target_key,)).fetchall()
+            return {str(r["post_id"]) for r in rows}
+
+    def record_x_capture(self, crawl_id: int, targets: dict, posts: list[dict]) -> None:
+        """Remember what an X capture reached, for "since last" next time.
+
+        ``targets`` maps target key -> {post_id, date, handle, user_id, url};
+        the newest kept is the newest non-pinned post the run selected, and
+        post ids are time-ordered, so the larger id is the newer post.
+        """
+        ts = _now()
+        with self._conn() as c:
+            for key, newest in targets.items():
+                c.execute(
+                    "INSERT INTO x_targets (target_key, target_url, handle, user_id, "
+                    "newest_post_id, newest_post_date, last_crawl_id, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_key) DO UPDATE SET "
+                    "target_url=excluded.target_url, "
+                    "handle=COALESCE(excluded.handle, handle), "
+                    "user_id=COALESCE(excluded.user_id, user_id), "
+                    "newest_post_id=CASE WHEN CAST(excluded.newest_post_id AS INTEGER) >= "
+                    "CAST(COALESCE(newest_post_id, '0') AS INTEGER) THEN excluded.newest_post_id "
+                    "ELSE newest_post_id END, "
+                    "newest_post_date=CASE WHEN CAST(excluded.newest_post_id AS INTEGER) >= "
+                    "CAST(COALESCE(newest_post_id, '0') AS INTEGER) THEN excluded.newest_post_date "
+                    "ELSE newest_post_date END, "
+                    "last_crawl_id=excluded.last_crawl_id, "
+                    "updated_at=excluded.updated_at",
+                    (key, newest.get("url") or "", newest.get("handle"),
+                     newest.get("user_id"), newest.get("post_id"), newest.get("date"),
+                     crawl_id, ts))
+            for post in posts:
+                post_id = str(post.get("post_id") or "").strip()
+                key = post.get("target_key")
+                if not post_id or not key or post.get("capture_role") != "target":
+                    continue
+                c.execute(
+                    "INSERT INTO x_posts (target_key, post_id, post_date, "
+                    "first_crawl_id, last_crawl_id, first_seen_at, last_seen_at) "
+                    "VALUES (?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_key, post_id) DO UPDATE SET "
+                    "post_date=COALESCE(excluded.post_date, post_date), "
+                    "last_crawl_id=excluded.last_crawl_id, "
+                    "last_seen_at=excluded.last_seen_at",
+                    (key, post_id, post.get("created_time"), crawl_id, crawl_id, ts, ts))
 
     def delete_crawl(self, crawl_id: int) -> None:
         with self._conn() as c:

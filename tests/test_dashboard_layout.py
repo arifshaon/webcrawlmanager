@@ -160,7 +160,7 @@ class DisabledJobTabTests(DashboardTestCase):
     def test_every_job_type_is_covered(self):
         start = self.script.index("function switchJob(")
         body = self.script[start:self.script.index("\n}", start)]
-        for job in ("record", "facebook", "instagram"):
+        for job in ("record", "facebook", "instagram", "x"):
             with self.subTest(job=job):
                 self.assertIn(f"{job}:", body)
         self.assertIn('$("#job-cap-note")', body)
@@ -171,7 +171,7 @@ class StorageFieldTests(DashboardTestCase):
         fields = re.findall(r'id="([a-z-]+)" class="storage-dir"', self.markup)
 
         self.assertEqual(sorted(fields), ["f-storage", "fb-storage",
-                                          "ig-storage", "r-storage"])
+                                          "ig-storage", "r-storage", "x-storage"])
 
     def test_every_storage_field_has_a_browse_button(self):
         """A path typed from memory is a path typed wrong."""
@@ -197,10 +197,10 @@ class StorageFieldTests(DashboardTestCase):
         self.assertIn("if (!storageRootEdited)", self.script)
 
     def test_each_one_is_sent_when_it_is_filled_in(self):
-        for field in ("f-storage", "fb-storage", "ig-storage", "r-storage"):
+        for field in ("f-storage", "fb-storage", "ig-storage", "r-storage", "x-storage"):
             with self.subTest(field=field):
                 self.assertIn(f'$("#{field}").value.trim()', self.script)
-        self.assertEqual(self.script.count("body.storage_dir = "), 4)
+        self.assertEqual(self.script.count("body.storage_dir = "), 5)
 
 
 class HelpTextTests(DashboardTestCase):
@@ -269,7 +269,7 @@ class JobFilterTests(DashboardTestCase):
         start = self.markup.index('id="jf-kind"')
         select = self.markup[start:self.markup.index("</select>", start)]
         options = set(re.findall(r'<option value="([a-z]+)"', select))
-        self.assertEqual(options, {"crawl", "recording", "facebook", "instagram"})
+        self.assertEqual(options, {"crawl", "recording", "facebook", "instagram", "x"})
 
     def test_the_refresh_renders_through_the_filter(self):
         start = self.script.index("async function refresh()")

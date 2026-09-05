@@ -316,6 +316,7 @@
     color: var(--fb); background: var(--fb-bg); border-radius: 4px;
     padding: 2px 6px; margin-right: 7px; vertical-align: 1px; }
   .ig-chip { color: var(--ig); background: var(--ig-bg); }
+  .x-chip { color: var(--ink); background: var(--rule); }
   .rec-warning { border: 1px solid var(--rule); border-left: 3px solid var(--pause);
     background: var(--pause-bg); border-radius: 6px; padding: 10px 12px;
     font-size: 12px; color: var(--ink); margin-top: 4px; }
@@ -430,6 +431,7 @@
         <option value="recording">Record session</option>
         <option value="facebook">Facebook</option>
         <option value="instagram">Instagram</option>
+        <option value="x">X</option>
       </select>
       <select id="jf-status" aria-label="Job status">
         <option value="">Any status</option>
@@ -490,6 +492,8 @@
       data-job="facebook" role="tab" aria-selected="false">Facebook</button>
     <button type="button" class="mode-tab" id="job-tab-instagram"
       data-job="instagram" role="tab" aria-selected="false">Instagram</button>
+    <button type="button" class="mode-tab" id="job-tab-x"
+      data-job="x" role="tab" aria-selected="false">X</button>
   </div>
   <div class="mode-note mode-explanation hidden" id="job-cap-note" role="status"></div>
   <form id="new-form" onsubmit="return false">
@@ -1004,6 +1008,146 @@
       <span class="mode-note" id="instagram-cap-note"></span>
     </div>
   </div>
+  <div id="x-form" class="job-form hidden">
+    <div class="guided">
+      <div class="form-section">
+        <div class="section-head">
+          <span class="section-title">Capture X profiles, posts, hashtags or searches</span>
+          <span class="section-hint">A Chrome window opens and stays for the run; sign in there if X asks.</span>
+        </div>
+        <div class="section-body form-grid">
+          <div class="field wide">
+            <label class="field-label" for="x-targets">Targets — one per line <button type="button" class="tip" aria-label="What is this for?" data-help="x-targets">?</button></label>
+            <textarea id="x-targets" rows="4" placeholder="@qatarlibrary&#10;https://x.com/someaccount&#10;https://x.com/someaccount/status/1234567890&#10;#hashtag&#10;search: words to look for"></textarea>
+            <span class="help">A handle or profile address collects the account's posts using the mode below. A post address collects that post and its conversation. A hashtag or a search collects what X served this account for the query, which X ranks and personalises; the manifest says so. Home, notifications and messages are refused: they are the viewer's, not a target.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="x-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-help="x-name">?</button></label>
+            <input type="text" id="x-name" placeholder="derived from the targets if empty">
+          </div>
+          <div class="field">
+            <label class="field-label" for="x-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="x-operator">?</button></label>
+            <input type="text" id="x-operator" placeholder="webarc">
+            <span class="help">Stored in the capture manifest.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="x-browser">Browser <button type="button" class="tip" aria-label="What is this for?" data-help="x-browser">?</button></label>
+            <select id="x-browser">
+              <option value="headed">Headed — managed Chrome with a dedicated profile (recommended)</option>
+              <option value="native">Native — your system Chrome via CDP (advanced)</option>
+            </select>
+            <span class="help">Either way SWM keeps a dedicated X profile: sign in there once. X's own web client makes every request; SWM reads the answers.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="x-search-product">Search results tab <button type="button" class="tip" aria-label="What is this for?" data-help="x-search-product">?</button></label>
+            <select id="x-search-product">
+              <option value="Latest">Latest — newest first, as X served them</option>
+              <option value="Top">Top — X's ranked selection</option>
+            </select>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="x-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="x-storage">?</button></label>
+            <div class="storage-row">
+              <input type="text" id="x-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <button type="button" class="secondary browse-btn" data-target="x-storage">Browse…</button>
+            </div>
+          </div>
+          <div class="field">
+            <label class="field-label" for="x-mode">Capture mode <button type="button" class="tip" aria-label="What is this for?" data-help="x-mode">?</button></label>
+            <select id="x-mode">
+              <option value="latest_n">Latest N posts</option>
+              <option value="date_range">Date range</option>
+              <option value="until_stopped">Until I stop it</option>
+              <option value="end_of_timeline">End of observed timeline</option>
+              <option value="since_last">Since last capture</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Profile tabs <button type="button" class="tip" aria-label="What is this for?" data-help="x-surfaces">?</button></label>
+            <label class="check-row">
+              <input type="checkbox" id="x-surface-posts" checked>
+              <span class="check-copy"><strong>Posts</strong><span>The account's posts, reposts and quotes.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="x-surface-replies">
+              <span class="check-copy"><strong>Replies</strong><span>The account's replies, with the posts they answer kept as context.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="x-surface-media">
+              <span class="check-copy"><strong>Media</strong><span>Posts with media; an item on several tabs is kept once.</span></span>
+            </label>
+          </div>
+          <div class="field wide hidden" id="x-date-options">
+            <label class="field-label">Requested post dates <button type="button" class="tip" aria-label="What is this for?" data-help="x-dates">?</button></label>
+            <div class="inline-fields">
+              <div>
+                <label class="help" for="x-from">From (required)</label>
+                <input type="date" id="x-from">
+              </div>
+              <div>
+                <label class="help" for="x-to">To (optional)</label>
+                <input type="date" id="x-to">
+              </div>
+            </div>
+            <span class="help">The pinned post never ends the capture on its own. SWM stops after five consecutive non-pinned posts older than From.</span>
+          </div>
+          <div class="field wide" id="x-latest-options">
+            <label class="field-label" for="x-latest-n">Number of latest non-pinned posts <button type="button" class="tip" aria-label="What is this for?" data-help="x-latest-n">?</button></label>
+            <input type="number" id="x-latest-n" min="1" max="100000" step="1" value="100">
+          </div>
+          <div class="field wide hidden" id="x-mode-note"></div>
+          <div class="field wide">
+            <label class="field-label">Capture options <button type="button" class="tip" aria-label="What is this for?" data-help="x-options">?</button></label>
+            <label class="check-row">
+              <input type="checkbox" id="x-media" checked>
+              <span class="check-copy"><strong>Download media</strong><span>Each image at the orig rendition X serves on request, each video or GIF as the highest-bitrate MP4 X advertises, with SHA-256 fixity. The rendition the page loaded and the one SWM asked for are both recorded.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="x-reposts" checked>
+              <span class="check-copy"><strong>Keep reposts</strong><span>A repost is what the account chose to publish on its timeline; it is kept with the original post and its author inside, never as the account's own words.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="x-warc">
+              <span class="check-copy"><strong>Also record a WARC</strong><span>Every exchange the browser makes is written as it happens, credentials and session material redacted. A replay aid and the record of presentation; the raw responses and the records with media are the evidence.</span></span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" id="x-conversation">
+              <span class="check-copy"><strong>Capture conversations</strong><span>Open each post's page and keep what it replies to and the replies under it, as context.</span></span>
+            </label>
+            <div id="x-conversation-options" class="hidden">
+              <div class="inline-fields" style="margin-top:10px">
+                <div>
+                  <label class="field-label" for="x-reply-max">Maximum replies per post <button type="button" class="tip" aria-label="What is this for?" data-help="x-reply-max">?</button></label>
+                  <input type="number" id="x-reply-max" min="1" max="5000" step="1" value="50">
+                </div>
+              </div>
+              <div class="cost-warning"><b>Conversations are where the rate limit lands.</b> Every post is its own page and its own pagination. Expect the run to be held by X and to continue when the limit resets; it reads the reset time X sends.</div>
+            </div>
+          </div>
+          <div class="field wide">
+            <div class="rec-warning">
+              Use a dedicated institutional X account for capture, not a personal one: X's checks act on the account. Sign in once in the dedicated X browser profile (the window opens the first time a capture needs it); SWM reads that session when a job starts and holds it in memory only. SWM never asks for the password and never writes the session anywhere else. Signing in by hand is the way that holds up; automating the sign-in form is what draws challenges.
+            </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Describe this capture <button type="button" class="tip" aria-label="What is this for?" data-help="x-metadata">?</button></span>
+            <span class="section-hint">Who or what is being captured, and why. Written into every output.</span>
+          </div>
+          <div class="section-body">
+            <div class="md-editor" id="x-metadata"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form-foot">
+      <button type="button" class="primary" id="x-start-btn">Start capture</button>
+      <span class="msg" id="x-msg"></span>
+      <span class="spacer"></span>
+      <span class="mode-note" id="x-cap-note"></span>
+    </div>
+  </div>
   </section>
 </main>
 </div>
@@ -1297,16 +1441,19 @@ function resetExample() {
 let recordingCapability = null;
 let facebookCapability = null;
 let instagramCapability = null;
+let xCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
     recordingCapability = caps.recording;
     facebookCapability = caps.facebook;
     instagramCapability = caps.instagram || {available: false, reason: "not reported by the server"};
+    xCapability = caps.x || {available: false, reason: "not reported by the server"};
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
     facebookCapability = {available: false, reason: "capability check failed"};
     instagramCapability = {available: false, reason: "capability check failed"};
+    xCapability = {available: false, reason: "capability check failed"};
   }
   const tab = $("#job-tab-record");
   if (recordingCapability && !recordingCapability.available) {
@@ -1333,13 +1480,21 @@ async function loadCapabilities() {
   if (instagramCapability && instagramCapability.note) {
     $("#instagram-cap-note").textContent = instagramCapability.note;
   }
+  const xTab = $("#job-tab-x");
+  if (xCapability && !xCapability.available) {
+    xTab.classList.add("disabled");
+    xTab.title = xCapability.reason || "unavailable";
+  }
+  if (xCapability && xCapability.note) {
+    $("#x-cap-note").textContent = xCapability.note;
+  }
 }
 function switchJob(job) {
   // A disabled tab has to say why where it can be seen: the form it belongs
   // to is hidden, so a note inside that form is a note nobody reads.
   const refused = {
     record: recordingCapability, facebook: facebookCapability,
-    instagram: instagramCapability,
+    instagram: instagramCapability, x: xCapability,
   }[job];
   const note = $("#job-cap-note");
   if (refused && !refused.available) {
@@ -1357,6 +1512,7 @@ function switchJob(job) {
   $("#record-form").classList.toggle("hidden", job !== "record");
   $("#facebook-form").classList.toggle("hidden", job !== "facebook");
   $("#instagram-form").classList.toggle("hidden", job !== "instagram");
+  $("#x-form").classList.toggle("hidden", job !== "x");
 }
 async function startRecording() {
   const msg = $("#record-msg");
@@ -1560,6 +1716,98 @@ async function startInstagram() {
     setMsg(error.message, "err");
   } finally {
     $("#instagram-start-btn").disabled = false;
+  }
+}
+function updateXMode() {
+  const mode = $("#x-mode").value;
+  $("#x-date-options").classList.toggle("hidden", mode !== "date_range");
+  $("#x-latest-options").classList.toggle("hidden", mode !== "latest_n");
+  const note = $("#x-mode-note");
+  const notes = {
+    until_stopped: "SWM keeps walking each target until you select Stop and save, or no unseen post appears across the stall rounds.",
+    end_of_timeline: "SWM stops when no unseen post appears across the stall rounds. The manifest calls this timeline_stalled — never the end of the account's posts, which X does not signal.",
+    since_last: "SWM uses each target's newest post from its previous capture. Post ids are time-ordered; the walk goes a little past the boundary before stopping, and the pinned post never triggers it.",
+  };
+  note.classList.toggle("hidden", !notes[mode]);
+  note.classList.toggle("mode-explanation", Boolean(notes[mode]));
+  note.textContent = notes[mode] || "";
+  if (mode === "since_last") refreshXState();
+}
+async function refreshXState() {
+  const note = $("#x-cap-note");
+  if ($("#x-mode").value !== "since_last") return;
+  const targets = xTargets();
+  if (!targets.length) return;
+  try {
+    const known = [];
+    const unknown = [];
+    for (const target of targets.slice(0, 20)) {
+      const result = await api(`/api/x/state?target=${encodeURIComponent(target)}`);
+      (result.available ? known : unknown).push(result.label);
+    }
+    note.textContent = unknown.length
+      ? `No previous capture for ${unknown.join(", ")}; run another mode first.`
+      : `Previous captures found for ${known.join(", ")}.`;
+  } catch (error) {
+    note.textContent = error.message;
+  }
+}
+function xTargets() {
+  return $("#x-targets").value.split(/\r?\n/).map(t => t.trim()).filter(Boolean);
+}
+async function startX() {
+  const msg = $("#x-msg");
+  const setMsg = (text, cls="") => {
+    msg.textContent = text; msg.className = "msg" + (cls ? " " + cls : "");
+  };
+  const targets = xTargets();
+  if (!targets.length) { setMsg("Add at least one handle, profile, post, hashtag or search.", "err"); return; }
+  const mode = $("#x-mode").value;
+  if (mode === "date_range" && !$("#x-from").value) {
+    setMsg("Choose a From date for Date range mode.", "err"); return;
+  }
+  if (mode === "date_range" && $("#x-to").value && $("#x-from").value > $("#x-to").value) {
+    setMsg("From must be on or before To.", "err"); return;
+  }
+  const surfaces = [];
+  if ($("#x-surface-posts").checked) surfaces.push("posts");
+  if ($("#x-surface-replies").checked) surfaces.push("replies");
+  if ($("#x-surface-media").checked) surfaces.push("media");
+  if (!surfaces.length) { setMsg("Select at least one of Posts, Replies and Media.", "err"); return; }
+  const body = {
+    targets, mode, surfaces,
+    browser: $("#x-browser").value,
+    search_product: $("#x-search-product").value,
+    from_date: $("#x-from").value || null,
+    to_date: $("#x-to").value || null,
+    latest_n: Number($("#x-latest-n").value || 100),
+    capture_media: $("#x-media").checked,
+    keep_reposts: $("#x-reposts").checked,
+    write_warc: $("#x-warc").checked,
+    include_conversation: $("#x-conversation").checked,
+    max_replies_per_post: Number($("#x-reply-max").value || 50),
+  };
+  if ($("#x-name").value.trim()) body.name = $("#x-name").value.trim();
+  if ($("#x-operator").value.trim()) body.operator = $("#x-operator").value.trim();
+  if ($("#x-storage").value.trim()) body.storage_dir = $("#x-storage").value.trim();
+  setMsg("Starting…");
+  $("#x-start-btn").disabled = true;
+  try {
+    body.metadata = metadataEditors.x.value();
+    const choice = await resourceChoice(body.storage_dir);
+    if (!choice) { setMsg("Cancelled.", ""); return; }
+    body.start = choice;
+    await api("/api/x", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    setMsg(choice === "wait" ? "Capture created; it starts once the machine has room." : "Capture started. A Chrome window opens for the run; sign in there if X asks.", "ok");
+    showView("jobs");
+    refresh();
+  } catch (error) {
+    setMsg(error.message, "err");
+  } finally {
+    $("#x-start-btn").disabled = false;
   }
 }
 function statusClass(s) { return s.toLowerCase(); }
@@ -1782,6 +2030,7 @@ const metadataEditors = {
   record: new MetadataEditor($("#r-metadata"), {scopes: () => seedScopes([$("#r-url").value.trim()].filter(Boolean))}),
   facebook: new MetadataEditor($("#fb-metadata"), {scopes: () => seedScopes([$("#fb-url").value.trim()].filter(Boolean))}),
   instagram: new MetadataEditor($("#ig-metadata"), {scopes: () => seedScopes(instagramTargets())}),
+  x: new MetadataEditor($("#x-metadata"), {scopes: () => seedScopes(xTargets())}),
 };
 // the seed tabs follow the seeds as they are typed
 $("#seed-list").addEventListener("change", () => metadataEditors.crawl.render());
@@ -1790,6 +2039,7 @@ $("#add-seed-btn").addEventListener("click", () => metadataEditors.crawl.render(
 $("#r-url").addEventListener("change", () => metadataEditors.record.render());
 $("#fb-url").addEventListener("change", () => metadataEditors.facebook.render());
 $("#ig-targets").addEventListener("change", () => metadataEditors.instagram.render());
+$("#x-targets").addEventListener("change", () => metadataEditors.x.render());
 
 // Editing after the fact, from the job list.
 let metadataJobId = null;
@@ -1803,7 +2053,7 @@ async function editMetadata(id) {
     metadataJobId = id;
     modalScopes = seedScopes((doc.seeds || []).map(sd => sd.url));
     modalMetadata.load({job: doc.job || [], seeds: Object.fromEntries((doc.seeds || []).map(sd => [sd.url, sd.fields || []]))});
-    $("#metadata-sub").textContent = `#${id} ${doc.name || ""} · saved to metadata.json${["facebook", "instagram"].includes(doc.kind) ? " and the manifest" : ""}; a WARC already written keeps the values of its moment.`;
+    $("#metadata-sub").textContent = `#${id} ${doc.name || ""} · saved to metadata.json${["facebook", "instagram", "x"].includes(doc.kind) ? " and the manifest" : ""}; a WARC already written keeps the values of its moment.`;
     $("#metadata-export").href = `/api/crawls/${id}/metadata.csv`;
     $("#metadata-overlay").classList.add("open");
   } catch (e) { alert("Could not load metadata: " + e.message); }
@@ -2309,6 +2559,12 @@ $("#ig-targets").addEventListener("blur", refreshInstagramState);
 $("#ig-comments").addEventListener("change", () => {
   $("#ig-comment-options").classList.toggle("hidden", !$("#ig-comments").checked);
 });
+$("#x-start-btn").addEventListener("click", startX);
+$("#x-mode").addEventListener("change", updateXMode);
+$("#x-targets").addEventListener("blur", refreshXState);
+$("#x-conversation").addEventListener("change", () => {
+  $("#x-conversation-options").classList.toggle("hidden", !$("#x-conversation").checked);
+});
 $("#fb-url").addEventListener("blur", refreshFacebookState);
 $("#fb-comments").addEventListener("change", () => {
   $("#fb-comment-options").classList.toggle("hidden", !$("#fb-comments").checked);
@@ -2319,6 +2575,7 @@ loadHelp();
 resetExample();
 updateFacebookMode();
 updateInstagramMode();
+updateXMode();
 setInterval(() => $("#clock").textContent = new Date().toISOString().replace("T"," ").slice(0,19)+"Z", 1000);
 refresh();
 setInterval(refresh, 2000);

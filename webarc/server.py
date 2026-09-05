@@ -48,7 +48,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from . import metadata as md
 from . import resources
 from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
-                    KIND_INSTAGRAM, KIND_RECORDING, PAUSED, PENDING, RUNNING,
+                    KIND_INSTAGRAM, KIND_RECORDING, KIND_X, PAUSED, PENDING, RUNNING,
                     STOPPED, STOPPING, WAITING, Store)
 
 log = logging.getLogger(__name__)
@@ -203,6 +203,25 @@ def _instagram_capability() -> dict:
     from .instagram_gallery import gallery_dl_version
     return {"available": True, "reason": None, "note": note,
             "gallery_dl": gallery_dl_version()}
+
+
+def _x_capability() -> dict:
+    """X capture drives a signed-in browser with a window, like Instagram."""
+    visible = _recording_capability()
+    return {"available": visible["available"], "reason": visible["reason"],
+            "note": None if visible["available"] else (
+                "No graphical desktop: an X capture needs a browser window to "
+                "sign in and to run, which cannot open here.")}
+
+
+def _x_name_part(target) -> str:
+    import re as _re
+    if target.kind == "profile":
+        return str(target.handle)
+    if target.kind == "post":
+        return f"post-{target.post_id}"
+    words = _re.sub(r"[^A-Za-z0-9]+", "-", str(target.query or "")).strip("-")[:40]
+    return f"search-{words or 'query'}"
 
 
 def _store() -> Store:
@@ -383,7 +402,7 @@ def _metadata_from(payload: dict, seeds: list[str]) -> dict:
 
 
 def _job_operator(config: dict) -> str:
-    for section in ("recording", "facebook", "instagram"):
+    for section in ("recording", "facebook", "instagram", "x"):
         if isinstance(config.get(section), dict) and config[section].get("operator"):
             return str(config[section]["operator"])
     return str(config.get("operator") or "webarc")
@@ -627,6 +646,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "simulate": _SIMULATE,
             "storage": _storage_is_curator_choosable(),
             "instagram": _instagram_capability(),
+            "x": _x_capability(),
         }
 
     @app.post("/api/recordings")
@@ -1037,6 +1057,89 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
 
+    @app.get("/api/x/state")
+    def x_state(target: str):
+        from .x import parse_x_target
+
+        try:
+            parsed = parse_x_target(target)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        state = _store().get_x_target(parsed.key)
+        return {"available": bool(state and state.get("newest_post_id")),
+                "state": state, "key": parsed.key, "label": parsed.label}
+
+    @app.post("/api/x")
+    def create_x_capture(payload: dict = Body(...)):
+        """Start an X capture over one or more targets: handles, profile
+        addresses, post addresses, hashtags and searches.
+
+        A Chrome window opens on the dedicated X browser profile, which the
+        curator signs into once; X's own client makes every request.
+        """
+        from .x import XCaptureConfig, parse_x_target
+
+        operator = str(payload.get("operator") or "webarc").strip() or "webarc"
+        if len(operator) > 200:
+            raise HTTPException(400, "operator must be 200 characters or fewer")
+        browser_mode = str(payload.get("browser") or "headed")
+        if browser_mode not in ("headed", "native"):
+            raise HTTPException(400, "browser must be 'headed' or 'native'")
+        profile_dir = Path(_store().db_path).resolve().parent / "browser-profiles" / "x"
+        x = {
+            "browser": {"mode": browser_mode, "user_data_dir": str(profile_dir)},
+            "targets": payload.get("targets"),
+            "mode": str(payload.get("mode") or "latest_n"),
+            "from_date": payload.get("from_date"),
+            "to_date": payload.get("to_date"),
+            "latest_n": payload.get("latest_n"),
+            "surfaces": payload.get("surfaces") or ["posts"],
+            "search_product": str(payload.get("search_product") or "Latest"),
+            "capture_media": bool(payload.get("capture_media", True)),
+            "keep_reposts": bool(payload.get("keep_reposts", True)),
+            "include_conversation": bool(payload.get("include_conversation", False)),
+            "max_replies_per_post": payload.get("max_replies_per_post", 50),
+            "write_warc": bool(payload.get("write_warc", False)),
+            "operator": operator,
+            "browser_profile_dir": str(profile_dir),
+        }
+        if x["mode"] == "since_last":
+            prior = {}
+            for item in (payload.get("targets") or []):
+                try:
+                    target = parse_x_target(item, x["search_product"])
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                state = _store().get_x_target(target.key)
+                if state and state.get("newest_post_id"):
+                    prior[target.key] = {"post_id": state["newest_post_id"],
+                                         "date": state.get("newest_post_date")}
+            x["prior_newest"] = prior
+        try:
+            config = XCaptureConfig.from_dict(x)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        labels = [parse_x_target(u, config.search_product) for u in config.targets]
+        default_name = "x-" + "-".join(_x_name_part(t) for t in labels[:3])
+        if len(labels) > 3:
+            default_name += f"-and-{len(labels) - 3}-more"
+        name = str(payload.get("name") or default_name).strip()[:200] or "x"
+        storage_root = _storage_root_for(payload.get("storage_dir"))
+        config_json = {"x": x,
+                       "seeds": [{"url": u} for u in config.targets],
+                       "metadata": _metadata_from(payload, list(config.targets))}
+        crawl_id = _store().create_crawl(
+            name=name, config=config_json, output_dir="",
+            seeds_total=len(config.targets), kind=KIND_X)
+        crawl_dir = storage_root / str(crawl_id)
+        config_json["output_dir"] = str(crawl_dir)
+        crawl_dir.mkdir(parents=True, exist_ok=True)
+        _store().finalize_config(crawl_id, config_json, str(crawl_dir))
+        _write_metadata(_store().get_crawl(crawl_id))
+        _start_or_wait(crawl_id, payload)
+        return JSONResponse(status_code=201,
+                            content=_crawl_view(_store().get_crawl(crawl_id)))
+
     @app.get("/api/crawls/{crawl_id}/metadata")
     def read_metadata(crawl_id: int):
         """A job's descriptive metadata: its own fields, each seed's, and
@@ -1148,8 +1251,20 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from .facebook_render import build_site, is_facebook_capture
         from .instagram_render import build_site as build_instagram_site
         from .instagram_render import is_instagram_capture
+        from .x_render import build_site as build_x_site
+        from .x_render import is_x_capture
         pages_url = None
-        if is_instagram_capture(crawl_dir):
+        if is_x_capture(crawl_dir):
+            try:
+                build_x_site(crawl_dir)
+                pages_url = f"/captures/{crawl_id}/pages/index.html"
+            except Exception as exc:
+                if not warcs:
+                    raise HTTPException(
+                        500, f"could not build capture pages: {exc}") from exc
+                log.warning("Could not build capture pages for %d: %s",
+                            crawl_id, exc)
+        elif is_instagram_capture(crawl_dir):
             try:
                 build_instagram_site(crawl_dir)
                 pages_url = f"/captures/{crawl_id}/pages/index.html"

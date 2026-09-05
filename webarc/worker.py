@@ -21,7 +21,7 @@ from .config import CrawlConfig, SeedConfig, _build_section
 from .config import (BehaviorConfig, BrowserConfig, ScopeConfig, WarcConfig)
 from .control import StoreController
 from .store import (BLOCKED, COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP,
-                    FAILED, KIND_FACEBOOK, KIND_INSTAGRAM, KIND_RECORDING,
+                    FAILED, KIND_FACEBOOK, KIND_INSTAGRAM, KIND_RECORDING, KIND_X,
                     PAUSED, RUNNING,
                     STOPPED, Store)
 
@@ -416,6 +416,103 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
     return result
 
 
+def _run_x(store: Store, crawl_id: int, row: dict) -> dict:
+    """Run an X capture through the signed-in browser.
+
+    The browser is Chrome on the dedicated X profile, headed or native as
+    the job chose, with a window for the run. X's own client makes every
+    request; the collector reads the answers. A sign-in or an account check
+    is shown in that browser and the session is read from it again once the
+    curator continues. With the WARC option on, every exchange the browser
+    makes is written as it happens, credentials redacted.
+    """
+    import json
+
+    from .facebook import FacebookWarcSession
+    from .x import (BLOCKED as X_BLOCKED, XCaptureConfig, XCaptureSession,
+                    parse_x_target)
+    from .x_browser import XBrowserClient
+
+    raw = json.loads(row["config_json"])
+    config = XCaptureConfig.from_dict(raw.get("x", {}))
+    output_dir = Path(row["output_dir"])
+
+    described = _job_metadata(row, KIND_X, list(config.targets), config.operator)
+    warc = None
+    if config.write_warc:
+        warc = FacebookWarcSession(
+            output_dir, row["name"], config.targets[0], 1, config.operator,
+            WarcConfig(),
+            info_extra={
+                "robots": "none",
+                "description": ("X capture through the signed-in browser: how X "
+                                "presented what was collected. The media files, "
+                                "raw responses and normalised records beside it "
+                                "are the primary record."),
+            },
+            metadata_fields=described.get(config.targets[0]))
+    client = XBrowserClient(
+        BrowserConfig(mode=config.browser_mode,
+                      user_data_dir=config.browser_profile_dir,
+                      chrome_path=config.chrome_path),
+        warc=warc, headless=False)
+    client.start()
+
+    def control_poll():
+        command = store.get_control(crawl_id)
+        if command == CTRL_STOP:
+            return "stop"
+        if command == CTRL_PAUSE:
+            store.clear_control(crawl_id)
+            return "pause"
+        if command == CTRL_RESUME:
+            store.clear_control(crawl_id)
+            return "resume"
+        return None
+
+    last_state = {"state": None}
+
+    def on_progress(state, visited, current_url, failed=0, details=None,
+                    **_ignored):
+        store.update_progress(
+            crawl_id, 1, status=state, visited=visited, failed=failed,
+            current_url=current_url, details=details or {})
+        if state != last_state["state"]:
+            last_state["state"] = state
+            if state == PAUSED:
+                store.set_status(crawl_id, PAUSED)
+            elif state == X_BLOCKED:
+                store.set_status(crawl_id, BLOCKED)
+            elif state == "recording":
+                store.set_status(crawl_id, RUNNING)
+
+    def persist(targets, posts, users):
+        store.record_x_capture(crawl_id, targets, posts)
+
+    known = {}
+    for url in config.targets:
+        target = parse_x_target(url, config.search_product)
+        known[target.key] = store.get_x_post_ids(target.key)
+
+    capture = XCaptureSession(
+        config=config, client=client, output_dir=output_dir,
+        crawl_id=crawl_id, crawl_name=row["name"], known_ids=known,
+        control_poll=control_poll, on_progress=on_progress, persist=persist,
+        open_browser=client.show)
+    try:
+        result = capture.run()
+    finally:
+        if warc is not None:
+            try:
+                warc.close()
+            except Exception:
+                pass
+        client.close()
+    if warc is not None:
+        result["warc_files"] = len(list(output_dir.glob("*.warc.gz")))
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="webarc.worker")
     parser.add_argument("crawl_id", type=int)
@@ -453,6 +550,8 @@ def main(argv: list[str] | None = None) -> int:
             facebook_result = _run_facebook(store, args.crawl_id, row)
         elif kind == KIND_INSTAGRAM:
             facebook_result = _run_instagram(store, args.crawl_id, row)
+        elif kind == KIND_X:
+            facebook_result = _run_x(store, args.crawl_id, row)
         else:
             from .crawler import run_crawl
             run_crawl(_config_from_row(row), controller)
@@ -463,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # decide final crawl-level status from control state
     facebook_stop = (facebook_result or {}).get("stop_reason") \
-        if kind in (KIND_FACEBOOK, KIND_INSTAGRAM) else None
+        if kind in (KIND_FACEBOOK, KIND_INSTAGRAM, KIND_X) else None
     if facebook_stop == "unsupported_personal_profile":
         # Not a crash, but not a completed capture either: record why, so the
         # dashboard shows the reason rather than an empty successful run.

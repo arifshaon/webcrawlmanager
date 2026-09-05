@@ -41,7 +41,7 @@ _BODY_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
 _QUERY_SECRET = re.compile(
     r"(?:^|(?<=[?&])|(?<=&amp;))"
     r"(?P<key>fb_dtsg(?:_ag)?|lsd|jazoest|__user|__s|__hsi|access_token"
-    r"|auth_token|csrftoken|sessionid)=(?P<value>[^&\"'\\\s<>]+)")
+    r"|auth_token|csrftoken|sessionid|ct0)=(?P<value>[^&\"'\\\s<>]+)")
 _TEXTUAL = ("text/", "json", "javascript", "xml", "x-www-form-urlencoded")
 
 

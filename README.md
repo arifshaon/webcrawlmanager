@@ -425,6 +425,82 @@ count, partial, limited by the capture's cap, none reported, or exhausted but
 unverified where nothing independent confirms the count. A thread that
 stopped yielding is never taken as proof it was complete.
 
+## X capture
+
+The dashboard's **X** tab captures an account's posts, a single post with
+its conversation, or what X shows for a hashtag or search, through a
+Chrome the curator has signed in to. It is built the way the Instagram
+mode is, and X makes it simpler: every request X's web client makes names
+its operation in the URL (`/i/api/graphql/<id>/UserTweets`), so SWM
+recognises the operations it wants from the page's own traffic and reads
+the answers. The rotating operation ids, drifting feature flags and
+obfuscated transaction header that every home-made X client chases never
+have to be produced. X's rate limits and account checks remain: a 429 is
+waited out until the reset time X sends, and a sign-in or verification is
+handed to the curator in the window.
+
+Targets, one per line: `@handle` or a profile address (with or without
+`/with_replies` or `/media`), a post address, `#hashtag`, or
+`search: words`. twitter.com addresses are read as x.com ones. Home,
+notifications, messages and the rest of the signed-in client's own pages
+are refused.
+
+Attribution follows the rule that fixed Instagram's contamination: the
+account is resolved to its numeric id first, and a post is the account's
+only when one of the account's own listing operations (`UserTweets`,
+`UserTweetsAndReplies`, `UserMedia`, keyed by that id) returned it and
+its author is that id. The home feed, notifications and recommendations
+the signed-in client fetches beside the target are written to the WARC
+(a WARC without them replays with errors the page never showed), counted
+in the manifest under `operations_observed`, and never produce records.
+
+Records are X's own, not Instagram's:
+
+- **Replies are posts**, with their own id, author and media, not comments.
+  Every retained post carries `relationship` (original, reply, repost,
+  quote) and `capture_role` (target, or conversation_context for other
+  people's posts pulled in to explain a conversation, which never count
+  toward the account's total).
+- **Reposts are kept** as what the account chose to publish on its
+  timeline, with the original post and its author under `original_post`;
+  the account is never shown as the original's author, in the records or
+  on the reader pages. They can be left out with an option.
+- **Quotes** are the account's post with the quoted post under
+  `quoted_post`.
+- **Media** is fetched as a request SWM makes, and the index says so:
+  images at the `orig` rendition X serves for a `name=orig` request (with
+  `4096x4096`, `large` and the bare URL as fallbacks), videos and GIFs as
+  the highest-bitrate progressive MP4 X advertises, never the HLS playlist.
+  Each entry records the rendition the page loaded, the one requested,
+  what was actually fetched, who asked, and how.
+- **Conversations** (opt-in, and always for a post target) open each
+  post's page and keep what it replies to and the replies under it as
+  context, graded per post like Instagram's comments: complete against the
+  reported count, partial, capped, none reported, or exhausted but
+  unverified. Deleted or withheld posts in a thread are recorded as
+  absences with X's reason.
+- **Searches and hashtags** keep every result with its author; the
+  manifest describes the capture as what X served this account for this
+  query, in this tab (Latest or Top), at this time.
+
+Modes match Instagram's: latest N (the pinned post recognised from X's own
+pin instruction and kept without consuming the count), date range, until
+stopped, end of observed timeline, and since last capture. X does not
+signal the end of a timeline, so a walk that finds no unseen post across
+the stall rounds is reported as `timeline_stalled`, never as the end of
+the account's posts. Post ids are time-ordered, so since-last compares
+ids, and keeps going a little past the previous capture's newest post
+before stopping.
+
+Every run writes `x-posts.jsonl`/`.csv`, `x-users.json`, `x-media.json`,
+`x-manifest.json`, `x-checkpoint.json`, `x-events.jsonl`,
+`checksums.sha256`, `media/`, `raw/responses/` (only responses a kept
+record or media file was read from, session material removed) with
+`raw/posts/` and `raw/users/`, `pages/` built from the records, and
+optionally a WARC with `x-csrf-token`, `x-client-transaction-id`, the
+bearer and the cookies redacted on the request side. The design and its
+reasoning are in `docs/research/x-capture.md`.
+
 ## Automated crawling
 
 Automated crawling uses YAML configuration to define seeds, browser behaviour,
