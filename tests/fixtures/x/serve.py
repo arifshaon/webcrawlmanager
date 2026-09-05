@@ -31,6 +31,11 @@ OTHER = {"__typename": "User", "rest_id": "777",
          "legacy": {"screen_name": "someone_else", "name": "Someone Else",
                     "followers_count": 3, "friends_count": 3, "statuses_count": 3,
                     "protected": False}}
+QUIET = {"__typename": "User", "rest_id": "300",
+         "legacy": {"screen_name": "quiet", "name": "Quiet Account",
+                    "description": "Nothing posted yet.", "followers_count": 2,
+                    "friends_count": 1, "statuses_count": 0, "protected": False,
+                    "profile_image_url_https": "http://MEDIAHOST/profile_images/300/avatar_normal.jpg"}}
 VIEWER = {"__typename": "User", "rest_id": "424242",
           "legacy": {"screen_name": "curator", "name": "Curator",
                      "followers_count": 0, "friends_count": 1, "statuses_count": 1}}
@@ -276,10 +281,10 @@ class Handler(BaseHTTPRequestHandler):
                 "SearchTimeline", {"rawQuery": query, "product": product}))
         if segs[0] == "nobody":
             return self._send(b"<html><body>This account doesn\xe2\x80\x99t exist</body></html>")
-        if segs[0] in ("qnl", "someone_else"):
+        if segs[0] in ("qnl", "someone_else", "quiet"):
             op = {"with_replies": "UserTweetsAndReplies", "media": "UserMedia"}.get(
                 segs[1] if len(segs) > 1 else "", "UserTweets")
-            user_id = "100" if segs[0] == "qnl" else "777"
+            user_id = {"qnl": "100", "someone_else": "777", "quiet": "300"}[segs[0]]
             ops = [["UserByScreenName", {"screen_name": segs[0]}],
                    [op, {"userId": user_id, "count": 20}]]
             if segs[0] == "qnl" and op == "UserTweets":
@@ -294,14 +299,20 @@ class Handler(BaseHTTPRequestHandler):
                    "x-rate-limit-reset": str(int(__import__("time").time()) + 30)}
         body: dict
         if name == "UserByScreenName":
-            user = {"qnl": USER, "someone_else": OTHER}.get(variables.get("screen_name"))
+            user = {"qnl": USER, "someone_else": OTHER, "quiet": QUIET}.get(variables.get("screen_name"))
             body = {"data": {"user": {"result": self._fix(user)}}} if user else {"data": {}}
         elif name == "HomeTimeline":
             body = {"data": {"home": {"home_timeline_urt": {"instructions": [
                 {"type": "TimelineAddEntries", "entries": [entry(self._fix(READER_POST)),
                                                           entry(self._fix(PLAIN[0]))]}]}}}}
         elif name == "UserTweets":
-            if variables.get("userId") != "100":
+            if variables.get("userId") == "300":
+                # an account that has posted nothing: X still answers with a
+                # cursor, as it does on any timeline
+                body = timeline_response([{"type": "TimelineClearCache"},
+                                          {"type": "TimelineAddEntries",
+                                           "entries": [cursor("Top", "q-t"), cursor("Bottom", "q-b")]}])
+            elif variables.get("userId") != "100":
                 body = timeline_response([{"type": "TimelineAddEntries", "entries": [
                     entry(self._fix(ORIGINAL_BY_OTHER)), cursor("Bottom", "o1")]}])
             elif variables.get("cursor"):

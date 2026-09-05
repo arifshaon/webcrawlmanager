@@ -295,7 +295,9 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
     table = "".join(f"<tr><td>{html.escape(l)}</td><td>{_text(v)}</td></tr>"
                     for l, v in rows if v not in (None, ""))
     timeline = "".join(_entry_markup(p, media_index, "../media/", True) for p in targets_posts) \
-        or '<div class="empty">No posts were captured.</div>'
+        or ('<div class="empty">No posts were captured: X served none for this '
+            'target during the capture. The account record above is the '
+            'capture.</div>' if users else '<div class="empty">No posts were captured.</div>')
     described = "".join(_description_table(manifest, t.get("url")) for t in targets) \
         or _description_table(manifest, None)
 

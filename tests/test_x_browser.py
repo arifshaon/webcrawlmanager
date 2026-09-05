@@ -200,6 +200,23 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         with self.assertRaises(LoginRequired):
             client._goto(f"http://{self.host}/")
 
+    def test_an_account_with_no_posts_is_captured_with_its_record(self):
+        client = self.client()
+        config = XCaptureConfig.from_dict({"targets": ["quiet"], "mode": "latest_n"})
+        session = XCaptureSession(config=config, client=client, output_dir=self.out,
+                                  crawl_id=1, crawl_name="t", sleep=lambda s: None)
+
+        session.run()
+
+        self.assertEqual(self.rows(), [])
+        users = json.loads((self.out / "x-users.json").read_text())
+        self.assertEqual(users["300"]["handle"], "quiet")
+        manifest = json.loads((self.out / "x-manifest.json").read_text())
+        self.assertEqual(manifest["capture"]["targets"][0]["status"], "done")
+        self.assertEqual(manifest["counts"]["users_exported"], 1)
+        self.assertEqual(manifest["counts"]["media_captured"], 1)     # the profile image
+        self.assertEqual(client.anomalies, [])
+
     def test_an_account_that_does_not_exist_is_reported(self):
         client = self.client()
 

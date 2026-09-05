@@ -529,6 +529,28 @@ class EngineTests(EngineTestCase):
         self.assertEqual(rows[1]["capture_role"], "conversation_context")
         self.assertEqual(rows[0]["reply_capture"]["status"], "reported_count_reached")
 
+    def test_an_account_with_no_posts_is_still_a_capture(self):
+        self.fake.timelines[("qnl", "posts")] = []
+
+        session = self.run_session(latest_n=5)
+
+        self.assertEqual(self.rows(), [])
+        users = json.loads((self.out / "x-users.json").read_text())
+        self.assertEqual(users["100"]["handle"], "qnl")
+        manifest = self.manifest()
+        self.assertEqual(manifest["counts"]["users_exported"], 1)
+        self.assertEqual(manifest["counts"]["posts_exported"], 0)
+        self.assertEqual(manifest["capture"]["targets"][0]["status"], "done")
+        self.assertEqual(manifest["capture"]["targets"][0]["empty_surfaces"], ["posts"])
+        self.assertEqual(session.stop_reason, "targets_complete")
+        events = [json.loads(l)["event"] for l in (self.out / "x-events.jsonl").read_text().splitlines()]
+        self.assertIn("timeline_empty", events)
+        self.assertIn("1 account", session.phase_detail)
+        from webarc.x_render import build_site
+        index = (build_site(self.out) / "index.html").read_text(encoding="utf-8")
+        self.assertIn("@qnl", index)
+        self.assertIn("X served none for this target", index)
+
     def test_unreferenced_responses_are_pruned_at_the_end(self):
         archive = XArchive(self.out)
         kept = archive.save_response({"url": "https://x.com/i/api/graphql/a/UserTweets"}, b'{"a":1}')
@@ -629,6 +651,25 @@ class ApiTests(unittest.TestCase):
         effective = {f["name"]: f["value"] for f in seen["seeds"][0]["effective"]}
         self.assertEqual(effective["Title"], "QNL on X")
         self.assertEqual(effective["Type"], "Social media account")
+
+    def test_replay_offers_the_pages_of_an_account_without_posts(self):
+        made = self.create(targets=["quiet"]).json()
+        crawl_dir = Path(self.row(made["id"])["output_dir"])
+        self.srv._store().set_pid(made["id"], None)
+        (crawl_dir / "x-posts.jsonl").write_text("")
+        (crawl_dir / "x-users.json").write_text(json.dumps({"300": {
+            "user_id": "300", "handle": "quiet", "name": "Quiet Account",
+            "description": "Nothing posted yet.", "posts_count": 0}}))
+        (crawl_dir / "x-manifest.json").write_text(json.dumps({
+            "capture": {"targets": [{"url": "https://x.com/quiet", "label": "@quiet"}],
+                        "mode": "latest_n"}, "counts": {"users_exported": 1}}))
+
+        response = self.client.post(f"/api/crawls/{made['id']}/replay")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        index = self.client.get(response.json()["pages_url"]).text
+        self.assertIn("Quiet Account", index)
+        self.assertIn("X served none", index)
 
     def test_replay_offers_the_pages_of_a_package(self):
         made = self.create().json()

@@ -850,6 +850,9 @@ class XCaptureSession:
             "reposts_exported": self._count_relationship("repost"),
             "context_posts": self._count_role("conversation_context"),
             "replies_exported": self.counters.get("replies_collected", 0),
+            # an account is a record of its own: a profile with no posts is
+            # still captured, and its pages still open
+            "users_exported": len(self.archive.users),
             "media_expected": self.counters.get("media_expected", 0),
             "media_captured": len(self.archive.media_index),
             "media_failed": self.counters.get("media_failed", 0),
@@ -966,11 +969,13 @@ class XCaptureSession:
         posts = self._count_role("target")
         context = self._count_role("conversation_context")
         media = len(self.archive.media_index)
+        accounts = len(self.archive.users)
         because = {
             "targets_complete": "every target was worked",
             "curator_stop": "you selected Stop and save",
         }.get(self.stop_reason or "", str(self.stop_reason or "").replace("_", " "))
-        return (f"Collected {posts} post{'s' if posts != 1 else ''}, "
+        return (f"Collected {accounts} account{'s' if accounts != 1 else ''}, "
+                f"{posts} post{'s' if posts != 1 else ''}, "
                 f"{context} context post{'s' if context != 1 else ''}, "
                 f"{media} media file{'s' if media != 1 else ''}. "
                 f"Stopped because {because}.")
@@ -1105,6 +1110,9 @@ class XCaptureSession:
                     consecutive_older += 1
             if self._boundary_reached(consecutive_older, self._selected_non_pinned(target)):
                 return
+        if status["posts_encountered"] == 0:
+            self.archive.event("timeline_empty", target=target.url, surface=surface)
+            status["empty_surfaces"] = sorted(set(status.get("empty_surfaces", [])) | {surface})
         if self.config.mode in ("until_stopped", "end_of_timeline"):
             self.archive.event("timeline_stalled", target=target.url, surface=surface,
                                posts_encountered=status["posts_encountered"])
@@ -1407,6 +1415,7 @@ class XCaptureSession:
             "message": self.phase_detail,
             "posts_exported": self._count_role("target"),
             "context_posts": self._count_role("conversation_context"),
+            "users_exported": len(self.archive.users),
             "media_captured": len(self.archive.media_index),
             "stop_reason": self.stop_reason,
             "stop_rule": self.stop_rule,
@@ -1504,6 +1513,7 @@ class XCaptureSession:
                 "warc_files": self.counters.get("warc_files") or len(
                     list(self.archive.out_dir.glob("*.warc.gz"))),
                 "posts_exported": self._count_role("target"),
+                "users_exported": len(self.archive.users),
                 "authored_posts": (self._count_relationship("original")
                                    + self._count_relationship("reply")
                                    + self._count_relationship("quote")),

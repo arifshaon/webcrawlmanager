@@ -166,6 +166,16 @@ class DisabledJobTabTests(DashboardTestCase):
         self.assertIn('$("#job-cap-note")', body)
 
 
+class TargetRowTests(DashboardTestCase):
+    """An account captured without posts still has pages to open."""
+
+    def test_open_pages_is_offered_on_an_account_record_alone(self):
+        source = HARDENING.read_text(encoding="utf-8")
+        start = source.index("isTargeted ? `<button class=\"act replay\" onclick=\"replay(${id},'pages')\"")
+        button = source[start:source.index("Open pages", start)]
+        self.assertIn("fb.users_exported", button)
+
+
 class StorageFieldTests(DashboardTestCase):
     def test_every_job_form_can_name_its_own_location(self):
         fields = re.findall(r'id="([a-z-]+)" class="storage-dir"', self.markup)
