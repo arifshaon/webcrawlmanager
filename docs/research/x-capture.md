@@ -33,6 +33,7 @@ independent sources agree, the text says so.
 - [Replay](#replay)
 - [What breaks most often](#what-breaks-most-often-and-what-swm-is-immune-to)
 - [Mapping onto SWM](#mapping-onto-swm)
+- [Amendments after review](#amendments-after-review)
 - [Evidence](#evidence)
 - [Sources](#sources)
 
@@ -363,6 +364,223 @@ with new recognisers. In order:
 > promoted item marks itself in the JSON, and whether X's page uses
 > `data-content-len` blocks. One profile visit with the response hook on
 > answers all three.
+
+## Amendments after review
+
+A review of this report on 5 September 2026 accepted the central approach
+(the signed-in browser makes X's requests; SWM observes, extracts and
+packages) and amended several points before it becomes a coding plan.
+Where an amendment changes what a section above says, the amendment
+governs.
+
+### 1. Reuse the framework, not the Instagram data model
+
+The Instagram mode is the template for structure only: session and window
+handling, the response hook and WARC writer, redaction, the media fetch
+tiers, fixity, provenance, selection modes, completeness grades, the
+manifest conventions and the metadata layer. X's semantics differ around
+reposts, quotes, conversations, tombstones and search, and its records get
+their own model. On the code, the X engine is written as its own module
+that reuses those shared pieces; a common base class for the social modes
+is extracted only once the third implementation makes the duplication
+plain, not as a refactor of the Facebook and Instagram engines first.
+
+### 2. Target evidence is allowlisted; the WARC stays complete
+
+The extractor produces records only from target operations:
+
+```text
+UserByScreenName            -> the resolved rest_id
+UserTweets(rest_id)
+UserTweetsAndReplies(rest_id)
+UserMedia(rest_id)
+TweetDetail(selected post)
+SearchTimeline(requested query)
+```
+
+Home feed, notifications, recommendations and account-state calls never
+produce records. They are still written to the WARC: the page's client
+makes them at start, and a WARC without their answers replays with errors
+the page never showed. Minimisation is handled where it already is: the
+session's own material is redacted from every body, and the raw-response
+store keeps only responses that produced a retained record (unreferenced
+ones are pruned at finalise). The manifest gains a list of every operation
+observed with its count, so the curator can see exactly what else the
+page fetched.
+
+### 3. Replies are posts, not comments
+
+An X reply has its own id, author, time, media and relationships. Every
+retained tweet is one record type:
+
+```json
+{"record_type": "post",
+ "relationship": "original | reply | repost | quote",
+ "conversation_id": "…",
+ "in_reply_to_post_id": "…",
+ "capture_role": "target | conversation_context"}
+```
+
+Other people's tweets pulled in to explain a conversation carry
+`capture_role: conversation_context` and never count toward the account's
+captured-post total. What is reused from the Instagram comment work is
+the completeness grading per post: reported count reached, partial,
+capped, stopped, exhausted unverified.
+
+### 4. Reposts are kept
+
+A repost is evidence of what the account chose to publish on its
+timeline, so the default is to keep it, represented so that the account
+is never shown as the author of the original:
+
+```text
+record_type: post
+relationship: repost
+actor:          the target account (id, handle)
+original_post:  id, author id, author handle, text, media
+```
+
+Quotes stay posts by the quoting account with the quoted post embedded
+and, when the quoted post is not the target's, marked as context. The
+manifest counts authored posts and reposts separately, and the reader
+pages show a repost and a quote in a way that never suggests the account
+wrote the original.
+
+### 5. Supplemental media fetches say so
+
+A `name=orig` request is a fetch SWM makes; the page loaded a sized
+rendition. The media index records both and who asked:
+
+```json
+{"discovered_from": "raw/responses/response-000042.json",
+ "page_loaded_variant": "small",
+ "requested_variant": "orig",
+ "fetch_initiator": "swm",
+ "fetched_via": "browser-page | browser-cdn-tab | playwright-api-request",
+ "sha256": "…"}
+```
+
+Wording: images are "the orig rendition as served by X", never "the
+upload"; video is "the highest-bitrate progressive MP4 variant advertised
+by X", never "original", unless evidence shows otherwise.
+
+### 6. No numeric ceiling on a timeline
+
+The roughly 3,200-post figure is unverified and appears nowhere in code,
+manifest or stop condition. Completion is decided by observed behaviour:
+no unseen post ids across the stall rounds, then stop, then report
+`termination_reason: timeline_stalled` and
+`completeness: available_timeline_exhausted_unverified`, the wording the
+Instagram mode uses.
+
+### 7. Since-last-capture keeps going past the boundary
+
+Tweet ids are time-ordered, so an id comparison finds the previous
+capture's newest post quickly, but it is not the sole stop rule. On
+meeting the boundary the walk continues for one or two more timeline
+responses, deduplicating against the previous capture's known ids, and
+stops only when nothing unseen appears beyond it. This is the
+consecutive-older rule the Instagram mode already applies, and it
+protects against pinned entries, modules and ordering changes.
+
+### 8. A signed-in profile is the product requirement
+
+X capture uses a dedicated, persistent, signed-in browser profile, as the
+Instagram mode does. If X shows a public profile to a signed-out visitor,
+SWM need not refuse it, but nothing in the design or the tests depends
+on anonymous access.
+
+### 9. Replay is one outcome, not the measure of success
+
+The package philosophy is unchanged: the WARC is the replay aid and the
+record of presentation, the raw responses are the evidence, the
+normalised records with media and fixity are the durable record. A
+captured MP4 and a matcher that understands X's GraphQL make replay
+workable, not assured; client state, request ordering and code-version
+dependence can still break it, as they did for Instagram.
+
+### 10. Scope is built in three phases
+
+- **Phase 1, profile capture.** A handle or profile URL; the Posts and
+  Replies tabs; latest N, date range, since previous capture, until
+  stopped, available timeline; pinned posts, reposts, quotes, media;
+  JSONL, raw responses, WARC, fixity, manifest.
+- **Phase 2, individual post.** A status URL; the focal post,
+  conversation context, replies with completeness, media, tombstones.
+- **Phase 3, search and hashtag.** Its own target type and manifest
+  semantics: what X served this account for this query at this time.
+
+### Reconnaissance before the extractor
+
+One controlled X account, captured with the response hook on and
+inspected before any parser is written, to freeze fixtures from real
+responses:
+
+1. UserByScreenName
+2. UserTweets, first page
+3. UserTweets, next scroll
+4. a pinned post
+5. a repost
+6. a quote post
+7. a normal reply
+8. a long-form post
+9. a photo
+10. a video
+11. an animated GIF
+12. a TweetDetail conversation
+13. a promoted or injected item, if encountered
+14. a sensitive-content item, if available
+15. end-of-timeline behaviour
+16. a 429 response and its reset header
+17. the profile page's HTML bootstrap, for sized `data-content-len` blocks
+18. a signed-out load of the same profile, to document the difference
+
+### Two additions neither the report nor the review named
+
+- The request-side redaction list gains `x-csrf-token` and
+  `x-client-transaction-id` beside the cookies and the bearer token.
+- The reader pages need a decided presentation for reposts and quotes
+  (see amendment 4) before the first package is built.
+
+### The architecture as amended
+
+```text
+                       X CAPTURE
+                           |
+                persistent Chrome profile
+                           |
+               curator signs in normally
+                           |
+                browser makes X's requests
+                           |
+                    response observer
+                           |
+             +-------------+--------------+
+             |                            |
+      target-operation filter       WARC / resource capture
+             |
+         X extractor
+             |
+        stable rest_id
+             |
+     +-------+--------+
+     |       |        |
+   posts  replies   media
+     |       |        |
+     +-------+--------+
+             |
+     target ownership rules
+             |
+      dedupe and selection
+             |
+    selected archival records
+             |
+     +-------+--------+
+     |       |        |
+   JSONL   media   manifest
+             |
+          SHA-256
+```
 
 ## Evidence
 
