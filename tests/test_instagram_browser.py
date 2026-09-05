@@ -15,6 +15,7 @@ from pathlib import Path
 
 from webarc.config import BrowserConfig
 from webarc.instagram import (InstagramCaptureConfig, InstagramCaptureSession,
+                              InstagramPost, InstagramProfile,
                               LoginRequired, TargetUnavailable)
 from webarc.instagram_browser import (InstagramBrowserClient, describe_request,
                                       document_names_listing,
@@ -430,7 +431,27 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
 
         codes = [p.shortcode for p in client.profile_reels("qnl")]
 
-        self.assertEqual(codes, [serve.TIMELINE[2]["code"]])
+        self.assertEqual(codes, [serve.TIMELINE[2]["code"], serve.TIMELINE[3]["code"]])
+
+    def test_a_reels_request_naming_the_account_by_number_is_its_listing(self):
+        """The reels tab asks for the account by id, not name. Before the
+        profile's id has been seen, the reels' own owner decides, and the
+        id is learned from the request."""
+        client = self.client()
+
+        codes = [p.shortcode for p in client.profile_reels("qnl")]
+
+        self.assertEqual(codes, [serve.TIMELINE[2]["code"], serve.TIMELINE[3]["code"]])
+        self.assertEqual(client.observed.profiles["qnl"].user_id, serve.PROFILE["pk"])
+
+    def test_a_later_sight_of_the_profile_without_its_number_keeps_the_number(self):
+        client = self.client()
+        client.profile("qnl")
+        self.assertEqual(client.observed.profiles["qnl"].user_id, serve.PROFILE["pk"])
+
+        list(client.profile_reels("qnl"))     # the reels page shows qnl without a pk
+
+        self.assertEqual(client.observed.profiles["qnl"].user_id, serve.PROFILE["pk"])
 
     def test_an_unrecognised_listing_is_reported_not_silent(self):
         """If Instagram's listing request is not recognised, the run says so
@@ -447,6 +468,8 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         self.assertEqual(client.anomalies[-1]["what"], "no_listing_recognised")
         self.assertEqual(client.anomalies[-1]["profile"], "qbl")
         self.assertTrue(client.anomalies[-1]["requests"])
+        # the reason each observed post was refused is part of the report
+        self.assertIn("not_from_a_listing_request", client.anomalies[-1]["refused"])
 
     def test_a_suggested_post_by_someone_else_is_not_the_profiles(self):
         client = self.client()
@@ -628,3 +651,55 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ListingRefusalTests(unittest.TestCase):
+    """The listing's rule, judged without a browser."""
+
+    def listing(self, owner="qnl", profile_id=None):
+        from types import SimpleNamespace
+
+        from webarc.instagram_browser import _Observed, _ScrollingListing
+        observed = _Observed()
+        if profile_id is not None:
+            observed.profiles[owner] = InstagramProfile(user_id=profile_id, username=owner, raw={})
+        client = SimpleNamespace(observed=observed, anomalies=[])
+        return _ScrollingListing(client, navigation=1, owner=owner)
+
+    @staticmethod
+    def post(code, owner_id=None, owner=None, listing_user=None, connection="clips__user"):
+        return InstagramPost(
+            media_id=code, shortcode=code, owner_username=owner, owner_id=owner_id,
+            kind="video", permalink_url="", source="browser",
+            provenance={"connection": connection, "listing_request": True,
+                        "listing_user": listing_user})
+
+    def test_a_request_by_number_is_the_profiles_when_its_posts_are(self):
+        listing = self.listing()
+
+        self.assertIsNone(listing._refusal(self.post("a", owner_id="100", owner="qnl", listing_user="100")))
+        self.assertEqual(listing.client.observed.profiles["qnl"].user_id, "100")
+
+    def test_a_request_by_number_for_someone_else_is_not(self):
+        listing = self.listing()
+
+        self.assertEqual(listing._refusal(self.post("a", owner_id="200", owner="qbl", listing_user="200")),
+                         "listing_of_another_user")
+        self.assertNotIn("qnl", listing.client.observed.profiles)
+
+    def test_once_the_number_is_known_it_decides(self):
+        listing = self.listing(profile_id="100")
+
+        self.assertEqual(listing._refusal(self.post("a", owner_id="100", owner="qnl", listing_user="200")),
+                         "listing_of_another_user")
+        self.assertEqual(listing._refusal(self.post("b", owner_id="300", listing_user="100")),
+                         "another_owner")
+        self.assertIsNone(listing._refusal(self.post("c", owner_id="100", listing_user="100")))
+
+    def test_a_post_from_no_listing_request_is_refused_with_that_reason(self):
+        listing = self.listing(profile_id="100")
+        stray = self.post("s", owner_id="100")
+        stray.provenance = {"connection": None, "listing_request": False}
+
+        self.assertFalse(listing._belongs(stray))
+        self.assertEqual(listing.refused, {"not_from_a_listing_request": 1})

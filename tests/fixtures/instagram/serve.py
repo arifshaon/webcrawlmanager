@@ -156,7 +156,7 @@ window.addEventListener('scroll', async () => {
   if (window.innerHeight + window.scrollY < document.body.scrollHeight - 50) return;
   busy = true;
   const body = new URLSearchParams({fb_api_req_friendly_name: '%(name)s',
-    variables: JSON.stringify({after: cursor})}).toString();
+    variables: JSON.stringify(Object.assign({after: cursor}, %(vars)s))}).toString();
   const r = await fetch('/graphql/query', {method: 'POST', body,
     headers: {'content-type': 'application/x-www-form-urlencoded'}});
   const j = await r.json();
@@ -222,17 +222,20 @@ class Handler(BaseHTTPRequestHandler):
                 data["xdt_api__v1__feed__timeline"] = {
                     "edges": [{"node": self._fix(n)} for n in VIEWER_FEED]}
             payload = _prefetch("PolarisProfilePostsTabContentQuery_connection", data)
-            script = SCROLL_JS % {
+            script = SCROLL_JS % {"vars": "{}", 
                 "cursor": json.dumps(cursor), "name": "PolarisProfilePostsTabContentQuery_connection"}
             if segs[0] == "qnl":
                 script = PREFETCH_JS + script
             return self._send(_page(segs[0], payload, script))
         if segs[:1] == ["qnl"] and segs[1:2] == ["reels"]:
             payload = _prefetch("PolarisProfileReelsTabContentQuery_connection", {
+                "user": {"username": "qnl", "is_private": False},
                 "xdt_api__v1__clips__user__connection_v2": {
                     "edges": [{"node": {"media": self._fix(TIMELINE[2])}}],
-                    "page_info": {"has_next_page": False}}})
-            return self._send(_page("reels", payload, SCROLL_JS % {"cursor": "null", "name": "x"}))
+                    "page_info": {"has_next_page": True, "end_cursor": "r1"}}})
+            return self._send(_page("reels", payload, SCROLL_JS % {
+                "cursor": json.dumps("r1"), "name": "PolarisProfileReelsTabContentQuery_connection",
+                "vars": json.dumps({"data": {"target_user_id": PROFILE["pk"], "page_size": 12}})}))
         if segs[:1] == ["p"] and len(segs) >= 2:
             code = segs[1]
             match = next((n for n in TIMELINE + TIMELINE_B + TIMELINE_C
@@ -252,7 +255,7 @@ class Handler(BaseHTTPRequestHandler):
             thumbnails = "".join(
                 f"<img src='http://{self.host}/pic/{n['code']}-s.jpg' alt=''>"
                 for n in others)
-            return self._send(_page(code, payload, SCROLL_JS % {
+            return self._send(_page(code, payload, SCROLL_JS % {"vars": "{}", 
                 "cursor": json.dumps("k1"), "name": "PolarisPostCommentsPaginationQuery"},
                 thumbnails))
         if segs[:1] == ["accounts"]:
@@ -279,6 +282,10 @@ class Handler(BaseHTTPRequestHandler):
             body = {"data": {"xdt_api__v1__feed__user_timeline_graphql_connection": {
                 "edges": [{"node": n} for n in self._fix(stripped)],
                 "page_info": {"has_next_page": False}}}}
+        elif "Reels" in name:
+            body = {"data": {"xdt_api__v1__clips__user__connection_v2": {
+                "edges": [{"node": {"media": self._fix(TIMELINE[3])}}],
+                "page_info": {"has_next_page": False}}}, "next": None}
         elif "Comments" in name:
             body = {"data": {"xdt_api__v1__media__media_id__comments__connection": {
                 "edges": [{"node": c} for c in self._fix(MORE_COMMENTS)],

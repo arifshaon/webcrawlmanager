@@ -554,6 +554,12 @@ class _Observed:
                 added += 1
             self.comments.setdefault(comment.comment_id, comment)
         for profile in profiles:
+            current = self.profiles.get(profile.username)
+            # a page shows a profile in several places, some without its
+            # number (a note bubble, a suggestion): the number, once seen,
+            # is kept
+            if current is not None and current.user_id and not profile.user_id:
+                continue
             self.profiles[profile.username] = profile
         return added
 
@@ -1232,6 +1238,8 @@ class _ScrollingListing:
         self.handed: set[str] = set()
         self.returned = 0
         self.stalls = 0
+        # why observed posts were not the listing's, by reason
+        self.refused: dict[str, int] = {}
 
     def __iter__(self):
         return self
@@ -1242,7 +1250,24 @@ class _ScrollingListing:
         return (profile.user_id or None) if profile else None
 
     def _belongs(self, post: InstagramPost) -> bool:
-        """Whether a post observed on this page is in this profile's listing.
+        reason = self._refusal(post)
+        if reason is not None:
+            self.refused[reason] = self.refused.get(reason, 0) + 1
+        return reason is None
+
+    def _learn_id(self, user_id: str) -> None:
+        """The listing request named the profile by number: remember it."""
+        found = next((p for p in self.client.observed.profiles.values()
+                      if p.username.lower() == self.owner), None)
+        if found is None:
+            self.client.observed.profiles[self.owner] = InstagramProfile(
+                user_id=user_id, username=self.owner, raw={})
+        elif not found.user_id:
+            found.user_id = user_id
+
+    def _refusal(self, post: InstagramPost) -> Optional[str]:
+        """Why a post observed on this page is not in this profile's listing,
+        or None when it is.
 
         A signed-in page carries more than the profile: suggestions, a
         preload of the viewer's feed, the viewer's own posts, even the
@@ -1252,21 +1277,34 @@ class _ScrollingListing:
         under the profile's timeline connection, and it names no other owner.
         Where the request names a user, it must be this profile; where the
         post names an owner, the id decides, then the name.
+
+        A request that names the profile by number before its number has
+        been seen (the reels tab asks by id) is judged by the post's own
+        owner, and that number is then the profile's.
         """
         if self.owner is None:
-            return True
+            return None
         origin = post.provenance or {}
         if not origin.get("connection") or not origin.get("listing_request"):
-            return False
+            return "not_from_a_listing_request"
         profile_id = self._profile_id()
-        named = origin.get("listing_user")
-        if named and str(named).lower() not in {self.owner, str(profile_id or "").lower()}:
-            return False
+        named = str(origin.get("listing_user") or "").lower() or None
+        if named and named != self.owner and named != str(profile_id or "").lower():
+            if profile_id or not named.isdigit():
+                return "listing_of_another_user"
+            if post.owner_id and str(post.owner_id) != named:
+                return "listing_of_another_user"
+            if post.owner_username and post.owner_username.lower() != self.owner:
+                # the request and the post agree on someone else
+                return "listing_of_another_user" if post.owner_id else "another_owner"
+            if post.owner_id or post.owner_username:
+                self._learn_id(named)
+                profile_id = named
         if post.owner_id and profile_id:
-            return str(post.owner_id) == str(profile_id)
+            return None if str(post.owner_id) == str(profile_id) else "another_owner"
         if post.owner_username:
-            return post.owner_username.lower() == self.owner
-        return True
+            return None if post.owner_username.lower() == self.owner else "another_owner"
+        return None
 
     def _pool(self) -> "OrderedDict[str, InstagramPost]":
         return self.client.observed.posts_in(self.navigation)
@@ -1285,13 +1323,21 @@ class _ScrollingListing:
         # Posts were seen but none was the profile's listing: say so, with
         # what the page asked for, rather than end quietly with nothing.
         if self.returned == 0 and self._pool():
+            profile_id = self._profile_id()
             self.client.anomalies.append({
                 "what": "no_listing_recognised", "profile": self.owner,
+                "profile_id": profile_id,
                 "posts_observed": len(self._pool()),
+                "refused": dict(self.refused),
                 "requests": self.client.observed.queries_by_navigation.get(
                     self.navigation, [])[:40]})
-            log.warning("No listing for %s recognised among %d observed posts; "
-                        "the page asked for: %s", self.owner, len(self._pool()),
+            why = ", ".join(f"{n} {reason.replace('_', ' ')}"
+                            for reason, n in sorted(self.refused.items(),
+                                                    key=lambda item: -item[1]))
+            log.warning("No listing for %s recognised among %d observed posts "
+                        "(%s; the profile's id is %s); the page asked for: %s",
+                        self.owner, len(self._pool()), why or "no reason recorded",
+                        profile_id or "not known",
                         self.client.observed.queries_by_navigation.get(
                             self.navigation, []))
 
