@@ -469,6 +469,18 @@ class EngineTests(EngineTestCase):
         self.assertEqual(self.manifest()["counts"]["posts_exported"], 1)
         self.assertEqual(self.manifest()["counts"]["context_posts"], 2)
 
+    def test_a_reached_count_is_reached_whatever_cursor_the_page_offers(self):
+        focal = _post(1, reply_count=1)
+        self.fake.timelines[("qnl", "posts")] = [focal]
+        self.fake.conversations[focal.post_id] = [
+            _post(60, author="someone_else", author_id="777", reply_to=focal.post_id,
+                  conversation=focal.post_id)]
+        self.fake.conversation_more = lambda: True
+
+        self.run_session(latest_n=5, include_conversation=True)
+
+        self.assertEqual(self.rows()[0]["reply_capture"]["status"], "reported_count_reached")
+
     def test_the_reply_cap_grades_the_conversation_as_capped(self):
         focal = _post(1, reply_count=3)
         self.fake.timelines[("qnl", "posts")] = [focal]

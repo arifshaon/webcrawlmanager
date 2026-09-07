@@ -619,6 +619,25 @@ the implementation of this report.*
   expected.
 - Rate-limit headers (`x-rate-limit-limit`, `-remaining`, `-reset`) were
   present on every GraphQL response, as verified.
+- **Replay needs the client to believe it is signed in.** The second
+  capture (7 September 2026, a profile with posts) replayed as "Something
+  went wrong" with an intact bundle. In the replayed frame the client ran
+  signed out: it asked `api.x.com/graphql/…`, the guest endpoints and
+  `flow/timeline.json` (the sign-in flow), none of them in the archive,
+  because the cookies that mark a session (`twid`, `ct0`) are not in a
+  WARC; they were set before the capture. With placeholder `twid` and
+  `ct0` cookies on the replay origin the same archive replayed in full:
+  profile, counts, banner, timeline. The replay page now sets them for
+  archives whose start page is on X. This is the "client state" failure
+  amendment 9 anticipated, and the reason a replay is one outcome, not the
+  measure of success.
+- **Conversation pages of posts with no replies carry only the focal
+  tweet and a bottom cursor**; `reply_count` was 0 on them in the timeline
+  and on the page. A post with two replies carried a
+  `conversationthread-` module, a `tweetdetailrelatedtweets-` module (skipped
+  by prefix), and a `cursor-showmorethreads-` entry whose page brought the
+  second reply; the profile page also showed a Reposts tab beside Posts,
+  Replies and Media, not yet mapped to an operation.
 
 Still to confirm on a profile that has posts: the tweet result's shape
 under `UserOriginalsTimeline`, the pinned entry, and how a promoted item

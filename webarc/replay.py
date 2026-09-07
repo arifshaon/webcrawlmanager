@@ -243,6 +243,37 @@ _REPLAY_COMPAT_JS = r"""
 })();
 """
 
+# X's web client decides whether it is signed in from the cookies it can
+# read -- twid (the signed-in account's id) and ct0 (the CSRF token) -- and a
+# signed-out client asks a different host (api.x.com, the guest endpoints and
+# the sign-in flow) for everything, none of which is in an archive made
+# signed in. The cookies themselves are never archived: they were set before
+# the capture began. So a replay site whose start page is on X sets
+# placeholder values on the replay origin before the archived document
+# runs; the client then takes its signed-in path and asks for the URLs the
+# archive holds. The values are placeholders, not the capturing account's.
+_X_SESSION_COOKIES_JS = r"""
+(() => {
+  try {
+    if (!/(?:^|;\s*)twid=/.test(document.cookie)) {
+      document.cookie = "twid=u%3D1; path=/; SameSite=Lax";
+    }
+    if (!/(?:^|;\s*)ct0=/.test(document.cookie)) {
+      document.cookie = "ct0=swm-replay; path=/; SameSite=Lax";
+    }
+  } catch (_) {}
+})();
+"""
+
+_X_HOSTS = ("x.com", "twitter.com")
+
+
+def _is_x_seed(seed_url: str | None) -> bool:
+    from urllib.parse import urlsplit
+    host = (urlsplit(seed_url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in _X_HOSTS)
+
+
 _INDEX_HTML = """<!DOCTYPE html>
 <html>
 <head>
@@ -415,10 +446,13 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
         encoding="utf-8")
 
     url_attr = f'\n    url="{seed_url}"' if seed_url else ""
+    compat_js = _REPLAY_COMPAT_JS
+    if _is_x_seed(seed_url):
+        compat_js = _X_SESSION_COOKIES_JS + compat_js
     (site_dir / "index.html").write_text(
         _INDEX_HTML.format(coll=site_dir.name, ui_src=ui_src,
                            url_attr=url_attr, archive=archive_name,
-                           compat_js=_REPLAY_COMPAT_JS),
+                           compat_js=compat_js),
         encoding="utf-8")
     log.info("Built replay site for %d WARC(s) at %s",
              len(warc_paths), site_dir)

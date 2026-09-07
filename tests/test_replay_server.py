@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from urllib.request import urlopen
 
-from webarc.replay import ReplayServer
+from webarc.replay import ReplayServer, build_replay_site
 
 
 class ReplayPortTests(unittest.TestCase):
@@ -81,3 +81,41 @@ class ReplayPortTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class XReplayTests(unittest.TestCase):
+    """An archive of X made signed in replays only for a client that thinks
+    it is signed in; the replay page gives it placeholder session cookies."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.warc = self.tmp / "one.warc.gz"
+        from webarc.capture import WarcSession
+        from webarc.config import WarcConfig
+        session = WarcSession(self.tmp, "one", "https://x.com/qnl", 1, "webarc", WarcConfig())
+        session.write_exchange(url="https://x.com/qnl", method="GET", req_headers={},
+                               post_data=None, status=200, status_text="OK",
+                               resp_headers={"content-type": "text/html"}, body=b"<p>hi</p>")
+        session.close()
+        self.warc = next(self.tmp.glob("*.warc.gz"))
+
+    def index_for(self, seed):
+        from unittest import mock
+        site = self.tmp / f"site-{abs(hash(seed))}"
+        with mock.patch("webarc.replay._ensure_vendor_assets", return_value=True):
+            (site / "vendor").mkdir(parents=True, exist_ok=True)
+            build_replay_site([self.warc], site, seed_url=seed)
+        return (site / "index.html").read_text(encoding="utf-8")
+
+    def test_an_x_archive_gets_placeholder_session_cookies(self):
+        index = self.index_for("https://x.com/qnl")
+        self.assertIn('document.cookie = "twid=u%3D1', index)
+        self.assertIn('document.cookie = "ct0=swm-replay', index)
+        self.assertLess(index.index("twid="), index.index("<replay-web-page"))
+
+    def test_other_archives_are_left_alone(self):
+        for seed in ("https://www.instagram.com/qnl/", "https://example.org/", None):
+            with self.subTest(seed=seed):
+                self.assertNotIn("twid=", self.index_for(seed))

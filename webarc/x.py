@@ -1373,11 +1373,11 @@ class XCaptureSession:
             status = "no_replies_reported"
         elif stop_reason == "reply_limit_reached":
             status = "capped"
-        elif more_pages is True:
-            status = "partial"
         elif reported is not None and observed >= reported:
+            # X's conversation page always offers a cursor; a count that is
+            # reached is reached whatever the page still offers
             status = "reported_count_reached"
-        elif reported is not None:
+        elif more_pages is True or reported is not None:
             status = "partial"
         else:
             status = "exhausted_unverified"

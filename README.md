@@ -508,7 +508,20 @@ account's id removed from the page's session object. JavaScript is never
 rewritten: X's bundle builds a URL as `?access_token=${…}` inside a
 template string, and a redaction that landed there once left a bundle
 that no longer parsed, so replay showed "Something went wrong. Try
-reloading." Captures made before that fix need to be run again. The design and its
+reloading." Captures made before that fix need to be run again.
+
+Replaying an X archive has one more requirement that Instagram's does
+not. X's client decides whether it is signed in from cookies it can read
+(`twid`, `ct0`), and a signed-out client asks a different host and the
+sign-in flow for everything, none of which an archive made signed in
+holds; the cookies themselves are never archived, since they were set
+before the capture began. The replay page therefore sets placeholder
+values for those two cookies on the replay origin before the archived
+document runs, for archives whose start page is on X, and the client then
+asks for the URLs the archive holds. The placeholders are not the
+capturing account's values. Replies X served none of are not in the
+archive either: a conversation page that carried only the post and a
+cursor at capture is what replays. The design and its
 reasoning are in `docs/research/x-capture.md`.
 
 ## Automated crawling
