@@ -317,6 +317,7 @@
     padding: 2px 6px; margin-right: 7px; vertical-align: 1px; }
   .ig-chip { color: var(--ig); background: var(--ig-bg); }
   .x-chip { color: var(--ink); background: var(--rule); }
+  .yt-chip { color: var(--stop); background: var(--accent-bg); }
   .rec-warning { border: 1px solid var(--rule); border-left: 3px solid var(--pause);
     background: var(--pause-bg); border-radius: 6px; padding: 10px 12px;
     font-size: 12px; color: var(--ink); margin-top: 4px; }
@@ -432,6 +433,7 @@
         <option value="facebook">Facebook</option>
         <option value="instagram">Instagram</option>
         <option value="x">X</option>
+        <option value="youtube">YouTube</option>
       </select>
       <select id="jf-status" aria-label="Job status">
         <option value="">Any status</option>
@@ -494,6 +496,8 @@
       data-job="instagram" role="tab" aria-selected="false">Instagram</button>
     <button type="button" class="mode-tab" id="job-tab-x"
       data-job="x" role="tab" aria-selected="false">X</button>
+    <button type="button" class="mode-tab" id="job-tab-youtube"
+      data-job="youtube" role="tab" aria-selected="false">YouTube</button>
   </div>
   <div class="mode-note mode-explanation hidden" id="job-cap-note" role="status"></div>
   <form id="new-form" onsubmit="return false">
@@ -1148,6 +1152,140 @@
       <span class="mode-note" id="x-cap-note"></span>
     </div>
   </div>
+  <div id="youtube-form" class="job-form hidden">
+    <div class="guided">
+      <div class="form-section">
+        <div class="section-head">
+          <span class="section-title">Capture YouTube channels, videos or playlists</span>
+          <span class="section-hint">Videos through yt-dlp; the Posts tab through a Chrome window that also handles a sign-in when YouTube asks for one.</span>
+        </div>
+        <div class="section-body form-grid">
+          <div class="field wide">
+            <label class="field-label" for="yt-targets">Targets — one per line <button type="button" class="tip" aria-label="What is this for?" data-help="yt-targets">?</button></label>
+            <textarea id="yt-targets" rows="4" placeholder="@qatarlibrary&#10;https://www.youtube.com/@somechannel/videos&#10;https://www.youtube.com/watch?v=dQw4w9WgXcQ&#10;https://www.youtube.com/playlist?list=PL..."></textarea>
+            <span class="help">A channel (handle or address) collects its videos, Shorts, past live streams and Posts using the mode below. A video address collects that video, its files and comments. A playlist collects its items in order, unavailable entries recorded as such.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="yt-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-help="yt-name">?</button></label>
+            <input type="text" id="yt-name" placeholder="derived from the targets if empty">
+          </div>
+          <div class="field">
+            <label class="field-label" for="yt-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="yt-operator">?</button></label>
+            <input type="text" id="yt-operator" placeholder="webarc">
+            <span class="help">Stored in the capture manifest.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="yt-browser">Browser <button type="button" class="tip" aria-label="What is this for?" data-help="yt-browser">?</button></label>
+            <select id="yt-browser">
+              <option value="headed">Headed — managed Chrome with a dedicated profile (recommended)</option>
+              <option value="native">Native — your system Chrome via CDP (advanced)</option>
+            </select>
+            <span class="help">SWM keeps a dedicated YouTube profile. The window opens for the Posts tab, and when YouTube asks yt-dlp to sign in; that session is lent to yt-dlp for the run and never written into the package.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="yt-resolution">Video quality <button type="button" class="tip" aria-label="What is this for?" data-help="yt-resolution">?</button></label>
+            <select id="yt-resolution">
+              <option value="best">Best available</option>
+              <option value="2160">Up to 2160p</option>
+              <option value="1440">Up to 1440p</option>
+              <option value="1080" selected>Up to 1080p</option>
+              <option value="720">Up to 720p</option>
+              <option value="480">Up to 480p</option>
+              <option value="none">Metadata only — no video files</option>
+            </select>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="yt-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="yt-storage">?</button></label>
+            <div class="storage-row">
+              <input type="text" id="yt-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <button type="button" class="secondary browse-btn" data-target="yt-storage">Browse…</button>
+            </div>
+            <span class="help">Video captures are large. The job holds itself when free space falls below the warning level in Settings, and stops a download mid-file at a third of that level, keeping the partial file to resume.</span>
+          </div>
+          <div class="field">
+            <label class="field-label" for="yt-mode">Capture mode <button type="button" class="tip" aria-label="What is this for?" data-help="yt-mode">?</button></label>
+            <select id="yt-mode">
+              <option value="latest_n">Latest N items</option>
+              <option value="date_range">Date range</option>
+              <option value="until_stopped">Until I stop it</option>
+              <option value="end_of_listing">End of listed content</option>
+              <option value="since_last">Since last capture</option>
+            </select>
+          </div>
+          <div class="field">
+            <label class="field-label">Channel surfaces <button type="button" class="tip" aria-label="What is this for?" data-help="yt-surfaces">?</button></label>
+            <label class="check-row"><input type="checkbox" id="yt-surface-videos" checked><span class="check-copy"><strong>Videos</strong></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-surface-shorts" checked><span class="check-copy"><strong>Shorts</strong></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-surface-streams" checked><span class="check-copy"><strong>Past live streams</strong><span>With the live-chat replay when YouTube offers one.</span></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-surface-posts" checked><span class="check-copy"><strong>Posts</strong><span>The channel's Posts tab, read through the browser.</span></span></label>
+          </div>
+          <div class="field wide hidden" id="yt-date-options">
+            <label class="field-label">Requested dates <button type="button" class="tip" aria-label="What is this for?" data-help="yt-dates">?</button></label>
+            <div class="inline-fields">
+              <div><label class="help" for="yt-from">From (required)</label><input type="date" id="yt-from"></div>
+              <div><label class="help" for="yt-to">To (optional)</label><input type="date" id="yt-to"></div>
+            </div>
+            <span class="help">A channel listing rarely says when a video was published, so each listed item is read before the date rule decides. SWM stops after five consecutive items older than From.</span>
+          </div>
+          <div class="field wide" id="yt-latest-options">
+            <label class="field-label" for="yt-latest-n">Number of latest items per surface <button type="button" class="tip" aria-label="What is this for?" data-help="yt-latest-n">?</button></label>
+            <input type="number" id="yt-latest-n" min="1" max="100000" step="1" value="50">
+          </div>
+          <div class="field wide hidden" id="yt-mode-note"></div>
+          <div class="field wide">
+            <label class="field-label">Files <button type="button" class="tip" aria-label="What is this for?" data-help="yt-files">?</button></label>
+            <label class="check-row"><input type="checkbox" id="yt-thumbnails" checked><span class="check-copy"><strong>Thumbnails</strong></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-captions" checked><span class="check-copy"><strong>Captions</strong><span>Subtitles the uploader provided.</span></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-auto-captions" checked><span class="check-copy"><strong>Automatic captions</strong><span>YouTube's machine transcript, marked as such.</span></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-live-chat" checked><span class="check-copy"><strong>Live-chat replay</strong><span>For past streams, as YouTube serves it; not shown to be complete.</span></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-post-media" checked><span class="check-copy"><strong>Post images and channel avatar</strong></span></label>
+            <label class="check-row"><input type="checkbox" id="yt-warc"><span class="check-copy"><strong>Also record a WARC of the Posts tab</strong><span>The browser's exchanges while reading Posts, credentials redacted. Video streams are never in it.</span></span></label>
+          </div>
+          <div class="field wide">
+            <label class="field-label">Comments <button type="button" class="tip" aria-label="What is this for?" data-help="yt-comments">?</button></label>
+            <label class="check-row"><input type="checkbox" id="yt-comments" checked><span class="check-copy"><strong>Capture comments on videos and posts</strong></span></label>
+            <div id="yt-comment-options">
+              <div class="inline-fields" style="margin-top:10px">
+                <div>
+                  <label class="field-label" for="yt-comment-max">Maximum comments per item <button type="button" class="tip" aria-label="What is this for?" data-help="yt-comment-max">?</button></label>
+                  <input type="number" id="yt-comment-max" min="1" max="1000000" step="1" value="1000">
+                </div>
+                <div>
+                  <label class="field-label" for="yt-comment-sort">Order <button type="button" class="tip" aria-label="What is this for?" data-help="yt-comment-sort">?</button></label>
+                  <select id="yt-comment-sort">
+                    <option value="new" selected>Newest first</option>
+                    <option value="top">Top (YouTube's ranking)</option>
+                  </select>
+                </div>
+              </div>
+              <label class="check-row" style="margin-top:8px"><input type="checkbox" id="yt-replies" checked><span class="check-copy"><strong>Include replies</strong></span></label>
+              <div class="cost-warning"><b>Comments take time.</b> A video with tens of thousands of comments takes hours through yt-dlp. The cap keeps a run bounded; the record says how many YouTube reported and how many were kept.</div>
+            </div>
+          </div>
+          <div class="field wide">
+            <div class="rec-warning">
+              Use a dedicated institutional Google account for capture, not a personal one. YouTube answers many networks' anonymous requests with a bot check; when it does, the window opens for you to sign in, and SWM lends that session to yt-dlp for the run and deletes the copy at the end. YouTube may restrict an account used this way. Nothing in a capture ever likes, votes, comments or subscribes.
+            </div>
+          </div>
+        </div>
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Describe this capture <button type="button" class="tip" aria-label="What is this for?" data-help="yt-metadata">?</button></span>
+            <span class="section-hint">Who or what is being captured, and why. Written into every output.</span>
+          </div>
+          <div class="section-body">
+            <div class="md-editor" id="yt-metadata"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form-foot">
+      <button type="button" class="primary" id="youtube-start-btn">Start capture</button>
+      <span class="msg" id="youtube-msg"></span>
+      <span class="spacer"></span>
+      <span class="mode-note" id="youtube-cap-note"></span>
+    </div>
+  </div>
   </section>
 </main>
 </div>
@@ -1442,6 +1580,7 @@ let recordingCapability = null;
 let facebookCapability = null;
 let instagramCapability = null;
 let xCapability = null;
+let youtubeCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
@@ -1449,11 +1588,13 @@ async function loadCapabilities() {
     facebookCapability = caps.facebook;
     instagramCapability = caps.instagram || {available: false, reason: "not reported by the server"};
     xCapability = caps.x || {available: false, reason: "not reported by the server"};
+    youtubeCapability = caps.youtube || {available: false, reason: "not reported by the server"};
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
     facebookCapability = {available: false, reason: "capability check failed"};
     instagramCapability = {available: false, reason: "capability check failed"};
     xCapability = {available: false, reason: "capability check failed"};
+    youtubeCapability = {available: false, reason: "capability check failed"};
   }
   const tab = $("#job-tab-record");
   if (recordingCapability && !recordingCapability.available) {
@@ -1488,13 +1629,21 @@ async function loadCapabilities() {
   if (xCapability && xCapability.note) {
     $("#x-cap-note").textContent = xCapability.note;
   }
+  const youtubeTab = $("#job-tab-youtube");
+  if (youtubeCapability && !youtubeCapability.available) {
+    youtubeTab.classList.add("disabled");
+    youtubeTab.title = youtubeCapability.reason || "unavailable";
+  }
+  if (youtubeCapability && youtubeCapability.note) {
+    $("#youtube-cap-note").textContent = youtubeCapability.note;
+  }
 }
 function switchJob(job) {
   // A disabled tab has to say why where it can be seen: the form it belongs
   // to is hidden, so a note inside that form is a note nobody reads.
   const refused = {
     record: recordingCapability, facebook: facebookCapability,
-    instagram: instagramCapability, x: xCapability,
+    instagram: instagramCapability, x: xCapability, youtube: youtubeCapability,
   }[job];
   const note = $("#job-cap-note");
   if (refused && !refused.available) {
@@ -1513,6 +1662,7 @@ function switchJob(job) {
   $("#facebook-form").classList.toggle("hidden", job !== "facebook");
   $("#instagram-form").classList.toggle("hidden", job !== "instagram");
   $("#x-form").classList.toggle("hidden", job !== "x");
+  $("#youtube-form").classList.toggle("hidden", job !== "youtube");
 }
 async function startRecording() {
   const msg = $("#record-msg");
@@ -1810,6 +1960,102 @@ async function startX() {
     $("#x-start-btn").disabled = false;
   }
 }
+function updateYouTubeMode() {
+  const mode = $("#yt-mode").value;
+  $("#yt-date-options").classList.toggle("hidden", mode !== "date_range");
+  $("#yt-latest-options").classList.toggle("hidden", mode !== "latest_n");
+  const note = $("#yt-mode-note");
+  const notes = {
+    until_stopped: "SWM keeps walking each surface until you select Stop and save, or YouTube lists nothing further.",
+    end_of_listing: "SWM stops when a channel tab or playlist lists nothing further. The manifest calls this listing_exhausted.",
+    since_last: "SWM uses each channel's newest item from its previous capture and keeps going a little past it before stopping.",
+  };
+  note.classList.toggle("hidden", !notes[mode]);
+  note.classList.toggle("mode-explanation", Boolean(notes[mode]));
+  note.textContent = notes[mode] || "";
+  if (mode === "since_last") refreshYouTubeState();
+}
+async function refreshYouTubeState() {
+  const note = $("#youtube-cap-note");
+  if ($("#yt-mode").value !== "since_last") return;
+  const targets = youtubeTargets();
+  if (!targets.length) return;
+  try {
+    const known = [];
+    const unknown = [];
+    for (const target of targets.slice(0, 20)) {
+      const result = await api(`/api/youtube/state?target=${encodeURIComponent(target)}`);
+      (result.available ? known : unknown).push(result.label);
+    }
+    note.textContent = unknown.length
+      ? `No previous capture for ${unknown.join(", ")}; run another mode first.`
+      : `Previous captures found for ${known.join(", ")}.`;
+  } catch (error) {
+    note.textContent = error.message;
+  }
+}
+function youtubeTargets() {
+  return $("#yt-targets").value.split(/\r?\n/).map(t => t.trim()).filter(Boolean);
+}
+async function startYouTube() {
+  const msg = $("#youtube-msg");
+  const setMsg = (text, cls="") => {
+    msg.textContent = text; msg.className = "msg" + (cls ? " " + cls : "");
+  };
+  const targets = youtubeTargets();
+  if (!targets.length) { setMsg("Add at least one channel, video or playlist.", "err"); return; }
+  const mode = $("#yt-mode").value;
+  if (mode === "date_range" && !$("#yt-from").value) {
+    setMsg("Choose a From date for Date range mode.", "err"); return;
+  }
+  if (mode === "date_range" && $("#yt-to").value && $("#yt-from").value > $("#yt-to").value) {
+    setMsg("From must be on or before To.", "err"); return;
+  }
+  const surfaces = [];
+  for (const s of ["videos", "shorts", "streams", "posts"]) if ($(`#yt-surface-${s}`).checked) surfaces.push(s);
+  if (!surfaces.length) { setMsg("Select at least one surface.", "err"); return; }
+  const body = {
+    targets, mode, surfaces,
+    browser: $("#yt-browser").value,
+    from_date: $("#yt-from").value || null,
+    to_date: $("#yt-to").value || null,
+    latest_n: Number($("#yt-latest-n").value || 50),
+    max_resolution: $("#yt-resolution").value,
+    capture_media: $("#yt-resolution").value !== "none",
+    thumbnails: $("#yt-thumbnails").checked,
+    captions: $("#yt-captions").checked,
+    auto_captions: $("#yt-auto-captions").checked,
+    live_chat: $("#yt-live-chat").checked,
+    post_media: $("#yt-post-media").checked,
+    write_warc: $("#yt-warc").checked,
+    include_comments: $("#yt-comments").checked,
+    max_comments_per_item: Number($("#yt-comment-max").value || 1000),
+    comment_sort: $("#yt-comment-sort").value,
+    include_replies: $("#yt-replies").checked,
+  };
+  if ($("#yt-name").value.trim()) body.name = $("#yt-name").value.trim();
+  if ($("#yt-operator").value.trim()) body.operator = $("#yt-operator").value.trim();
+  if ($("#yt-storage").value.trim()) body.storage_dir = $("#yt-storage").value.trim();
+  setMsg("Starting…");
+  $("#youtube-start-btn").disabled = true;
+  try {
+    body.metadata = metadataEditors.youtube.value();
+    const choice = await resourceChoice(body.storage_dir);
+    if (!choice) { setMsg("Cancelled.", ""); return; }
+    body.start = choice;
+    await api("/api/youtube", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    setMsg(choice === "wait" ? "Capture created; it starts once the machine has room." : "Capture started. A Chrome window opens for the Posts tab or a sign-in when YouTube asks.", "ok");
+    showView("jobs");
+    refresh();
+  } catch (error) {
+    setMsg(error.message, "err");
+  } finally {
+    $("#youtube-start-btn").disabled = false;
+  }
+}
 function statusClass(s) { return s.toLowerCase(); }
 
 // Ask the server whether the machine has room before creating a job. A
@@ -2031,6 +2277,7 @@ const metadataEditors = {
   facebook: new MetadataEditor($("#fb-metadata"), {scopes: () => seedScopes([$("#fb-url").value.trim()].filter(Boolean))}),
   instagram: new MetadataEditor($("#ig-metadata"), {scopes: () => seedScopes(instagramTargets())}),
   x: new MetadataEditor($("#x-metadata"), {scopes: () => seedScopes(xTargets())}),
+  youtube: new MetadataEditor($("#yt-metadata"), {scopes: () => seedScopes(youtubeTargets())}),
 };
 // the seed tabs follow the seeds as they are typed
 $("#seed-list").addEventListener("change", () => metadataEditors.crawl.render());
@@ -2040,6 +2287,7 @@ $("#r-url").addEventListener("change", () => metadataEditors.record.render());
 $("#fb-url").addEventListener("change", () => metadataEditors.facebook.render());
 $("#ig-targets").addEventListener("change", () => metadataEditors.instagram.render());
 $("#x-targets").addEventListener("change", () => metadataEditors.x.render());
+$("#yt-targets").addEventListener("change", () => metadataEditors.youtube.render());
 
 // Editing after the fact, from the job list.
 let metadataJobId = null;
@@ -2053,7 +2301,7 @@ async function editMetadata(id) {
     metadataJobId = id;
     modalScopes = seedScopes((doc.seeds || []).map(sd => sd.url));
     modalMetadata.load({job: doc.job || [], seeds: Object.fromEntries((doc.seeds || []).map(sd => [sd.url, sd.fields || []]))});
-    $("#metadata-sub").textContent = `#${id} ${doc.name || ""} · saved to metadata.json${["facebook", "instagram", "x"].includes(doc.kind) ? " and the manifest" : ""}; a WARC already written keeps the values of its moment.`;
+    $("#metadata-sub").textContent = `#${id} ${doc.name || ""} · saved to metadata.json${["facebook", "instagram", "x", "youtube"].includes(doc.kind) ? " and the manifest" : ""}; a WARC already written keeps the values of its moment.`;
     $("#metadata-export").href = `/api/crawls/${id}/metadata.csv`;
     $("#metadata-overlay").classList.add("open");
   } catch (e) { alert("Could not load metadata: " + e.message); }
@@ -2565,6 +2813,12 @@ $("#x-targets").addEventListener("blur", refreshXState);
 $("#x-conversation").addEventListener("change", () => {
   $("#x-conversation-options").classList.toggle("hidden", !$("#x-conversation").checked);
 });
+$("#youtube-start-btn").addEventListener("click", startYouTube);
+$("#yt-mode").addEventListener("change", updateYouTubeMode);
+$("#yt-targets").addEventListener("blur", refreshYouTubeState);
+$("#yt-comments").addEventListener("change", () => {
+  $("#yt-comment-options").classList.toggle("hidden", !$("#yt-comments").checked);
+});
 $("#fb-url").addEventListener("blur", refreshFacebookState);
 $("#fb-comments").addEventListener("change", () => {
   $("#fb-comment-options").classList.toggle("hidden", !$("#fb-comments").checked);
@@ -2576,6 +2830,7 @@ resetExample();
 updateFacebookMode();
 updateInstagramMode();
 updateXMode();
+updateYouTubeMode();
 setInterval(() => $("#clock").textContent = new Date().toISOString().replace("T"," ").slice(0,19)+"Z", 1000);
 refresh();
 setInterval(refresh, 2000);

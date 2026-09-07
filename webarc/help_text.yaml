@@ -156,6 +156,36 @@ fb-metadata: >-
   like; Title, Identifier, Date, Type and Collector are filled from the job
   where left empty. It is written into metadata.json, the manifest and the
   archive, and can be changed later from the job list.
+yt-targets: >-
+  What to capture, one per line: a channel handle or address, a video address, or a playlist address. A channel collects its videos, Shorts, past streams and Posts using the mode below; a video collects that video with its files and comments; a playlist collects its items in order.
+yt-name: >-
+  A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the channel and the month, is best. Left empty, one is made up from the targets.
+yt-operator: >-
+  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+yt-browser: >-
+  Which Chrome does the work when a window is needed. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+yt-resolution: >-
+  The largest picture size to keep for each video. Video files are big, so a cap keeps a channel capture within a disk. Metadata only keeps everything but the video files themselves.
+yt-storage: >-
+  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder with room: a channel of videos can take hundreds of gigabytes.
+yt-mode: >-
+  What to collect: items between two dates, the newest N items on each surface, everything until you stop it or the listing ends, or only what has appeared since the last capture of this target.
+yt-surfaces: >-
+  Which parts of a channel to walk: the Videos tab, Shorts, past live streams, and the Posts tab.
+yt-dates: >-
+  The dates to keep. Items outside this range are passed over on the way but not kept. From is required so the capture knows when to stop; To is optional.
+yt-latest-n: >-
+  How many of the newest items to keep on each surface a channel has selected.
+yt-files: >-
+  Which files to keep beside each video: its thumbnail, the captions the uploader wrote, YouTube's automatic transcript, the live-chat replay of a past stream, and the images on Posts. The WARC option records the browser's exchanges while reading Posts.
+yt-comments: >-
+  Whether to keep the comments under each video and post, with a ceiling per item so one very busy video does not take all day. The record says how many YouTube reported and how many were kept.
+yt-comment-max: >-
+  A ceiling on comments kept per video or post. The number reached is written into the record.
+yt-comment-sort: >-
+  Which comments come first when the ceiling applies. Newest first gives a clear boundary in time; Top is YouTube's own ranking, which changes.
+yt-metadata: >-
+  What this channel, video or playlist is, in the words a catalogue would use: a title, who runs the channel, what it is about, who holds the rights. Fill in what you like; Title, Identifier, Date, Type and Collector are filled from the job.
 x-metadata: >-
   What these accounts, posts or searches are, in the words a catalogue would use: a title, who runs the account, what it is about, who holds the rights. Fill in what you like; Title, Identifier, Date, Type and Collector are filled from the job.
 ig-metadata: >-

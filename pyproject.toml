@@ -23,6 +23,9 @@ dashboard = ["fastapi>=0.110", "uvicorn>=0.29"]
 # Instagram profile listing through gallery-dl (GPL-2.0; run as a separate
 # program, never imported). Only the "gallery-dl" listing choice needs it.
 instagram-listing = ["gallery-dl>=1.30"]
+# YouTube capture: yt-dlp lists channel tabs and playlists, reads video
+# records and comments, and downloads the files (imported as a library).
+youtube = ["yt-dlp>=2025.1.1"]
 
 [project.scripts]
 swm = "webarc.cli:main"

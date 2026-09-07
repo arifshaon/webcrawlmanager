@@ -22,6 +22,7 @@ KIND_RECORDING = "recording"
 KIND_FACEBOOK = "facebook"
 KIND_INSTAGRAM = "instagram"
 KIND_X = "x"
+KIND_YOUTUBE = "youtube"
 
 # crawl lifecycle states
 PENDING = "pending"
@@ -137,6 +138,29 @@ CREATE TABLE IF NOT EXISTS x_targets (
     newest_post_date  TEXT,
     last_crawl_id     INTEGER,
     updated_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS youtube_targets (
+    target_key        TEXT PRIMARY KEY,
+    target_url        TEXT NOT NULL,
+    handle            TEXT,
+    channel_id        TEXT,
+    newest_item_id    TEXT,
+    newest_item_date  TEXT,
+    last_crawl_id     INTEGER,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS youtube_items (
+    target_key     TEXT NOT NULL,
+    item_id        TEXT NOT NULL,
+    item_kind      TEXT,
+    item_date      TEXT,
+    first_crawl_id INTEGER NOT NULL,
+    last_crawl_id  INTEGER NOT NULL,
+    first_seen_at  TEXT NOT NULL,
+    last_seen_at   TEXT NOT NULL,
+    PRIMARY KEY (target_key, item_id)
 );
 
 CREATE TABLE IF NOT EXISTS x_posts (
@@ -513,6 +537,62 @@ class Store:
                     "last_crawl_id=excluded.last_crawl_id, "
                     "last_seen_at=excluded.last_seen_at",
                     (key, post_id, post.get("created_time"), crawl_id, crawl_id, ts, ts))
+
+    # -- youtube -------------------------------------------------------------
+    def get_youtube_target(self, target_key: str) -> Optional[dict]:
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM youtube_targets WHERE target_key=?",
+                            (target_key,)).fetchone()
+            return dict(row) if row else None
+
+    def get_youtube_item_ids(self, target_key: str) -> set[str]:
+        with self._conn() as c:
+            rows = c.execute("SELECT item_id FROM youtube_items WHERE target_key=?",
+                             (target_key,)).fetchall()
+            return {str(r["item_id"]) for r in rows}
+
+    def record_youtube_capture(self, crawl_id: int, targets: dict, items: list[dict]) -> None:
+        """Remember what a YouTube capture reached, for "since last" next time.
+
+        ``targets`` maps target key -> {item_id, date, handle, channel_id, url};
+        ``items`` are video and post rows carrying target_key.
+        """
+        ts = _now()
+        with self._conn() as c:
+            for key, newest in targets.items():
+                c.execute(
+                    "INSERT INTO youtube_targets (target_key, target_url, handle, channel_id, "
+                    "newest_item_id, newest_item_date, last_crawl_id, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_key) DO UPDATE SET "
+                    "target_url=excluded.target_url, "
+                    "handle=COALESCE(excluded.handle, handle), "
+                    "channel_id=COALESCE(excluded.channel_id, channel_id), "
+                    "newest_item_id=CASE WHEN COALESCE(excluded.newest_item_date, '') >= "
+                    "COALESCE(newest_item_date, '') THEN excluded.newest_item_id "
+                    "ELSE newest_item_id END, "
+                    "newest_item_date=CASE WHEN COALESCE(excluded.newest_item_date, '') >= "
+                    "COALESCE(newest_item_date, '') THEN excluded.newest_item_date "
+                    "ELSE newest_item_date END, "
+                    "last_crawl_id=excluded.last_crawl_id, "
+                    "updated_at=excluded.updated_at",
+                    (key, newest.get("url") or "", newest.get("handle"), newest.get("channel_id"),
+                     newest.get("item_id"), newest.get("date"), crawl_id, ts))
+            for item in items:
+                item_id = str(item.get("video_id") or item.get("post_id") or "").strip()
+                key = item.get("target_key")
+                if not item_id or not key:
+                    continue
+                c.execute(
+                    "INSERT INTO youtube_items (target_key, item_id, item_kind, item_date, "
+                    "first_crawl_id, last_crawl_id, first_seen_at, last_seen_at) "
+                    "VALUES (?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(target_key, item_id) DO UPDATE SET "
+                    "item_date=COALESCE(excluded.item_date, item_date), "
+                    "last_crawl_id=excluded.last_crawl_id, "
+                    "last_seen_at=excluded.last_seen_at",
+                    (key, item_id, "video" if item.get("video_id") else "post",
+                     item.get("published_time"), crawl_id, crawl_id, ts, ts))
 
     def delete_crawl(self, crawl_id: int) -> None:
         with self._conn() as c:

@@ -161,6 +161,7 @@ TYPE_BY_KIND = {
     "facebook": "Social media account",
     "instagram": "Social media account",
     "x": "Social media account",
+    "youtube": "Social media account",
 }
 
 
@@ -264,7 +265,7 @@ def read_document(directory: Path) -> dict | None:
 
 
 MANIFEST_NAMES = ("facebook-manifest.json", "instagram-manifest.json",
-                  "x-manifest.json")
+                  "x-manifest.json", "youtube-manifest.json")
 
 
 def manifest_section(directory: Path, doc: dict | None = None) -> dict | None:

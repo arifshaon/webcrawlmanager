@@ -40,6 +40,7 @@ SWM is designed around two complementary approaches to web archiving:
 | Interactive recording | The operator | `headed`, `native` | Command line and dashboard |
 | Facebook Page capture | SWM scrolls; the curator handles login, verification and manual overrides | `headed`, `native` | Dashboard |
 | Instagram capture | SWM drives the signed-in browser in a window; the curator handles sign-in and verification | `headed`, `native` | Dashboard |
+| YouTube capture | yt-dlp lists, reads and downloads; SWM drives a browser for the Posts tab; the curator handles sign-in | `headed`, `native` | Dashboard |
 | Automated crawling | SWM, using human-like browser behaviour | `headless`, `headed`, `native` | Command line and dashboard |
 | Replay and QA | The operator | Default browser | Command line; replay also available from the dashboard |
 
@@ -60,6 +61,8 @@ SWM is designed around two complementary approaches to web archiving:
   - [Privacy and sensitive content](#privacy-and-sensitive-content)
 - [Facebook Page capture](#facebook-page-capture)
 - [Instagram capture](#instagram-capture)
+- [X capture](#x-capture)
+- [YouTube capture](#youtube-capture)
 - [Automated crawling](#automated-crawling)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
@@ -116,6 +119,10 @@ python -m webarc.cli replay ./warcs/example-session
 - Playwright, `warcio` and PyYAML, installed from `requirements.txt`.
 - Google Chrome for `headed` or `native` browser modes. Playwright's bundled
   Chromium is used for headless crawling.
+- For YouTube capture: `yt-dlp` (`pip install -e ".[youtube]"`), `ffmpeg` on
+  the PATH to merge the video and audio streams YouTube serves separately,
+  and a JavaScript runtime (`deno` or `node`) for yt-dlp's player
+  challenges. The dashboard's YouTube tab reports which of these it found.
 
 ### Windows
 
@@ -535,6 +542,102 @@ archive either: a conversation page that carried only the post and a
 cursor at capture is what replays. The design and its
 reasoning are in `docs/research/x-capture.md`.
 
+## YouTube capture
+
+The dashboard's **YouTube** tab captures a channel's videos, Shorts, live
+streams and community posts, a single video, or a playlist. Two engines do
+the work, each on the part it is good at:
+
+- **yt-dlp**, imported as a library, lists the channel tabs and playlists,
+  reads each video's record and comments, and downloads the files. It is
+  the most maintained reader of YouTube's player and its challenges, and
+  SWM tracks it rather than competing with it.
+- **A browser** on a dedicated Chrome profile reads the Posts tab and post
+  comments, which yt-dlp does not cover. It opens the pages a person would
+  open, scrolls, and presses "View replies"; it observes what YouTube's own
+  client asks for (`ytInitialData` in the page, `youtubei/v1/browse` and
+  `youtubei/v1/next` continuations) and never builds those requests itself.
+
+The two are kept apart in the package, because they are different kinds
+of evidence. `evidence/yt-dlp/<id>.info.json` is yt-dlp's reading of a
+video, whole, and every video record and video comment says which file it
+was derived from; the manifest labels it *tool-derived metadata*, not a
+platform response. `raw/responses/` holds YouTube's responses to the
+browser verbatim, session material removed, pruned at the end to the
+responses a kept post or comment was read from.
+
+Targets, one per line: `@handle` or a channel address (with or without a
+tab), a `/channel/UC…` address, a video address in any of its forms
+(`watch?v=`, `youtu.be`, `/shorts/`, `/live/`), a playlist address, or a
+bare video or channel id. The signed-in client's own pages (subscriptions,
+history, results) are refused.
+
+What is captured is chosen with two controls that are deliberately
+separate: **what to select** (the same modes as the other social captures:
+latest N, date range, until stopped, end of listing, since last capture)
+and **what to store** (the maximum resolution, from best down to none;
+thumbnails, captions, automatic captions, live-chat replays, post images,
+comments). A channel's tabs are listed in flat mode, and only a video that
+passes the selection is read in full; the date-bounded modes read a video
+first when its listing entry carries no date. Posts are read before any
+video, so the browser is finished with YouTube before its session is lent
+to the downloader.
+
+Records:
+
+- **Videos** carry YouTube's availability vocabulary verbatim (`public`,
+  `unlisted`, `private`, `premium_only`, `subscriber_only`,
+  `needs_auth`) plus `deleted`, `unavailable` and `unknown`; a private or
+  deleted entry in a listing is recorded as an absence with a reason, never
+  as a video. Each file under `media/videos/<id>/` is described: the
+  rendition YouTube served within the allowed resolution (muxed by yt-dlp;
+  never the upload), the thumbnail, each caption track with its language,
+  the live-chat replay.
+- **Posts** carry their kind (text, image, images, poll, quiz, video,
+  shared), the images at the largest size the page offered under
+  `media/posts/<id>/`, a poll's options without results (results require a
+  vote, which the capture never casts), and both the relative time YouTube
+  shows ("3 weeks ago") and an estimate from it, marked as such. A post by
+  someone else that YouTube lists on the tab is not the channel's and is
+  skipped.
+- **Comments** are one model for videos and posts alike: `target_type`,
+  `target_id`, `parent_id`, `thread_root_id`, `reply_depth`, with YouTube's
+  own `<parent>.<reply>` ids. Each item's comment capture is graded:
+  complete against the reported count, partial, capped, none reported,
+  exhausted but unverified, disabled, blocked, or stopped by the curator.
+  The default cap is 1,000 per item, newest first.
+- **Playlists** keep the list and its items in order, including the
+  entries YouTube reports as private or deleted.
+
+Sign-in is the curator's, never SWM's. YouTube may answer a request with
+"Sign in to confirm you're not a bot", most often from a data-centre
+address and for the per-video reads; the run then holds, opens the
+sign-in page in the window, and after the curator resolves it lends the
+browser's session to yt-dlp as a temporary cookie file readable by the
+current user only, outside the package, deleted when the run ends. A
+dedicated institutional Google account is the right one to use. The
+manifest records whether the capture was signed in and what that means.
+
+Disk space is watched. Below the warning level from Settings the run holds
+before the next file and continues by itself once space is freed; below a
+critical level a download in progress is stopped mid-file, the partial
+file is kept, and the same download resumes after the hold. Stop and save
+during a download keeps the partial file too and says so in the events.
+
+Every run writes `youtube-videos.jsonl`/`.csv`, `youtube-posts.jsonl`/`.csv`,
+`youtube-comments.jsonl`/`.csv`, `youtube-channels.json`,
+`youtube-playlists.jsonl`, `youtube-playlist-items.jsonl`,
+`youtube-media.json`, `youtube-manifest.json`, `youtube-checkpoint.json`,
+`youtube-events.jsonl`, `checksums.sha256`, `media/`, `evidence/yt-dlp/`,
+`raw/responses/`, `pages/` built from the records, and optionally a WARC
+of the browser's exchanges on the Posts tab. Video streams are never in
+the WARC: the downloaded files are the objects, and the manifest's replay
+statement says what the WARC can and cannot show. Captures of the Posts
+tab were built against YouTube's documented shapes and a fixture; the
+first real capture calibrates them, and a run that lists nothing records
+the requests the page made under `client_anomaly` in its events. The
+design and the spike behind it are in `docs/research/youtube-capture.md`.
+
 ## Automated crawling
 
 Automated crawling uses YAML configuration to define seeds, browser behaviour,
@@ -908,6 +1011,11 @@ honest identifying User-Agent from the website owner.
   complete.
 - Facebook Page capture is limited to Pages in v1. Comment limits are
   best-effort because one Facebook response can return several comments.
+- YouTube video files are the rendition YouTube served within the allowed
+  resolution, muxed by yt-dlp; the upload itself is never available. Post
+  dates are estimates from the relative text YouTube shows. Poll results,
+  members-only and age-restricted content, and anything YouTube withholds
+  from a signed-out or bot-checked session are not captured.
 
 ## Research notes
 
@@ -918,6 +1026,10 @@ Design research that shaped, or will shape, a capture mode lives under
   (formerly Twitter) mode would read the signed-in web client, with the
   endpoints to observe, the timeline anatomy, attribution and media rules,
   and what breaks. Each finding is marked verified or unverified.
+- [YouTube capture](docs/research/youtube-capture.md): why yt-dlp reads
+  and downloads the videos while a browser reads the Posts tab, what the
+  spike from this environment showed, and what the first real capture
+  must confirm.
 
 ## Licence and citation
 

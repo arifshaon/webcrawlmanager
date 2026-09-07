@@ -48,7 +48,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from . import metadata as md
 from . import resources
 from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
-                    KIND_INSTAGRAM, KIND_RECORDING, KIND_X, PAUSED, PENDING, RUNNING,
+                    KIND_INSTAGRAM, KIND_RECORDING, KIND_X, KIND_YOUTUBE, PAUSED, PENDING,
+                    RUNNING,
                     STOPPED, STOPPING, WAITING, Store)
 
 log = logging.getLogger(__name__)
@@ -212,6 +213,45 @@ def _x_capability() -> dict:
             "note": None if visible["available"] else (
                 "No graphical desktop: an X capture needs a browser window to "
                 "sign in and to run, which cannot open here.")}
+
+
+def _youtube_capability() -> dict:
+    """YouTube capture needs yt-dlp for videos and a browser window for the
+    Posts tab and for the sign-in YouTube demands; either half can be
+    missing, and the dashboard says which."""
+    from .youtube_ytdlp import ffmpeg_path, js_runtime, po_token_provider_available, ytdlp_version
+
+    visible = _recording_capability()
+    version = ytdlp_version()
+    runtime = js_runtime()
+    notes = []
+    if not version:
+        notes.append("yt-dlp is not installed, so videos cannot be listed or downloaded; "
+                     "install it with: pip install yt-dlp. The Posts tab can still be captured.")
+    if version and not ffmpeg_path():
+        notes.append("ffmpeg was not found, so separate video and audio streams cannot be "
+                     "joined; downloads fall back to single-file renditions, usually 720p or less.")
+    if version and not runtime:
+        notes.append("No JavaScript runtime (deno or node) was found; yt-dlp needs one for "
+                     "some of YouTube's players and may miss formats.")
+    if not visible["available"]:
+        notes.append("No graphical desktop: the Posts tab cannot be read here, and a sign-in "
+                     "YouTube demands of yt-dlp cannot be done here.")
+    return {"available": bool(version) or visible["available"],
+            "reason": None if (version or visible["available"]) else
+            "Neither yt-dlp nor a browser window is available on this server.",
+            "note": " ".join(notes) or None,
+            "yt_dlp": version, "ffmpeg": ffmpeg_path(),
+            "js_runtime": runtime[0] if runtime else None,
+            "po_token_provider": po_token_provider_available()}
+
+
+def _youtube_name_part(target) -> str:
+    if target.kind == "channel":
+        return str(target.handle or target.channel_id)
+    if target.kind == "video":
+        return f"video-{target.video_id}"
+    return f"playlist-{target.playlist_id}"
 
 
 def _x_name_part(target) -> str:
@@ -402,7 +442,7 @@ def _metadata_from(payload: dict, seeds: list[str]) -> dict:
 
 
 def _job_operator(config: dict) -> str:
-    for section in ("recording", "facebook", "instagram", "x"):
+    for section in ("recording", "facebook", "instagram", "x", "youtube"):
         if isinstance(config.get(section), dict) and config[section].get("operator"):
             return str(config[section]["operator"])
     return str(config.get("operator") or "webarc")
@@ -647,6 +687,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "storage": _storage_is_curator_choosable(),
             "instagram": _instagram_capability(),
             "x": _x_capability(),
+            "youtube": _youtube_capability(),
         }
 
     @app.post("/api/recordings")
@@ -1057,6 +1098,90 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
 
+    @app.get("/api/youtube/state")
+    def youtube_state(target: str):
+        from .youtube import parse_youtube_target
+
+        try:
+            parsed = parse_youtube_target(target)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        state = _store().get_youtube_target(parsed.key)
+        return {"available": bool(state and state.get("newest_item_id")),
+                "state": state, "key": parsed.key, "label": parsed.label}
+
+    @app.post("/api/youtube")
+    def create_youtube_capture(payload: dict = Body(...)):
+        """Start a YouTube capture over channels, videos and playlists."""
+        from .youtube import YouTubeCaptureConfig, parse_youtube_target
+
+        operator = str(payload.get("operator") or "webarc").strip() or "webarc"
+        if len(operator) > 200:
+            raise HTTPException(400, "operator must be 200 characters or fewer")
+        browser_mode = str(payload.get("browser") or "headed")
+        if browser_mode not in ("headed", "native"):
+            raise HTTPException(400, "browser must be 'headed' or 'native'")
+        profile_dir = Path(_store().db_path).resolve().parent / "browser-profiles" / "youtube"
+        youtube = {
+            "browser": {"mode": browser_mode, "user_data_dir": str(profile_dir)},
+            "targets": payload.get("targets"),
+            "mode": str(payload.get("mode") or "latest_n"),
+            "from_date": payload.get("from_date"),
+            "to_date": payload.get("to_date"),
+            "latest_n": payload.get("latest_n"),
+            "surfaces": payload.get("surfaces") or ["videos", "shorts", "streams", "posts"],
+            "capture_media": bool(payload.get("capture_media", True)),
+            "max_resolution": str(payload.get("max_resolution") or "1080"),
+            "thumbnails": bool(payload.get("thumbnails", True)),
+            "captions": bool(payload.get("captions", True)),
+            "auto_captions": bool(payload.get("auto_captions", True)),
+            "live_chat": bool(payload.get("live_chat", True)),
+            "post_media": bool(payload.get("post_media", True)),
+            "include_comments": bool(payload.get("include_comments", True)),
+            "max_comments_per_item": payload.get("max_comments_per_item", 1000),
+            "include_replies": bool(payload.get("include_replies", True)),
+            "comment_sort": str(payload.get("comment_sort") or "new"),
+            "write_warc": bool(payload.get("write_warc", False)),
+            "operator": operator,
+            "browser_profile_dir": str(profile_dir),
+        }
+        if youtube["mode"] == "since_last":
+            prior = {}
+            for item in (payload.get("targets") or []):
+                try:
+                    target = parse_youtube_target(item)
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from exc
+                state = _store().get_youtube_target(target.key)
+                if state and state.get("newest_item_id"):
+                    prior[target.key] = {"item_id": state["newest_item_id"],
+                                         "date": state.get("newest_item_date")}
+            youtube["prior_newest"] = prior
+        try:
+            config = YouTubeCaptureConfig.from_dict(youtube)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        parsed = [parse_youtube_target(u) for u in config.targets]
+        default_name = "yt-" + "-".join(_youtube_name_part(t) for t in parsed[:3])
+        if len(parsed) > 3:
+            default_name += f"-and-{len(parsed) - 3}-more"
+        name = str(payload.get("name") or default_name).strip()[:200] or "youtube"
+        storage_root = _storage_root_for(payload.get("storage_dir"))
+        config_json = {"youtube": youtube,
+                       "seeds": [{"url": u} for u in config.targets],
+                       "metadata": _metadata_from(payload, list(config.targets))}
+        crawl_id = _store().create_crawl(
+            name=name, config=config_json, output_dir="",
+            seeds_total=len(config.targets), kind=KIND_YOUTUBE)
+        crawl_dir = storage_root / str(crawl_id)
+        config_json["output_dir"] = str(crawl_dir)
+        crawl_dir.mkdir(parents=True, exist_ok=True)
+        _store().finalize_config(crawl_id, config_json, str(crawl_dir))
+        _write_metadata(_store().get_crawl(crawl_id))
+        _start_or_wait(crawl_id, payload)
+        return JSONResponse(status_code=201,
+                            content=_crawl_view(_store().get_crawl(crawl_id)))
+
     @app.get("/api/x/state")
     def x_state(target: str):
         from .x import parse_x_target
@@ -1253,8 +1378,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from .instagram_render import is_instagram_capture
         from .x_render import build_site as build_x_site
         from .x_render import is_x_capture
+        from .youtube_render import build_site as build_youtube_site
+        from .youtube_render import is_youtube_capture
         pages_url = None
-        if is_x_capture(crawl_dir):
+        if is_youtube_capture(crawl_dir):
+            try:
+                build_youtube_site(crawl_dir)
+                pages_url = f"/captures/{crawl_id}/pages/index.html"
+            except Exception as exc:
+                if not warcs:
+                    raise HTTPException(
+                        500, f"could not build capture pages: {exc}") from exc
+                log.warning("Could not build capture pages for %d: %s", crawl_id, exc)
+        elif is_x_capture(crawl_dir):
             try:
                 build_x_site(crawl_dir)
                 pages_url = f"/captures/{crawl_id}/pages/index.html"

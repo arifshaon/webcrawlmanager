@@ -45,8 +45,9 @@ function crawlRow(c) {
   const isFacebook = c.kind === "facebook";
   const isInstagram = c.kind === "instagram";
   const isX = c.kind === "x";
-  // Instagram and X jobs walk a list of targets and report the same way
-  const isTargeted = isInstagram || isX;
+  const isYouTube = c.kind === "youtube";
+  // Instagram, X and YouTube jobs walk a list of targets and report the same way
+  const isTargeted = isInstagram || isX || isYouTube;
   const isSocial = isFacebook || isTargeted;
   const running = rawStatus === "running";
   const paused = rawStatus === "paused";
@@ -84,9 +85,12 @@ function crawlRow(c) {
     const targetRows = isTargeted && Array.isArray(fb.targets) ? fb.targets.map(t => `
       <div class="cur">${escapeHtml(t.label || "")} · ${escapeHtml(t.status || "pending")} · ${Number(t.posts_selected) || 0} selected of ${Number(t.posts_encountered) || 0} seen${t.reason ? ` · ${escapeHtml(t.reason)}` : ""}</div>`).join("") : "";
     if (isTargeted && sd !== seeds[0]) return "";
+    const dl = isYouTube && fb.download && typeof fb.download === "object" && fb.download.title ? fb.download : null;
+    const downloadLine = dl ? `
+      <div class="cur">downloading: ${escapeHtml(dl.title)}${dl.percent != null ? ` · ${Number(dl.percent)}%` : ""}${dl.downloaded_bytes != null ? ` · ${fmtBytes(Number(dl.downloaded_bytes))}${dl.total_bytes ? ` of ${fmtBytes(Number(dl.total_bytes))}` : ""}` : ""}${dl.speed ? ` · ${fmtBytes(Number(dl.speed))}/s` : ""}</div>` : "";
     const instagramDetail = isTargeted ? `
-      <div class="cur">viewer: ${escapeHtml(fb.viewer || "unknown")} · newest: ${escapeHtml(fb.newest_post || "not yet")} · oldest: ${escapeHtml(fb.oldest_post || "not yet")} · rate-limit waits: ${Number(fb.rate_limit_waits) || 0} · media failed: ${Number(fb.media_failed) || 0}</div>
-      ${targetRows}` : "";
+      <div class="cur">viewer: ${escapeHtml(fb.viewer || "unknown")} · newest: ${escapeHtml(fb.newest_post || "not yet")} · oldest: ${escapeHtml(fb.oldest_post || "not yet")} · rate-limit waits: ${Number(fb.rate_limit_waits) || 0} · media failed: ${Number(fb.media_failed) || 0}${isYouTube ? ` · disk holds: ${Number(fb.disk_holds) || 0}` : ""}</div>
+      ${downloadLine}${targetRows}` : "";
     return `
       <div class="seed">
         <div>
@@ -108,12 +112,14 @@ function crawlRow(c) {
     <div class="row" onclick="toggle(${id})">
       <div class="gutter g-${statusCss}"></div>
       <div>
-        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : isInstagram ? '<span class="fb-chip ig-chip">IG</span>' : isX ? '<span class="fb-chip x-chip">X</span>' : ""}${name}</div>
-        <div class="meta"><span class="id">#${id}</span> · ${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
+        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : isInstagram ? '<span class="fb-chip ig-chip">IG</span>' : isX ? '<span class="fb-chip x-chip">X</span>' : isYouTube ? '<span class="fb-chip yt-chip">YT</span>' : ""}${name}</div>
+        <div class="meta"><span class="id">#${id}</span> · ${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
       </div>
       <div class="counts">
         ${isRec
           ? `<b>${visited}</b> pages<br>${fmtBytes(bytes)}`
+          : isYouTube
+            ? `<b>${Number(fb.videos_exported) || 0}</b> videos · <b>${Number(fb.channel_posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b> comments · <b>${Number(fb.media_captured) || 0}</b> files<br>${Number(fb.warc_files) ? "WARC · " : ""}${fmtBytes(bytes)}`
           : isX
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts${Number(fb.reposts_exported) ? ` (${Number(fb.reposts_exported)} reposts)` : ""} · <b>${Number(fb.context_posts) || 0}</b> context · <b>${Number(fb.media_captured) || 0}</b>${Number(fb.media_expected) ? `/${Number(fb.media_expected)}` : ""} media<br>${Number(fb.warc_files) ? "WARC · " : ""}${fmtBytes(bytes)}`
           : isInstagram
@@ -142,7 +148,7 @@ function crawlRow(c) {
       ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
       <button class="act replay" onclick="replay(${id},'warc')" ${hasWarc ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
       : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
-      <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : "Instagram"} presented the captured posts">Replay WARC</button>`
+      <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
       : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
       <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>

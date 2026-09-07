@@ -22,6 +22,7 @@ from .config import (BehaviorConfig, BrowserConfig, ScopeConfig, WarcConfig)
 from .control import StoreController
 from .store import (BLOCKED, COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP,
                     FAILED, KIND_FACEBOOK, KIND_INSTAGRAM, KIND_RECORDING, KIND_X,
+                    KIND_YOUTUBE,
                     PAUSED, RUNNING,
                     STOPPED, Store)
 
@@ -513,6 +514,139 @@ def _run_x(store: Store, crawl_id: int, row: dict) -> dict:
     return result
 
 
+class _BrowserOnDemand:
+    """The YouTube capture browser, opened only when something needs it:
+    the Posts tab, or a sign-in when yt-dlp is refused. One profile, one
+    window, however many reasons."""
+
+    def __init__(self, make):
+        self._make = make
+        self.client = None
+
+    def get(self):
+        if self.client is None:
+            self.client = self._make()
+            self.client.start()
+        return self.client
+
+    def show(self, url):
+        return self.get().show(url)
+
+    def cookie_jar(self):
+        return self.get().cookie_jar() if self.client is not None else []
+
+    def close(self):
+        if self.client is not None:
+            self.client.close()
+
+
+def _run_youtube(store: Store, crawl_id: int, row: dict) -> dict:
+    """Run a YouTube capture: yt-dlp for the channel's tabs, videos and
+    their comments; a browser on the dedicated YouTube profile for the
+    Posts tab, and for the sign-in YouTube demands of yt-dlp from many
+    networks, whose session is lent to yt-dlp for the run only."""
+    import json
+
+    from . import resources
+    from .facebook import FacebookWarcSession
+    from .youtube import (BLOCKED as YT_BLOCKED, ComposedClient, YouTubeCaptureConfig,
+                          YouTubeCaptureSession, free_disk_check, parse_youtube_target)
+    from .youtube_browser import YouTubeBrowserClient
+    from .youtube_ytdlp import YtDlpClient, ytdlp_version
+
+    raw = json.loads(row["config_json"])
+    config = YouTubeCaptureConfig.from_dict(raw.get("youtube", {}))
+    output_dir = Path(row["output_dir"])
+    described = _job_metadata(row, KIND_YOUTUBE, list(config.targets), config.operator)
+    scratch = Path(store.db_path).resolve().parent / "tmp"
+
+    warc = None
+    if config.write_warc and "posts" in config.surfaces:
+        warc = FacebookWarcSession(
+            output_dir, row["name"], config.targets[0], 1, config.operator, WarcConfig(),
+            info_extra={"robots": "none",
+                        "description": ("YouTube capture: the browser's exchanges while reading "
+                                        "the Posts tab. Video streams are not in it; the "
+                                        "downloaded files, evidence and records beside it are "
+                                        "the record.")},
+            metadata_fields=described.get(config.targets[0]))
+
+    evidence = {"sink": None}
+    videos_client = None
+    if ytdlp_version():
+        videos_client = YtDlpClient(
+            format_selector=config.format_selector, capture_media=config.capture_media,
+            thumbnails=config.thumbnails, captions=config.captions,
+            auto_captions=config.auto_captions, live_chat=config.live_chat,
+            comments=config.include_comments, max_comments=config.max_comments_per_item,
+            comment_sort=config.comment_sort, include_replies=config.include_replies,
+            evidence_sink=lambda name, payload: evidence["sink"](name, payload),
+            scratch_dir=scratch)
+    browser = _BrowserOnDemand(lambda: YouTubeBrowserClient(
+        BrowserConfig(mode=config.browser_mode, user_data_dir=config.browser_profile_dir,
+                      chrome_path=config.chrome_path),
+        warc=warc, headless=False))
+    posts_client = browser.get() if "posts" in config.surfaces else None
+    client = ComposedClient(videos=videos_client, posts=posts_client)
+
+    thresholds = resources.thresholds_from_settings(store.get_setting)
+    warning = float(thresholds.get("disk_free_percent") or 10.0)
+    disk_check = free_disk_check(output_dir, warning, max(1.0, warning / 3.0))
+
+    def control_poll():
+        command = store.get_control(crawl_id)
+        if command == CTRL_STOP:
+            return "stop"
+        if command == CTRL_PAUSE:
+            store.clear_control(crawl_id)
+            return "pause"
+        if command == CTRL_RESUME:
+            store.clear_control(crawl_id)
+            return "resume"
+        return None
+
+    last_state = {"state": None}
+
+    def on_progress(state, visited, current_url, failed=0, details=None, **_ignored):
+        store.update_progress(crawl_id, 1, status=state, visited=visited, failed=failed,
+                              current_url=current_url, details=details or {})
+        if state != last_state["state"]:
+            last_state["state"] = state
+            if state == PAUSED:
+                store.set_status(crawl_id, PAUSED)
+            elif state == YT_BLOCKED:
+                store.set_status(crawl_id, BLOCKED)
+            elif state == "recording":
+                store.set_status(crawl_id, RUNNING)
+
+    def persist(targets, videos, posts):
+        store.record_youtube_capture(crawl_id, targets, list(videos) + list(posts))
+
+    known = {}
+    for url in config.targets:
+        target = parse_youtube_target(url)
+        known[target.key] = store.get_youtube_item_ids(target.key)
+
+    capture = YouTubeCaptureSession(
+        config=config, client=client, output_dir=output_dir, crawl_id=crawl_id,
+        crawl_name=row["name"], known_ids=known, control_poll=control_poll,
+        on_progress=on_progress, persist=persist, open_browser=browser.show,
+        disk_check=disk_check, session_cookies=browser.cookie_jar)
+    evidence["sink"] = capture.archive.save_evidence
+    try:
+        result = capture.run()
+    finally:
+        if warc is not None:
+            try:
+                warc.close()
+            except Exception:
+                pass
+        browser.close()
+    if warc is not None:
+        result["warc_files"] = len(list(output_dir.glob("*.warc.gz")))
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="webarc.worker")
     parser.add_argument("crawl_id", type=int)
@@ -552,6 +686,8 @@ def main(argv: list[str] | None = None) -> int:
             facebook_result = _run_instagram(store, args.crawl_id, row)
         elif kind == KIND_X:
             facebook_result = _run_x(store, args.crawl_id, row)
+        elif kind == KIND_YOUTUBE:
+            facebook_result = _run_youtube(store, args.crawl_id, row)
         else:
             from .crawler import run_crawl
             run_crawl(_config_from_row(row), controller)
@@ -562,7 +698,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # decide final crawl-level status from control state
     facebook_stop = (facebook_result or {}).get("stop_reason") \
-        if kind in (KIND_FACEBOOK, KIND_INSTAGRAM, KIND_X) else None
+        if kind in (KIND_FACEBOOK, KIND_INSTAGRAM, KIND_X, KIND_YOUTUBE) else None
     if facebook_stop == "unsupported_personal_profile":
         # Not a crash, but not a completed capture either: record why, so the
         # dashboard shows the reason rather than an empty successful run.
