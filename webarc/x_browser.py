@@ -43,7 +43,7 @@ from typing import Callable, Iterator, Optional
 from urllib.parse import unquote, urlsplit
 
 from .config import BrowserConfig
-from .facebook import _CAPTURE_ARGS
+from .browser import operator_launch_kwargs
 from .instagram_browser import _PAGE_FETCH_JS
 from .x import (CheckpointRequired, LoginRequired, RateLimited, TargetUnavailable,
                 XError, search_url)
@@ -202,7 +202,7 @@ class XBrowserClient:
                              else attached.new_context())
         else:
             launch_kwargs: dict = {
-                "headless": self.headless, "args": list(_CAPTURE_ARGS),
+                "headless": self.headless, **operator_launch_kwargs(),
                 "no_viewport": not self.headless, "service_workers": "allow",
             }
             if self.browser.proxy:

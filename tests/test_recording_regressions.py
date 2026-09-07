@@ -315,3 +315,21 @@ class RecordingRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OperatorBrowserTests(unittest.TestCase):
+    """A browser a person drives must not announce itself as automated."""
+
+    def test_the_recording_browser_hides_the_automation_signal(self):
+        from webarc.browser import operator_launch_kwargs
+        options = operator_launch_kwargs()
+        self.assertIn("--disable-blink-features=AutomationControlled", options["args"])
+        self.assertIn("--enable-automation", options["ignore_default_args"])
+        self.assertIn("--disable-features=BackForwardCache,Prerender2,"
+                      "SpeculationRulesPrerendering", options["args"])
+
+    def test_the_recording_driver_uses_those_options(self):
+        import inspect
+        from webarc import recording_runtime
+        source = inspect.getsource(recording_runtime.RecordingBrowserDriver._start)
+        self.assertIn("operator_launch_kwargs()", source)

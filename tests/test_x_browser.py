@@ -73,6 +73,12 @@ class BrowserCollectorTestCase(unittest.TestCase):
 
 
 class BrowserCollectorTests(BrowserCollectorTestCase):
+    def test_the_browser_does_not_announce_itself_as_automated(self):
+        """X answers navigator.webdriver with "We are limiting your login"
+        even when a person is typing the password."""
+        client = self.client()
+        self.assertIs(client._page.evaluate("navigator.webdriver"), False)
+
     def test_the_viewer_comes_from_the_browsers_cookies(self):
         client = self.client()
         self.assertEqual(client.viewer(), "424242")

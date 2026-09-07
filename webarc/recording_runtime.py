@@ -48,7 +48,7 @@ class RecordingBrowserDriver(_browser.BrowserDriver):
 
         launch_kwargs: dict = {
             "headless": mode == "headless",
-            "args": list(_browser._CAPTURE_ARGS),
+            **_browser.operator_launch_kwargs(),
         }
         if mode == "headed":
             launch_kwargs["channel"] = "chrome"

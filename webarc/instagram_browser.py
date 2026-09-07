@@ -51,7 +51,8 @@ from typing import Callable, Iterator, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from .config import BrowserConfig
-from .facebook import (_CAPTURE_ARGS, _walk, decode_graphql_documents,
+from .browser import operator_launch_kwargs
+from .facebook import (_walk, decode_graphql_documents,
                        extract_embedded_documents)
 from .instagram import (CheckpointRequired, InstagramComment, InstagramError,
                         InstagramPost, InstagramProfile, LoginRequired,
@@ -666,7 +667,7 @@ class InstagramBrowserClient:
                              else attached.new_context())
         else:
             launch_kwargs: dict = {
-                "headless": self.headless, "args": list(_CAPTURE_ARGS),
+                "headless": self.headless, **operator_launch_kwargs(),
                 "no_viewport": not self.headless, "service_workers": "allow",
             }
             if self.browser.proxy:

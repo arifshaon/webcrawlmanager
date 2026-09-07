@@ -41,6 +41,21 @@ _CAPTURE_ARGS = [
     "SpeculationRulesPrerendering",
 ]
 
+# A browser a person drives -- a recording, or a social capture the curator
+# signs in to by hand -- must not announce itself as automated: Playwright
+# launches Chrome with --enable-automation, which sets navigator.webdriver
+# and shows the "controlled by automated test software" bar, and X's sign-in
+# answers that signal with "We are limiting your login" even when a person
+# is typing the password. Automated crawls keep the default.
+_OPERATOR_ARGS = [*_CAPTURE_ARGS, "--disable-blink-features=AutomationControlled"]
+_OPERATOR_IGNORED_DEFAULTS = ["--enable-automation"]
+
+
+def operator_launch_kwargs() -> dict:
+    """Launch options for a browser a person signs in to and drives."""
+    return {"args": list(_OPERATOR_ARGS),
+            "ignore_default_args": list(_OPERATOR_IGNORED_DEFAULTS)}
+
 _CHROME_CANDIDATES = [
     "google-chrome", "google-chrome-stable", "chromium-browser", "chromium",
     "/usr/bin/google-chrome",

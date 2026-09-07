@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
-from .browser import _CAPTURE_ARGS
+from .browser import _CAPTURE_ARGS, operator_launch_kwargs
 from .capture import WarcSession
 from .redaction import redact_body
 from .config import BehaviorConfig, BrowserConfig
@@ -1389,7 +1389,7 @@ class FacebookBrowserDriver(RecordingBrowserDriver):
         launch_kwargs: dict[str, Any] = {
             "headless": False,
             "channel": "chrome",
-            "args": list(_CAPTURE_ARGS),
+            **operator_launch_kwargs(),
             "no_viewport": True,
             "service_workers": "allow",
             "ignore_https_errors": bool(self.cfg.proxy),

@@ -183,6 +183,17 @@ the operator decides what is visited and activated.
 Recording sessions can be started from the command line (below) or from the
 dashboard's **Record session** tab (see [Dashboard](#dashboard)).
 
+The recording browser, like the Facebook, Instagram and X capture
+browsers, is launched without Chrome's automation signal
+(`navigator.webdriver` is false and no "controlled by automated test
+software" bar is shown): a person is driving it, and sites that read that
+signal at sign-in, X among them ("We are limiting your login"), otherwise
+refuse a password typed by hand. Automated crawls keep the default. A
+headed recording still opens a fresh browser context each time, so a site
+sees a new device at every sign-in; for a site that throttles new devices,
+the `native` browser mode with a dedicated profile keeps the session
+between recordings.
+
 ### Start a recording
 
 ```powershell
