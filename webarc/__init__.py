@@ -1,6 +1,6 @@
 """Simple Webcrawl Manager (SWM) — browser-based web archiving to WARC."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Install the hardened interactive-recording runtime before CLI or dashboard
 # callers import RecordingSession from webarc.recorder.
