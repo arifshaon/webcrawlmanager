@@ -189,8 +189,8 @@ jobs:
       - name: Commit new checked installer ZIP
         shell: powershell
         run: |
-          $zip = Get-ChildItem .\install\SWM-Setup-0.5.1.zip -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $zip) { throw 'SWM-Setup-0.5.1.zip was not created.' }
+          $zip = Get-ChildItem .\install\SWM-Setup-0.5.2.zip -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $zip) { throw 'SWM-Setup-0.5.2.zip was not created.' }
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -198,9 +198,9 @@ jobs:
 
           git diff --cached --quiet
           if ($LASTEXITCODE -eq 0) {
-            Write-Host '0.5.1 checked installer package already exists; leaving it unchanged.'
+            Write-Host '0.5.2 checked installer package already exists; leaving it unchanged.'
           } else {
-            git commit -m "Add checked SWM 0.5.1 Windows installer [skip ci]"
+            git commit -m "Add checked SWM 0.5.2 Windows installer [skip ci]"
             git push origin HEAD:feature/record-session
           }
 
@@ -210,6 +210,6 @@ jobs:
           name: SWM-unsigned-windows-installer
           path: |
             install/dist/SWM-Setup-*.exe
-            install/SWM-Setup-0.5.1.zip
+            install/SWM-Setup-0.5.2.zip
           if-no-files-found: error
           retention-days: 14
