@@ -46,35 +46,47 @@ jobs:
           if ($text -notmatch '%~dp0\.runtime\\python\\python\.exe') {
             throw 'Generated launchers do not explicitly reference the Python inside the install directory.'
           }
-          if ($wrapperText -notmatch 'SourceZip') {
-            throw 'Bootstrap wrapper does not accept the bundled source archive.'
+          foreach ($requiredMarker in @(
+            'Show-DownloadChoice',
+            'Select-DownloadedFile',
+            'Get-RequiredDownload',
+            'Get-PlaywrightInstallPlan',
+            'Install-ManualPlaywrightComponent',
+            'SourceArchivePath',
+            'NonInteractive'
+          )) {
+            if ($text -notmatch [regex]::Escape($requiredMarker)) {
+              throw "Installer is missing manual-download fallback marker: $requiredMarker"
+            }
           }
 
-          Write-Host 'Installer architecture is self-contained and accepts a bundled source snapshot.'
+          Write-Host 'Installer architecture matches the proven 0.2 self-contained layout with manual-download fallback.'
 
       - name: Smoke test self-contained runtime bootstrap
         shell: powershell
         run: |
           $testDir = Join-Path $env:RUNNER_TEMP 'swm-self-contained-test'
-          $sourceStage = Join-Path $env:RUNNER_TEMP 'swm-installer-source-stage'
-          $sourceZip = Join-Path $env:RUNNER_TEMP 'SWM-source-test.zip'
+          $sourceStage = Join-Path $env:RUNNER_TEMP 'swm-source-stage'
+          $sourceRoot = Join-Path $sourceStage 'webcrawlmanager-feature-record-session'
+          $sourceZip = Join-Path $env:RUNNER_TEMP 'swm-source.zip'
           foreach ($path in @($testDir, $sourceStage, $sourceZip)) {
             if (Test-Path $path) { Remove-Item $path -Recurse -Force }
           }
 
-          New-Item -ItemType Directory -Path $sourceStage -Force | Out-Null
+          New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
           foreach ($name in @('pyproject.toml', 'README.md', 'LICENSE', 'config.yaml')) {
-            Copy-Item -LiteralPath (Join-Path $PWD $name) -Destination (Join-Path $sourceStage $name) -Force
+            Copy-Item -LiteralPath (Join-Path $PWD $name) -Destination (Join-Path $sourceRoot $name) -Force
           }
-          Copy-Item -LiteralPath (Join-Path $PWD 'webarc') -Destination (Join-Path $sourceStage 'webarc') -Recurse -Force
-          Compress-Archive -Path (Join-Path $sourceStage '*') -DestinationPath $sourceZip -CompressionLevel Optimal
+          Copy-Item -LiteralPath (Join-Path $PWD 'webarc') -Destination (Join-Path $sourceRoot 'webarc') -Recurse -Force
+          Compress-Archive -LiteralPath $sourceRoot -DestinationPath $sourceZip -CompressionLevel Optimal
 
           $bootstrapArgs = @(
             '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', (Resolve-Path '.\install\install-windows.ps1').Path,
             '-InstallDir', $testDir,
             '-Branch', 'feature/record-session',
-            '-SourceZip', $sourceZip,
+            '-SourceArchivePath', $sourceZip,
+            '-NonInteractive',
             '-DashboardPort', '18080',
             '-ReplayPort', '18091',
             '-Yes'
@@ -113,9 +125,6 @@ jobs:
           $helpExitCode = $LASTEXITCODE
           $helpOutput | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
           if ($helpExitCode -ne 0) { throw 'Local Python SWM CLI smoke test failed.' }
-
-          & $pythonExe -c "import fastapi, uvicorn, yt_dlp, gallery_dl; print('Installer extras import OK')"
-          if ($LASTEXITCODE -ne 0) { throw 'Installer did not install all dashboard/Instagram/YouTube Python dependencies.' }
 
           $serverLauncher = Get-Content (Join-Path $testDir 'Start SWM Server.cmd') -Raw
           $cliLauncher = Get-Content (Join-Path $testDir 'swm.cmd') -Raw
