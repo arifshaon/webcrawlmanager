@@ -1972,6 +1972,16 @@ class YouTubeCaptureSession:
         }
 
 
+def needs_posts_browser(config: YouTubeCaptureConfig) -> bool:
+    """Whether this run will read a Posts tab, which only a channel has.
+
+    The browser is opened up front only then; a video or playlist job
+    opens one on demand, for a sign-in YouTube asks for, and otherwise
+    never, so no empty window sits beside the run."""
+    return "posts" in config.surfaces and any(
+        parse_youtube_target(url).kind == "channel" for url in config.targets)
+
+
 def free_disk_check(path: Path, warning_percent: float, critical_percent: float
                     ) -> Callable[[], tuple[str, str]]:
     """A disk check the worker hands the engine: free space at ``path``

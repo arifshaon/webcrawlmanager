@@ -594,7 +594,10 @@ class YtDlpClient:
         self._automatic_languages = automatic
         options = {
             "format": self.effective_format_selector,
-            "outtmpl": {"default": str(dest / "%(id)s.%(ext)s")},
+            # the template is relative to the home path on purpose: an
+            # absolute template has its drive colon sanitised on Windows and
+            # ends up nested under the home path a second time
+            "outtmpl": {"default": "%(id)s.%(ext)s"},
             "paths": {"home": str(dest)},
             "skip_download": not self.capture_media,
             "writethumbnail": self.thumbnails,
@@ -628,7 +631,7 @@ class YtDlpClient:
         elif info.get("height"):
             resolution = f"{info.get('width') or '?'}x{info.get('height')}"
         found: list[dict] = []
-        for path in sorted(dest.iterdir()):
+        for path in sorted(dest.rglob("*")):      # rglob: a file yt-dlp nested is still the video's
             if not path.is_file() or path.name.endswith((".part", ".ytdl", ".tmp")):
                 continue
             suffix = path.suffix.lower()

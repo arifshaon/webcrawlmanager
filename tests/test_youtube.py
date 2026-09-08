@@ -84,6 +84,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.comment_sort, "new")
         self.assertFalse(config.write_warc)
 
+    def test_only_a_channel_with_the_posts_surface_opens_the_browser_up_front(self):
+        from webarc.youtube import needs_posts_browser
+        self.assertTrue(needs_posts_browser(YouTubeCaptureConfig.from_dict({"targets": ["qnl"]})))
+        self.assertFalse(needs_posts_browser(YouTubeCaptureConfig.from_dict(
+            {"targets": ["qnl"], "surfaces": ["videos", "shorts"]})))
+        self.assertFalse(needs_posts_browser(YouTubeCaptureConfig.from_dict(
+            {"targets": ["https://youtu.be/wGA27zJEnaU",
+                         "https://www.youtube.com/playlist?list=PLabcdefghijklmnop"]})))
+        self.assertTrue(needs_posts_browser(YouTubeCaptureConfig.from_dict(
+            {"targets": ["https://youtu.be/wGA27zJEnaU", "qnl"]})))
+
     def test_no_media_when_the_resolution_is_none(self):
         config = YouTubeCaptureConfig.from_dict({"targets": ["qnl"], "max_resolution": "none"})
         self.assertFalse(config.capture_media)
@@ -370,6 +381,9 @@ class YtDlpClientTests(unittest.TestCase):
 
         def download(ydl, _download):
             home = Path(ydl.options["paths"]["home"])
+            # the template must stay relative: an absolute one is nested a
+            # second time under the home path on Windows
+            self.assertEqual(ydl.options["outtmpl"], {"default": "%(id)s.%(ext)s"})
             for hook in ydl.options["progress_hooks"]:
                 hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100,
                       "filename": str(home / "vid00000001.f137.mp4")})
@@ -379,6 +393,9 @@ class YtDlpClientTests(unittest.TestCase):
             (home / "vid00000001.en-orig.vtt").write_bytes(b"WEBVTT")
             (home / "vid00000001.live_chat.json").write_bytes(b"{}")
             (home / "vid00000001.mp4.part").write_bytes(b"partial")
+            nested = home / "warcs" / "97" / "media" / "videos" / "vid00000001"   # what Windows did
+            nested.mkdir(parents=True)
+            (nested / "vid00000001.f140.m4a").write_bytes(b"audio")
             return {**full_info("vid00000001"), "requested_downloads": [
                 {"format_id": "137+140", "height": 1080, "width": 1920, "vcodec": "avc1", "acodec": "mp4a"}]}
 
@@ -389,7 +406,8 @@ class YtDlpClientTests(unittest.TestCase):
         roles = {Path(f["path"]).name: f["role"] for f in files}
         self.assertEqual(roles, {"vid00000001.mp4": "video", "vid00000001.jpg": "thumbnail",
                                  "vid00000001.en.vtt": "captions", "vid00000001.en-orig.vtt": "captions",
-                                 "vid00000001.live_chat.json": "live_chat"})
+                                 "vid00000001.live_chat.json": "live_chat",
+                                 "vid00000001.f140.m4a": "video"})
         main = next(f for f in files if f["role"] == "video")
         self.assertEqual(main["resolution"], "1920x1080")
         self.assertEqual(main["format_id"], "137+140")

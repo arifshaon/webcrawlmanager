@@ -550,7 +550,8 @@ def _run_youtube(store: Store, crawl_id: int, row: dict) -> dict:
     from . import resources
     from .facebook import FacebookWarcSession
     from .youtube import (BLOCKED as YT_BLOCKED, ComposedClient, YouTubeCaptureConfig,
-                          YouTubeCaptureSession, free_disk_check, parse_youtube_target)
+                          YouTubeCaptureSession, free_disk_check, needs_posts_browser,
+                          parse_youtube_target)
     from .youtube_browser import YouTubeBrowserClient
     from .youtube_ytdlp import YtDlpClient, ytdlp_version
 
@@ -586,7 +587,7 @@ def _run_youtube(store: Store, crawl_id: int, row: dict) -> dict:
         BrowserConfig(mode=config.browser_mode, user_data_dir=config.browser_profile_dir,
                       chrome_path=config.chrome_path),
         warc=warc, headless=False))
-    posts_client = browser.get() if "posts" in config.surfaces else None
+    posts_client = browser.get() if needs_posts_browser(config) else None
     client = ComposedClient(videos=videos_client, posts=posts_client)
 
     thresholds = resources.thresholds_from_settings(store.get_setting)
