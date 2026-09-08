@@ -119,10 +119,18 @@ python -m webarc.cli replay ./warcs/example-session
 - Playwright, `warcio` and PyYAML, installed from `requirements.txt`.
 - Google Chrome for `headed` or `native` browser modes. Playwright's bundled
   Chromium is used for headless crawling.
-- For YouTube capture: `yt-dlp` (`pip install -e ".[youtube]"`), `ffmpeg` on
-  the PATH to merge the video and audio streams YouTube serves separately,
-  and a JavaScript runtime (`deno` or `node`) for yt-dlp's player
-  challenges. The dashboard's YouTube tab reports which of these it found.
+- For YouTube capture: `yt-dlp` (`pip install -e ".[youtube]"`, into the
+  same Python that runs SWM), `ffmpeg` to join the video and audio streams
+  YouTube serves separately above 720p, and a JavaScript runtime (`deno`
+  or `node`) for yt-dlp's player challenges. The Windows installer
+  installs all three (ffmpeg and deno through winget; `-SkipYouTubeHelpers`
+  leaves them out). Elsewhere: `winget install --id Gyan.FFmpeg -e` and
+  `winget install --id DenoLand.Deno -e` on Windows, `brew install ffmpeg
+  deno` on macOS, the distribution's packages on Linux. ffmpeg and deno are
+  found on the PATH or under the directory `SWM_TOOLS_DIR` names. The
+  dashboard's YouTube tab reports which of these it found, refuses to start
+  a video run without yt-dlp, and without ffmpeg asks YouTube for
+  single-file renditions instead of leaving separate streams.
 
 ### Windows
 

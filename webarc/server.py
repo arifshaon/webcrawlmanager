@@ -246,6 +246,27 @@ def _youtube_capability() -> dict:
             "po_token_provider": po_token_provider_available()}
 
 
+def _youtube_refusal(config, targets) -> Optional[str]:
+    """Why this YouTube run cannot start here, or None.
+
+    A run that needs yt-dlp (videos, Shorts, live streams, a video or a
+    playlist target) is refused up front when yt-dlp is not importable,
+    rather than started and left to write an empty package."""
+    from .youtube import NO_YTDLP
+    from .youtube_ytdlp import ytdlp_version
+
+    needs_videos = (any(t.kind in ("video", "playlist") for t in targets)
+                    or any(s in config.surfaces for s in ("videos", "shorts", "streams")))
+    if needs_videos and not ytdlp_version():
+        return NO_YTDLP + " To capture only the Posts tab of a channel meanwhile, untick " \
+               "Videos, Shorts and Live streams."
+    if "posts" in config.surfaces and not _recording_capability()["available"] \
+            and not needs_videos:
+        return ("No browser window is available on this server, so the Posts tab cannot "
+                "be read here.")
+    return None
+
+
 def _youtube_name_part(target) -> str:
     if target.kind == "channel":
         return str(target.handle or target.channel_id)
@@ -1162,6 +1183,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
         parsed = [parse_youtube_target(u) for u in config.targets]
+        refused = _youtube_refusal(config, parsed)
+        if refused:
+            raise HTTPException(400, refused)
         default_name = "yt-" + "-".join(_youtube_name_part(t) for t in parsed[:3])
         if len(parsed) > 3:
             default_name += f"-and-{len(parsed) - 3}-more"

@@ -374,6 +374,14 @@ class YouTubeClient(Protocol):
     def fetch(self, url: str) -> tuple[bytes, str]: ...
 
 
+NO_YTDLP = ("yt-dlp is not installed in the Python that runs SWM, so videos, Shorts, "
+            "live streams and playlists cannot be listed, read or downloaded. Install it "
+            "into that Python with: pip install yt-dlp (or reinstall SWM with the "
+            "installer, which now includes it), then start the capture again.")
+NO_BROWSER = ("No browser window is available on this server, so the Posts tab cannot "
+              "be read.")
+
+
 class ComposedClient:
     """One client for the engine, made of two: yt-dlp for the channel's
     tabs, playlists, videos and their comments; a browser for the Posts
@@ -405,9 +413,7 @@ class ComposedClient:
     def _need(self, which: str):
         client = self.videos if which == "videos" else self.posts_client
         if client is None:
-            raise TargetUnavailable(
-                f"no {'yt-dlp' if which == 'videos' else 'browser'} client for this surface",
-                "unknown")
+            raise TargetUnavailable(NO_YTDLP if which == "videos" else NO_BROWSER, "unknown")
         return client
 
     def channel(self, target):

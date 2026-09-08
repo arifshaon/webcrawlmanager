@@ -26,7 +26,8 @@ param(
     [string]$Branch = "feature/record-session",
     [int]$DashboardPort = 8080,
     [int]$ReplayPort = 8091,
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$SkipYouTubeHelpers
 )
 
 Set-StrictMode -Version Latest
@@ -65,6 +66,10 @@ function Write-Step([string]$Text) {
 
 function Write-Ok([string]$Text) {
     Write-Host "[OK] $Text" -ForegroundColor Green
+}
+
+function Write-Warn([string]$Text) {
+    Write-Host "  ! $Text" -ForegroundColor Yellow
 }
 
 function Write-Info([string]$Text) {
@@ -298,12 +303,50 @@ function Install-SwmIntoLocalPython([string]$TargetDir) {
         "pip", "install",
         "--python", $PythonExe,
         "--reinstall",
-        "-e", "$TargetDir[dashboard]"
-    ) -Description "Installing SWM packages into the local SWM Python"
+        "-e", "$TargetDir[dashboard,youtube]"
+    ) -Description "Installing SWM packages (with yt-dlp for YouTube capture) into the local SWM Python"
 
     Invoke-External -Exe $PythonExe -ArgumentList @(
         "-m", "playwright", "install", "chromium"
     ) -Description "Installing Playwright Chromium inside the SWM installation"
+}
+
+function Install-YouTubeHelpers {
+    # YouTube capture downloads through yt-dlp, which needs two programs SWM
+    # cannot carry as Python packages: ffmpeg, to join the separate video and
+    # audio streams YouTube serves for anything above 720p, and a JavaScript
+    # runtime (deno) for YouTube's player challenges. Both come from winget,
+    # the package manager built into Windows 10 and 11, which verifies what
+    # it installs; a missing winget or a refused install is reported, never
+    # fatal: SWM says on the YouTube tab which helper is absent, and a
+    # capture without ffmpeg asks for single-file renditions.
+    if ($SkipYouTubeHelpers) {
+        Write-Info "Skipping ffmpeg and deno (-SkipYouTubeHelpers)."
+        return
+    }
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    foreach ($helper in @(
+        @{ Exe = "ffmpeg"; Id = "Gyan.FFmpeg"; Why = "joins YouTube's separate video and audio streams" },
+        @{ Exe = "deno"; Id = "DenoLand.Deno"; Why = "runs YouTube's player challenges for yt-dlp" }
+    )) {
+        if (Get-Command "$($helper.Exe).exe" -ErrorAction SilentlyContinue) {
+            Write-Ok "$($helper.Exe) is already on the PATH."
+            continue
+        }
+        if (-not $winget) {
+            Write-Warn "$($helper.Exe) was not found and winget is not available; install it yourself ($($helper.Why)): winget install --id $($helper.Id) -e"
+            continue
+        }
+        try {
+            Invoke-External -Exe $winget.Source -ArgumentList @(
+                "install", "--id", $helper.Id, "-e", "--silent",
+                "--accept-source-agreements", "--accept-package-agreements"
+            ) -Description "Installing $($helper.Exe) through winget ($($helper.Why))"
+        } catch {
+            Write-Warn "winget could not install $($helper.Exe): $($_.Exception.Message). Install it yourself: winget install --id $($helper.Id) -e"
+        }
+    }
+    Write-Info "Programs winget installs are found by SWM after a new server start (they join the PATH of new processes)."
 }
 
 function Test-PortAvailable([int]$Port) {
@@ -350,6 +393,7 @@ setlocal
 cd /d "%~dp0"
 set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
 set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+set "SWM_TOOLS_DIR=%~dp0.runtime\tools"
 if not exist "%SWM_PYTHON%" (
   echo SWM local Python was not found: "%SWM_PYTHON%"
   exit /b 1
@@ -365,6 +409,7 @@ setlocal
 cd /d "%~dp0"
 set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
 set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+set "SWM_TOOLS_DIR=%~dp0.runtime\tools"
 set "SWM_PORT=$ServerPort"
 if not exist "%SWM_PYTHON%" (
   echo SWM local Python was not found: "%SWM_PYTHON%"
@@ -401,6 +446,7 @@ try {
     Install-PortableUv
     Install-LocalPython
     Install-SwmIntoLocalPython -TargetDir $InstallDir
+    Install-YouTubeHelpers
 
     Write-Step "3. Verify local SWM runtime"
     $version = Get-LocalPythonVersion -ExePath $PythonExe

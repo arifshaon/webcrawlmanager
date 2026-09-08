@@ -2014,6 +2014,14 @@ async function startYouTube() {
   const surfaces = [];
   for (const s of ["videos", "shorts", "streams", "posts"]) if ($(`#yt-surface-${s}`).checked) surfaces.push(s);
   if (!surfaces.length) { setMsg("Select at least one surface.", "err"); return; }
+  const needsVideos = surfaces.some(s => s !== "posts")
+    || targets.some(t => /watch\?v=|youtu\.be\/|\/shorts\/|\/live\/|list=|^[A-Za-z0-9_-]{11}$/.test(t));
+  if (needsVideos && youtubeCapability && youtubeCapability.available && !youtubeCapability.yt_dlp) {
+    setMsg("yt-dlp is not installed in the Python that runs SWM, so videos cannot be listed or downloaded. "
+      + "Install it (pip install yt-dlp into SWM's Python, or run the installer again), restart the server, "
+      + "and start the capture again. To capture only the Posts tab meanwhile, untick Videos, Shorts and Live streams.", "err");
+    return;
+  }
   const body = {
     targets, mode, surfaces,
     browser: $("#yt-browser").value,

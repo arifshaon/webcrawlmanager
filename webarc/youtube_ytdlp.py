@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
@@ -46,17 +47,50 @@ def ytdlp_version() -> Optional[str]:
     return getattr(getattr(yt_dlp, "version", None), "__version__", None) or "installed"
 
 
+def _tool(name: str) -> Optional[str]:
+    """A helper program on the PATH, or under SWM's own tools directory
+    (``SWM_TOOLS_DIR``, which the installer's launchers set), where an
+    installation without administrator rights can keep it."""
+    found = shutil.which(name)
+    if found:
+        return found
+    tools_dir = os.environ.get("SWM_TOOLS_DIR")
+    if tools_dir:
+        for candidate in (Path(tools_dir) / name, Path(tools_dir) / name / name,
+                          Path(tools_dir) / name / "bin" / name):
+            for suffix in ("", ".exe"):
+                path = candidate.with_name(candidate.name + suffix)
+                if path.is_file():
+                    return str(path)
+    return None
+
+
 def ffmpeg_path() -> Optional[str]:
-    return shutil.which("ffmpeg")
+    return _tool("ffmpeg")
 
 
 def js_runtime() -> Optional[tuple[str, str]]:
     """The JavaScript runtime yt-dlp can use here: deno first, then node."""
     for name in ("deno", "node"):
-        found = shutil.which(name)
+        found = _tool(name)
         if found:
             return name, found
     return None
+
+
+def single_file_selector(format_selector: str) -> str:
+    """The format expression for a machine without ffmpeg.
+
+    YouTube serves its better renditions as separate video and audio
+    streams that only ffmpeg can join; without it, yt-dlp would leave two
+    files. This asks for the best rendition that already carries both,
+    within the same height bound, so a download is still one playable file
+    (720p or less on most videos).
+    """
+    match = re.search(r"height<=(\d+)", format_selector)
+    bound = f"[height<={match.group(1)}]" if match else ""
+    return (f"best{bound}[vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]"
+            f"/best{bound}/best")
 
 
 def po_token_provider_available() -> bool:
@@ -337,20 +371,33 @@ class YtDlpClient:
             # runtime and fetches its solver scripts from its own releases
             options["js_runtimes"] = {runtime[0]: {"path": runtime[1]}}
             options["remote_components"] = ["ejs:github"]
+        ffmpeg = ffmpeg_path()
+        if ffmpeg:
+            options["ffmpeg_location"] = ffmpeg
         if self._cookie_file is not None:
             options["cookiefile"] = str(self._cookie_file)
         options.update(extra)
         return options
+
+    @property
+    def effective_format_selector(self) -> str:
+        """The curator's selector, or its single-file form without ffmpeg."""
+        if ffmpeg_path():
+            return self.format_selector
+        return single_file_selector(self.format_selector)
 
     def _ydl(self, **extra):
         return self._factory()(self._options(**extra))
 
     def tool_report(self) -> dict:
         runtime = js_runtime()
-        return {"yt_dlp": ytdlp_version(), "ffmpeg": ffmpeg_path(),
+        ffmpeg = ffmpeg_path()
+        return {"yt_dlp": ytdlp_version(), "ffmpeg": ffmpeg,
                 "js_runtime": f"{runtime[0]} ({runtime[1]})" if runtime else None,
                 "po_token_provider": bool(self.po_token_script) or po_token_provider_available(),
-                "format_selector": self.format_selector}
+                "format_selector": self.effective_format_selector,
+                "merging": "ffmpeg" if ffmpeg else
+                "unavailable: no ffmpeg, so single-file renditions were requested"}
 
     # -- the session lent by the browser ------------------------------------------
     def use_cookies(self, cookies: list[dict]) -> None:
@@ -513,7 +560,7 @@ class YtDlpClient:
         if not self.captions and not self.auto_captions:
             languages = ["live_chat"] if self.live_chat else []
         options = {
-            "format": self.format_selector,
+            "format": self.effective_format_selector,
             "outtmpl": {"default": str(dest / "%(id)s.%(ext)s")},
             "paths": {"home": str(dest)},
             "skip_download": not self.capture_media,
@@ -562,7 +609,7 @@ class YtDlpClient:
                          "format": main.get("format") or info.get("format"),
                          "vcodec": main.get("vcodec") or info.get("vcodec"),
                          "acodec": main.get("acodec") or info.get("acodec"),
-                         "requested_variant": self.format_selector,
+                         "requested_variant": self.effective_format_selector,
                          "meaning": "best rendition YouTube served within the allowed "
                                     "resolution, muxed by yt-dlp; not the upload"}
             elif suffix in _IMAGE_EXTENSIONS:

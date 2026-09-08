@@ -990,6 +990,54 @@ class ComposedClientTests(EngineTestCase):
         self.assertIn("yt-dlp", target["reason"])
 
 
+class HelperProgramTests(unittest.TestCase):
+    def test_helpers_are_found_under_swms_own_tools_directory(self):
+        import shutil
+        from webarc import youtube_ytdlp
+        with tempfile.TemporaryDirectory() as tools:
+            (Path(tools) / "ffmpeg").mkdir()
+            exe = Path(tools) / "ffmpeg" / ("ffmpeg.exe" if os.name == "nt" else "ffmpeg")
+            exe.write_bytes(b"")
+            original_which, original_env = shutil.which, os.environ.get("SWM_TOOLS_DIR")
+            shutil.which = lambda _name: None
+            os.environ["SWM_TOOLS_DIR"] = tools
+            try:
+                self.assertEqual(youtube_ytdlp.ffmpeg_path(), str(exe))
+                self.assertIsNone(youtube_ytdlp.js_runtime())
+            finally:
+                shutil.which = original_which
+                if original_env is None:
+                    os.environ.pop("SWM_TOOLS_DIR", None)
+                else:
+                    os.environ["SWM_TOOLS_DIR"] = original_env
+
+    def test_without_ffmpeg_a_download_asks_for_one_playable_file(self):
+        from webarc import youtube_ytdlp
+        from webarc.youtube_ytdlp import single_file_selector
+        config = YouTubeCaptureConfig.from_dict({"targets": ["qnl"], "max_resolution": "720"})
+        self.assertEqual(single_file_selector(config.format_selector),
+                         "best[height<=720][vcodec!=none][acodec!=none]/best[vcodec!=none][acodec!=none]"
+                         "/best[height<=720]/best")
+        self.assertTrue(single_file_selector("bestvideo*+bestaudio/best").startswith(
+            "best[vcodec!=none][acodec!=none]"))
+        original = youtube_ytdlp.ffmpeg_path
+        youtube_ytdlp.ffmpeg_path = lambda: None
+        try:
+            client = YtDlpClient(format_selector=config.format_selector, ydl_factory=FakeYoutubeDL)
+            self.assertNotIn("+", client.effective_format_selector)
+            self.assertTrue(client.tool_report()["merging"].startswith("unavailable"))
+            self.assertNotIn("ffmpeg_location", client._options())
+        finally:
+            youtube_ytdlp.ffmpeg_path = original
+        youtube_ytdlp.ffmpeg_path = lambda: "/opt/ffmpeg/ffmpeg"
+        try:
+            client = YtDlpClient(format_selector=config.format_selector, ydl_factory=FakeYoutubeDL)
+            self.assertEqual(client.effective_format_selector, config.format_selector)
+            self.assertEqual(client._options()["ffmpeg_location"], "/opt/ffmpeg/ffmpeg")
+        finally:
+            youtube_ytdlp.ffmpeg_path = original
+
+
 class DiskCheckTests(unittest.TestCase):
     def test_levels_follow_the_free_percentage(self):
         import shutil
@@ -1070,6 +1118,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(stored["youtube"]["surfaces"], ["videos", "posts"])
         self.assertEqual(stored["youtube"]["max_comments_per_item"], 200)
         self.assertEqual(stored["seeds"][0]["url"], "https://www.youtube.com/@qnl")
+
+    def test_a_video_run_without_ytdlp_is_refused_before_it_starts(self):
+        """The first real run wrote an empty package because yt-dlp was not
+        importable by SWM's Python; that is now said before anything starts."""
+        from webarc import youtube_ytdlp
+        original = youtube_ytdlp.ytdlp_version
+        youtube_ytdlp.ytdlp_version = lambda: None
+        try:
+            refused = self.create(targets=["https://youtu.be/wGA27zJEnaU"])
+            self.assertEqual(refused.status_code, 400)
+            self.assertIn("yt-dlp is not installed", refused.text)
+            self.assertIn("pip install yt-dlp", refused.text)
+            self.assertEqual(self.create(targets=["qnl"], surfaces=["videos", "posts"]).status_code, 400)
+            posts_only = self.create(targets=["qnl"], surfaces=["posts"])
+            self.assertEqual(posts_only.status_code, 201 if self.srv._recording_capability()["available"]
+                             else 400, posts_only.text)
+            self.assertIsNone(self.client.get("/api/capabilities").json()["youtube"]["yt_dlp"])
+        finally:
+            youtube_ytdlp.ytdlp_version = original
+        self.assertEqual(self.create(targets=["https://youtu.be/wGA27zJEnaU"]).status_code,
+                         201 if youtube_ytdlp.ytdlp_version() else 400)
 
     def test_a_bad_target_is_refused_with_the_reason(self):
         response = self.create(targets=["https://www.youtube.com/feed/subscriptions"])
