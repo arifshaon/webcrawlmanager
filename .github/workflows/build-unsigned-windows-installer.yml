@@ -74,7 +74,7 @@ jobs:
           }
 
           New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
-          foreach ($name in @('pyproject.toml', 'README.md', 'LICENSE', 'config.yaml')) {
+          foreach ($name in @('pyproject.toml', 'README.md', 'LICENSE', 'config.yaml', 'requirements.txt', 'requirements-dashboard.txt')) {
             Copy-Item -LiteralPath (Join-Path $PWD $name) -Destination (Join-Path $sourceRoot $name) -Force
           }
           Copy-Item -LiteralPath (Join-Path $PWD 'webarc') -Destination (Join-Path $sourceRoot 'webarc') -Recurse -Force
