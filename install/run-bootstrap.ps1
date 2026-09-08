@@ -3,8 +3,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$BootstrapScript,
     [Parameter(Mandatory=$true)][string]$InstallDir,
-    [Parameter(Mandatory=$true)][string]$Branch,
-    [Parameter(Mandatory=$true)][string]$SourceZip
+    [Parameter(Mandatory=$true)][string]$Branch
 )
 
 $ErrorActionPreference = 'Continue'
@@ -16,7 +15,6 @@ $LogPath = Join-Path $InstallDir 'install.log'
     Set-Content -LiteralPath $LogPath -Encoding UTF8
 "InstallDir: $InstallDir" | Add-Content -LiteralPath $LogPath -Encoding UTF8
 "Branch: $Branch" | Add-Content -LiteralPath $LogPath -Encoding UTF8
-"Bundled source: $SourceZip" | Add-Content -LiteralPath $LogPath -Encoding UTF8
 "PowerShell: $($PSVersionTable.PSVersion)" | Add-Content -LiteralPath $LogPath -Encoding UTF8
 "User: $env:USERDOMAIN\$env:USERNAME" | Add-Content -LiteralPath $LogPath -Encoding UTF8
 "RuntimeRoot: $(Join-Path $InstallDir '.runtime')" | Add-Content -LiteralPath $LogPath -Encoding UTF8
@@ -32,8 +30,7 @@ $arguments = @(
     '-ExecutionPolicy', 'Bypass',
     '-File', $BootstrapScript,
     '-InstallDir', $InstallDir,
-    '-Branch', $Branch,
-    '-SourceZip', $SourceZip
+    '-Branch', $Branch
 )
 
 try {
