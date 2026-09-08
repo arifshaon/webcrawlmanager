@@ -24,11 +24,11 @@
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\Simple Webcrawl Manager"),
     [string]$Branch = "feature/record-session",
-    [string]$SourceZip,
     [int]$DashboardPort = 8080,
     [int]$ReplayPort = 8091,
+    [string]$SourceArchivePath,
     [switch]$Yes,
-    [switch]$SkipYouTubeHelpers
+    [switch]$NonInteractive
 )
 
 Set-StrictMode -Version Latest
@@ -69,12 +69,192 @@ function Write-Ok([string]$Text) {
     Write-Host "[OK] $Text" -ForegroundColor Green
 }
 
-function Write-Warn([string]$Text) {
-    Write-Host "  ! $Text" -ForegroundColor Yellow
-}
-
 function Write-Info([string]$Text) {
     Write-Host "[INFO] $Text" -ForegroundColor Gray
+}
+
+
+function Write-Warn([string]$Text) {
+    Write-Host "[WARN] $Text" -ForegroundColor Yellow
+}
+
+function Ensure-Forms {
+    if ($NonInteractive) {
+        return
+    }
+    Add-Type -AssemblyName System.Windows.Forms
+}
+
+function Show-DownloadChoice {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][string]$Reason
+    )
+
+    if ($NonInteractive) {
+        throw "Automatic download failed for $Name. URL: $Url. $Reason"
+    }
+
+    Ensure-Forms
+    Write-Host ""
+    Write-Warn "Automatic download failed for $Name."
+    Write-Host "Download URL:"
+    Write-Host "  $Url" -ForegroundColor Cyan
+    Write-Host ""
+
+    $message = @"
+Automatic download failed for:
+
+$Name
+
+$Reason
+
+Download URL:
+$Url
+
+YES  = open the URL and choose the file you downloaded manually
+NO   = retry the automatic download
+CANCEL = abort the installation
+"@
+
+    $result = [System.Windows.Forms.MessageBox]::Show(
+        $message,
+        "SWM Installer - Download required",
+        [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+        [System.Windows.Forms.MessageBoxIcon]::Warning
+    )
+
+    switch ($result) {
+        ([System.Windows.Forms.DialogResult]::Yes) { return "Manual" }
+        ([System.Windows.Forms.DialogResult]::No) { return "Retry" }
+        default { return "Abort" }
+    }
+}
+
+function Select-DownloadedFile {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Url,
+        [string]$Filter = "All files (*.*)|*.*"
+    )
+
+    if ($NonInteractive) {
+        return $null
+    }
+
+    Ensure-Forms
+    try {
+        Start-Process $Url | Out-Null
+    } catch {
+        Write-Warn "Could not open the download URL automatically. Copy it from the installer window instead: $Url"
+    }
+
+    $dialog = New-Object System.Windows.Forms.OpenFileDialog
+    $dialog.Title = "Select the downloaded file for $Name"
+    $dialog.Filter = $Filter
+    $dialog.CheckFileExists = $true
+    $dialog.Multiselect = $false
+
+    $downloads = Join-Path $env:USERPROFILE "Downloads"
+    if (Test-Path -LiteralPath $downloads) {
+        $dialog.InitialDirectory = $downloads
+    }
+
+    $result = $dialog.ShowDialog()
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $dialog.FileName
+    }
+    return $null
+}
+
+function Select-DependencyFolder {
+    param([string]$Description)
+
+    if ($NonInteractive) {
+        return $null
+    }
+
+    Ensure-Forms
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = $Description
+    $dialog.ShowNewFolderButton = $false
+
+    $result = $dialog.ShowDialog()
+    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+        return $dialog.SelectedPath
+    }
+    return $null
+}
+
+function Assert-DownloadHash {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [string]$ExpectedSha256,
+        [Parameter(Mandatory=$true)][string]$Name
+    )
+
+    if (-not $ExpectedSha256) {
+        return
+    }
+
+    $actualHash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $ExpectedSha256.ToLowerInvariant()) {
+        throw "$Name SHA-256 verification failed. Expected $ExpectedSha256 but received $actualHash."
+    }
+}
+
+function Get-RequiredDownload {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$true)][string]$Destination,
+        [string]$ExpectedSha256,
+        [string]$FileFilter = "All files (*.*)|*.*"
+    )
+
+    while ($true) {
+        $automaticFailure = $null
+        try {
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+            Write-Info "Downloading $Name."
+            Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
+            Assert-DownloadHash -Path $Destination -ExpectedSha256 $ExpectedSha256 -Name $Name
+            return
+        } catch {
+            $automaticFailure = $_.Exception.Message
+            Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+        }
+
+        while ($true) {
+            $choice = Show-DownloadChoice -Name $Name -Url $Url -Reason $automaticFailure
+
+            if ($choice -eq "Abort") {
+                throw "Installation aborted by the user while obtaining $Name."
+            }
+
+            if ($choice -eq "Retry") {
+                break
+            }
+
+            $selected = Select-DownloadedFile -Name $Name -Url $Url -Filter $FileFilter
+            if (-not $selected) {
+                Write-Warn "No file was selected for $Name."
+                continue
+            }
+
+            try {
+                Copy-Item -LiteralPath $selected -Destination $Destination -Force
+                Assert-DownloadHash -Path $Destination -ExpectedSha256 $ExpectedSha256 -Name $Name
+                Write-Ok "Using manually downloaded $Name: $selected"
+                return
+            } catch {
+                $automaticFailure = $_.Exception.Message
+                Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+                Write-Warn $automaticFailure
+            }
+        }
+    }
 }
 
 function Invoke-External {
@@ -92,41 +272,6 @@ function Invoke-External {
     }
 }
 
-function Install-BundledSource([string]$TargetDir, [string]$BundlePath) {
-    if (-not (Test-Path -LiteralPath $BundlePath)) {
-        throw "Bundled SWM source archive was not found: $BundlePath"
-    }
-
-    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("swm-bundled-source-" + [Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-
-    try {
-        Write-Info "Installing the SWM source snapshot bundled inside this setup."
-        Expand-Archive -LiteralPath $BundlePath -DestinationPath $tmp -Force
-
-        if (-not (Test-Path -LiteralPath (Join-Path $tmp "pyproject.toml"))) {
-            throw "The bundled SWM source archive is missing pyproject.toml."
-        }
-
-        New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
-        $config = Join-Path $TargetDir "config.yaml"
-        if (Test-Path -LiteralPath $config) {
-            $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-            Copy-Item -LiteralPath $config -Destination "$config.$stamp.bak" -Force
-            Write-Info "Existing config.yaml backed up before source refresh."
-        }
-
-        foreach ($item in Get-ChildItem -LiteralPath $tmp -Force) {
-            if ($item.Name -in @('.runtime', 'install.log', 'server-port.txt')) {
-                continue
-            }
-            Copy-Item -LiteralPath $item.FullName -Destination $TargetDir -Recurse -Force
-        }
-    } finally {
-        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Download-SourceZip([string]$TargetDir, [string]$BranchName) {
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("swm-source-" + [Guid]::NewGuid().ToString("N"))
     $zip = Join-Path $tmp "source.zip"
@@ -139,8 +284,15 @@ function Download-SourceZip([string]$TargetDir, [string]$BranchName) {
     $url = "$RepoBaseUrl/archive/refs/heads/$escapedBranch.zip"
 
     try {
-        Write-Info "Downloading SWM branch $BranchName from GitHub."
-        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+        if ($SourceArchivePath) {
+            if (-not (Test-Path -LiteralPath $SourceArchivePath)) {
+                throw "SourceArchivePath does not exist: $SourceArchivePath"
+            }
+            Write-Info "Using supplied SWM source archive: $SourceArchivePath"
+            Copy-Item -LiteralPath $SourceArchivePath -Destination $zip -Force
+        } else {
+            Get-RequiredDownload -Name "SWM source archive" -Url $url -Destination $zip -FileFilter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
+        }
         Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
 
         $sourceRoot = Get-ChildItem -LiteralPath $expanded -Directory | Where-Object {
@@ -190,12 +342,7 @@ function Install-PortableUv {
     New-Item -ItemType Directory -Path $expanded -Force | Out-Null
 
     try {
-        Write-Info "Downloading portable uv $UvVersion."
-        Invoke-WebRequest -Uri $UvUrl -OutFile $zip -UseBasicParsing
-        $actualHash = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $UvSha256) {
-            throw "uv SHA-256 verification failed. Expected $UvSha256 but received $actualHash."
-        }
+        Get-RequiredDownload -Name "portable uv $UvVersion" -Url $UvUrl -Destination $zip -ExpectedSha256 $UvSha256 -FileFilter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
         Write-Ok "uv download SHA-256 verified."
 
         Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
@@ -288,13 +435,7 @@ function Install-LocalPython {
     New-Item -ItemType Directory -Path $expanded -Force | Out-Null
 
     try {
-        Write-Info "Downloading CPython $PythonVersion for the SWM installation."
-        Invoke-WebRequest -Uri $PythonArchiveUrl -OutFile $archive -UseBasicParsing
-
-        $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($actualHash -ne $PythonArchiveSha256) {
-            throw "CPython SHA-256 verification failed. Expected $PythonArchiveSha256 but received $actualHash."
-        }
+        Get-RequiredDownload -Name "CPython $PythonVersion runtime" -Url $PythonArchiveUrl -Destination $archive -ExpectedSha256 $PythonArchiveSha256 -FileFilter "GZip archives (*.gz;*.tgz)|*.gz;*.tgz|All files (*.*)|*.*"
         Write-Ok "CPython download SHA-256 verified."
 
         Invoke-External -Exe $tarExe -ArgumentList @("-xzf", $archive, "-C", $expanded) -Description "Extracting local CPython runtime"
@@ -325,6 +466,284 @@ function Install-LocalPython {
     Write-Ok "Local CPython $installedVersion is installed inside SWM: $PythonExe"
 }
 
+
+function Install-SwmPythonPackages([string]$TargetDir) {
+    $onlineArgs = @(
+        "pip", "install",
+        "--python", $PythonExe,
+        "--reinstall",
+        "-e", "$TargetDir[dashboard]"
+    )
+
+    while ($true) {
+        try {
+            Invoke-External -Exe $UvExe -ArgumentList $onlineArgs -Description "Installing SWM packages into the local SWM Python"
+            return
+        } catch {
+            $reason = $_.Exception.Message
+            if ($NonInteractive) {
+                throw
+            }
+
+            Ensure-Forms
+            $url = "https://pypi.org/"
+            $message = @"
+Automatic Python dependency installation failed.
+
+$reason
+
+Package source:
+$url
+
+YES  = open PyPI and select a folder containing the downloaded .whl/.tar.gz dependency files
+NO   = retry the automatic package installation
+CANCEL = abort the installation
+
+For offline installation, place all required packages (including build requirements such as setuptools) in one folder.
+"@
+            $result = [System.Windows.Forms.MessageBox]::Show(
+                $message,
+                "SWM Installer - Python dependencies",
+                [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
+                [System.Windows.Forms.MessageBoxIcon]::Warning
+            )
+
+            if ($result -eq [System.Windows.Forms.DialogResult]::Cancel) {
+                throw "Installation aborted by the user while installing Python dependencies."
+            }
+            if ($result -eq [System.Windows.Forms.DialogResult]::No) {
+                continue
+            }
+
+            try { Start-Process $url | Out-Null } catch {}
+            $folder = Select-DependencyFolder -Description "Select the folder containing manually downloaded Python dependency packages"
+            if (-not $folder) {
+                Write-Warn "No Python dependency folder was selected."
+                continue
+            }
+
+            try {
+                Invoke-External -Exe $UvExe -ArgumentList @(
+                    "pip", "install",
+                    "--python", $PythonExe,
+                    "--reinstall",
+                    "--no-index",
+                    "--find-links", $folder,
+                    "-e", "$TargetDir[dashboard]"
+                ) -Description "Installing SWM packages from manually downloaded dependency files"
+                Write-Ok "Python dependencies installed from $folder"
+                return
+            } catch {
+                Write-Warn "The selected dependency folder could not complete the installation: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+function Get-PlaywrightInstallPlan {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    $output = @(& $PythonExe -m playwright install --dry-run chromium 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Could not obtain Playwright's browser download plan."
+        return @()
+    }
+
+    $items = @()
+    $currentName = $null
+    $currentLocation = $null
+    $currentUrl = $null
+
+    function Add-CurrentPlanItem {
+        if ($currentName -and $currentLocation -and $currentUrl) {
+            $script:items += [PSCustomObject]@{
+                Name = $currentName
+                InstallLocation = $currentLocation
+                Url = $currentUrl
+            }
+        }
+    }
+
+    foreach ($raw in $output) {
+        $line = $raw.ToString().Trim()
+        if ($line -match '^browser:\s*(.+?)(?:\s+version\s+.+)?$') {
+            if ($currentName -and $currentLocation -and $currentUrl) {
+                $items += [PSCustomObject]@{
+                    Name = $currentName
+                    InstallLocation = $currentLocation
+                    Url = $currentUrl
+                }
+            }
+            $currentName = $Matches[1].Trim()
+            $currentLocation = $null
+            $currentUrl = $null
+            continue
+        }
+        if ($line -match '^Install location:\s*(.+)$') {
+            $currentLocation = $Matches[1].Trim()
+            continue
+        }
+        if ($line -match '^Download url:\s*(https?://\S+)$') {
+            $currentUrl = $Matches[1].Trim()
+            continue
+        }
+    }
+
+    if ($currentName -and $currentLocation -and $currentUrl) {
+        $items += [PSCustomObject]@{
+            Name = $currentName
+            InstallLocation = $currentLocation
+            Url = $currentUrl
+        }
+    }
+
+    $unique = @{}
+    foreach ($item in $items) {
+        if (-not $unique.ContainsKey($item.InstallLocation)) {
+            $unique[$item.InstallLocation] = $item
+        }
+    }
+    return @($unique.Values)
+}
+
+function Test-PlaywrightComponentArchive {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$InstallLocation
+    )
+
+    $pattern = $null
+    if ($Name -match 'chromium-headless-shell') {
+        $pattern = 'chrome-headless-shell.exe'
+    } elseif ($Name -match '^chromium') {
+        $pattern = 'chrome.exe'
+    } elseif ($Name -match '^ffmpeg') {
+        $pattern = 'ffmpeg*.exe'
+    } elseif ($Name -match '^winldd') {
+        $pattern = 'PrintDeps.exe'
+    }
+
+    if (-not $pattern) {
+        return $true
+    }
+
+    return $null -ne (Get-ChildItem -LiteralPath $InstallLocation -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+function Install-ManualPlaywrightComponent {
+    param([Parameter(Mandatory=$true)]$PlanItem)
+
+    $name = $PlanItem.Name
+    $url = $PlanItem.Url
+    $target = $PlanItem.InstallLocation
+    $marker = Join-Path $target "INSTALLATION_COMPLETE"
+
+    if (Test-Path -LiteralPath $marker) {
+        Write-Ok "Playwright component already present: $name"
+        return
+    }
+
+    while ($true) {
+        $choice = Show-DownloadChoice -Name "Playwright $name" -Url $url -Reason "Playwright could not download this browser component automatically."
+        if ($choice -eq "Abort") {
+            throw "Installation aborted by the user while obtaining Playwright $name."
+        }
+        if ($choice -eq "Retry") {
+            throw [System.OperationCanceledException]::new("RETRY_PLAYWRIGHT_AUTOMATIC")
+        }
+
+        $selected = Select-DownloadedFile -Name "Playwright $name" -Url $url -Filter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
+        if (-not $selected) {
+            Write-Warn "No file was selected for Playwright $name."
+            continue
+        }
+
+        try {
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Expand-Archive -LiteralPath $selected -DestinationPath $target -Force
+
+            if (-not (Test-PlaywrightComponentArchive -Name $name -InstallLocation $target)) {
+                throw "The selected archive does not contain the expected executable for Playwright $name."
+            }
+
+            New-Item -ItemType File -Path $marker -Force | Out-Null
+            Write-Ok "Installed manually downloaded Playwright component: $name"
+            return
+        } catch {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Warn $_.Exception.Message
+        }
+    }
+}
+
+function Test-PlaywrightChromiumLaunch {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    & $PythonExe -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop()"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-PlaywrightChromium {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    while ($true) {
+        try {
+            Invoke-External -Exe $PythonExe -ArgumentList @(
+                "-m", "playwright", "install", "chromium"
+            ) -Description "Installing Playwright Chromium inside the SWM installation"
+            return
+        } catch {
+            $reason = $_.Exception.Message
+            if ($NonInteractive) {
+                throw
+            }
+
+            $plan = @(Get-PlaywrightInstallPlan)
+            if (-not $plan -or $plan.Count -eq 0) {
+                throw "Playwright Chromium download failed, and the installer could not determine the browser download URLs. $reason"
+            }
+
+            $first = $plan | Select-Object -First 1
+            $choice = Show-DownloadChoice -Name "Playwright Chromium browser" -Url $first.Url -Reason $reason
+            if ($choice -eq "Abort") {
+                throw "Installation aborted by the user while installing Playwright Chromium."
+            }
+            if ($choice -eq "Retry") {
+                continue
+            }
+
+            $retryAutomatic = $false
+            foreach ($item in $plan) {
+                $marker = Join-Path $item.InstallLocation "INSTALLATION_COMPLETE"
+                if (Test-Path -LiteralPath $marker) {
+                    continue
+                }
+                try {
+                    Install-ManualPlaywrightComponent -PlanItem $item
+                } catch [System.OperationCanceledException] {
+                    if ($_.Exception.Message -eq "RETRY_PLAYWRIGHT_AUTOMATIC") {
+                        $retryAutomatic = $true
+                        break
+                    }
+                    throw
+                }
+            }
+
+            if ($retryAutomatic) {
+                continue
+            }
+
+            if (-not (Test-PlaywrightChromiumLaunch)) {
+                throw "The manually supplied Playwright browser files were placed in $PlaywrightDir, but Chromium could not be launched."
+            }
+
+            Write-Ok "Manually supplied Playwright Chromium files were verified."
+            return
+        }
+    }
+}
+
 function Install-SwmIntoLocalPython([string]$TargetDir) {
     New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
     New-Item -ItemType Directory -Path $PlaywrightDir -Force | Out-Null
@@ -332,57 +751,8 @@ function Install-SwmIntoLocalPython([string]$TargetDir) {
     $env:UV_CACHE_DIR = $UvCacheDir
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
 
-    # --python points uv at SWM's exact private interpreter. uv supports
-    # installing directly into arbitrary non-virtual Python environments when
-    # an executable path is supplied, so no venv or system Python is involved.
-    Invoke-External -Exe $UvExe -ArgumentList @(
-        "pip", "install",
-        "--python", $PythonExe,
-        "--reinstall",
-        "-e", "$TargetDir[dashboard,instagram-listing,youtube]"
-    ) -Description "Installing SWM packages (dashboard, gallery-dl Instagram listing, and yt-dlp YouTube capture) into the local SWM Python"
-
-    Invoke-External -Exe $PythonExe -ArgumentList @(
-        "-m", "playwright", "install", "chromium"
-    ) -Description "Installing Playwright Chromium inside the SWM installation"
-}
-
-function Install-YouTubeHelpers {
-    # YouTube capture downloads through yt-dlp, which needs two programs SWM
-    # cannot carry as Python packages: ffmpeg, to join the separate video and
-    # audio streams YouTube serves for anything above 720p, and a JavaScript
-    # runtime (deno) for YouTube's player challenges. Both come from winget,
-    # the package manager built into Windows 10 and 11, which verifies what
-    # it installs; a missing winget or a refused install is reported, never
-    # fatal: SWM says on the YouTube tab which helper is absent, and a
-    # capture without ffmpeg asks for single-file renditions.
-    if ($SkipYouTubeHelpers) {
-        Write-Info "Skipping ffmpeg and deno (-SkipYouTubeHelpers)."
-        return
-    }
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    foreach ($helper in @(
-        @{ Exe = "ffmpeg"; Id = "Gyan.FFmpeg"; Why = "joins YouTube's separate video and audio streams" },
-        @{ Exe = "deno"; Id = "DenoLand.Deno"; Why = "runs YouTube's player challenges for yt-dlp" }
-    )) {
-        if (Get-Command "$($helper.Exe).exe" -ErrorAction SilentlyContinue) {
-            Write-Ok "$($helper.Exe) is already on the PATH."
-            continue
-        }
-        if (-not $winget) {
-            Write-Warn "$($helper.Exe) was not found and winget is not available; install it yourself ($($helper.Why)): winget install --id $($helper.Id) -e"
-            continue
-        }
-        try {
-            Invoke-External -Exe $winget.Source -ArgumentList @(
-                "install", "--id", $helper.Id, "-e", "--silent",
-                "--accept-source-agreements", "--accept-package-agreements"
-            ) -Description "Installing $($helper.Exe) through winget ($($helper.Why))"
-        } catch {
-            Write-Warn "winget could not install $($helper.Exe): $($_.Exception.Message). Install it yourself: winget install --id $($helper.Id) -e"
-        }
-    }
-    Write-Info "Programs winget installs are found by SWM after a new server start (they join the PATH of new processes)."
+    Install-SwmPythonPackages -TargetDir $TargetDir
+    Install-PlaywrightChromium
 }
 
 function Test-PortAvailable([int]$Port) {
@@ -429,7 +799,6 @@ setlocal
 cd /d "%~dp0"
 set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
 set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
-set "SWM_TOOLS_DIR=%~dp0.runtime\tools"
 if not exist "%SWM_PYTHON%" (
   echo SWM local Python was not found: "%SWM_PYTHON%"
   exit /b 1
@@ -445,7 +814,6 @@ setlocal
 cd /d "%~dp0"
 set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
 set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
-set "SWM_TOOLS_DIR=%~dp0.runtime\tools"
 set "SWM_PORT=$ServerPort"
 if not exist "%SWM_PYTHON%" (
   echo SWM local Python was not found: "%SWM_PYTHON%"
@@ -469,14 +837,10 @@ try {
     Write-Host "Branch: $Branch"
     Write-Host "Install directory: $InstallDir"
     Write-Host "Local Python: $PythonExe"
+    Write-Host "Download fallback: retry / manual file selection / abort"
 
-    Write-Step "1. Install SWM source"
-    if ($SourceZip) {
-        Install-BundledSource -TargetDir $InstallDir -BundlePath $SourceZip
-    } else {
-        Write-Warn "No bundled source archive was supplied; falling back to a GitHub branch download."
-        Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
-    }
+    Write-Step "1. Download / update SWM"
+    Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
         throw "pyproject.toml is missing after source download."
     }
@@ -487,7 +851,6 @@ try {
     Install-PortableUv
     Install-LocalPython
     Install-SwmIntoLocalPython -TargetDir $InstallDir
-    Install-YouTubeHelpers
 
     Write-Step "3. Verify local SWM runtime"
     $version = Get-LocalPythonVersion -ExePath $PythonExe
