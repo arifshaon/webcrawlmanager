@@ -97,6 +97,9 @@ jobs:
           $helpOutput | Select-Object -First 8 | ForEach-Object { Write-Host $_ }
           if ($helpExitCode -ne 0) { throw 'Local Python SWM CLI smoke test failed.' }
 
+          & $pythonExe -c "import fastapi, uvicorn, yt_dlp, gallery_dl; print('Installer extras import OK')"
+          if ($LASTEXITCODE -ne 0) { throw 'Installer did not install all dashboard/Instagram/YouTube Python dependencies.' }
+
           $serverLauncher = Get-Content (Join-Path $testDir 'Start SWM Server.cmd') -Raw
           $cliLauncher = Get-Content (Join-Path $testDir 'swm.cmd') -Raw
           foreach ($launcher in @($serverLauncher, $cliLauncher)) {
