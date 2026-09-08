@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 import yaml
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import metadata as md
@@ -265,6 +265,29 @@ def _youtube_refusal(config, targets) -> Optional[str]:
         return ("No browser window is available on this server, so the Posts tab cannot "
                 "be read here.")
     return None
+
+
+def _youtube_replay_media(crawl_dir: Path, crawl_id: int, base_url: str) -> dict:
+    """The downloaded video files of a YouTube capture, by video id, as the
+    URLs this server serves them at, for the replayed watch page to play."""
+    import json as _json
+    try:
+        index = _json.loads((crawl_dir / "youtube-media.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    found: dict = {}
+    for rel, entry in (index.items() if isinstance(index, dict) else []):
+        if not isinstance(entry, dict) or entry.get("role") != "video":
+            continue
+        video_id = entry.get("video_id")
+        if not video_id or not str(rel).startswith("media/") or video_id in found:
+            continue
+        if not str(rel).lower().endswith((".mp4", ".webm", ".m4a", ".mp3", ".opus")):
+            continue
+        found[str(video_id)] = {
+            "url": base_url.rstrip("/") + f"/captures/{crawl_id}/media/" + str(rel)[len("media/"):],
+            "file": str(rel), "resolution": entry.get("resolution")}
+    return found
 
 
 def _youtube_name_part(target) -> str:
@@ -1384,7 +1407,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return FileResponse(target)
 
     @app.post("/api/crawls/{crawl_id}/replay")
-    def replay(crawl_id: int):
+    def replay(crawl_id: int, request: Request):
         """Build a ReplayWeb.page site for this crawl and return the replay URL."""
         global _PYWB
         row = _require(crawl_id)
@@ -1451,9 +1474,12 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             raise HTTPException(409, "no WARC files captured yet for this crawl")
 
         coll = collection_name(crawl_id)
+        youtube_media = None
+        if is_youtube_capture(crawl_dir):
+            youtube_media = _youtube_replay_media(crawl_dir, crawl_id, str(request.base_url))
         try:
             build_replay_site(warcs, _REPLAY_ROOT / coll,
-                              seed_url=row_seed_url(crawl_id))
+                              seed_url=row_seed_url(crawl_id), youtube_media=youtube_media)
         except Exception as exc:
             raise HTTPException(500, f"replay setup failed: {exc}") from exc
         if _PYWB is None or not _PYWB.is_running():

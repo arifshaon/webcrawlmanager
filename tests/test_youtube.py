@@ -1264,6 +1264,45 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(effective["Title"], "QNL on YouTube")
         self.assertEqual(effective["Type"], "Social media account")
 
+    def test_replay_of_a_warc_plays_the_downloaded_file_in_the_watch_page(self):
+        from unittest import mock
+        made = self.create(targets=["https://youtu.be/wGA27zJEnaU"]).json()
+        crawl_dir = Path(self.row(made["id"])["output_dir"])
+        self.srv._store().set_pid(made["id"], None)
+        (crawl_dir / "youtube-videos.jsonl").write_text(json.dumps({
+            "video_id": "wGA27zJEnaU", "title": "A talk", "files": [], "comment_capture": {}}) + "\n")
+        (crawl_dir / "youtube-media.json").write_text(json.dumps({
+            "media/videos/wGA27zJEnaU/wGA27zJEnaU.mp4": {"role": "video", "video_id": "wGA27zJEnaU",
+                                                         "resolution": "1280x720"},
+            "media/videos/wGA27zJEnaU/wGA27zJEnaU.jpg": {"role": "thumbnail", "video_id": "wGA27zJEnaU"}}))
+        (crawl_dir / "youtube-manifest.json").write_text(json.dumps({"capture": {"targets": []}}))
+        from webarc.capture import WarcSession
+        from webarc.config import WarcConfig
+        warc = WarcSession(crawl_dir, "yt", "https://www.youtube.com/watch?v=wGA27zJEnaU", 1, "webarc", WarcConfig())
+        warc.write_exchange(url="https://www.youtube.com/watch?v=wGA27zJEnaU", method="GET", req_headers={},
+                            post_data=None, status=200, status_text="OK",
+                            resp_headers={"content-type": "text/html"}, body=b"<p>watch</p>")
+        warc.close()
+
+        class FakeReplay:
+            def __init__(self, *_a, **_k): pass
+            def start_background(self): pass
+            def is_running(self): return True
+            def replay_url(self, coll): return f"http://127.0.0.1:8091/{coll}/"
+
+        with mock.patch("webarc.replay._ensure_vendor_assets", return_value=True), \
+                mock.patch("webarc.replay.ReplayServer", FakeReplay):
+            (self.tmp / "replay" / "vendor").mkdir(parents=True, exist_ok=True)
+            response = self.client.post(f"/api/crawls/{made['id']}/replay")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("replay_url", response.json())
+        index = (self.tmp / "replay" / f"crawl-{made['id']}" / "index.html").read_text(encoding="utf-8")
+        self.assertIn(f"/captures/{made['id']}/media/videos/wGA27zJEnaU/wGA27zJEnaU.mp4", index)
+        self.assertIn("http://testserver/captures/", index)
+        self.assertNotIn("wGA27zJEnaU.jpg", index)
+        self.srv._PYWB = None
+
     def test_replay_offers_the_pages_of_a_package(self):
         made = self.create().json()
         crawl_dir = Path(self.row(made["id"])["output_dir"])

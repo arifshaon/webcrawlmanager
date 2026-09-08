@@ -267,6 +267,92 @@ _X_SESSION_COOKIES_JS = r"""
 
 _X_HOSTS = ("x.com", "twitter.com")
 
+# A YouTube capture's WARC holds each video's watch page as the browser
+# loaded it, never the streams: the file yt-dlp downloaded is the object.
+# YouTube's own player in the replayed page therefore has nothing to play.
+# During local replay only, the player is replaced by a <video> element
+# that plays the downloaded file from the capture directory, with a note
+# saying so. The WARC is untouched; this is the same kind of replay-only
+# handling the media-iframe compatibility above applies.
+_YOUTUBE_PLAYBACK_JS = r"""
+(() => {
+  const MEDIA = __SWM_YOUTUBE_MEDIA__;
+  const FLAG = "__swmYoutubePlayback";
+  const MARK = "swm-youtube-playback";
+  function videoIdOf(href) {
+    const m = /[?&]v=([A-Za-z0-9_-]{11})/.exec(href || "");
+    return m ? m[1] : null;
+  }
+  function playerIn(doc) {
+    for (const sel of ["#movie_player", "ytd-player", "#player-container", "#player"]) {
+      const found = doc.querySelector(sel);
+      if (found) return found;
+    }
+    return null;
+  }
+  function patch(win) {
+    let doc, href;
+    try { doc = win.document; href = win.location.href; } catch (_) { return; }
+    if (!doc || !doc.body) return;
+    const id = videoIdOf(href);
+    if (!id || !MEDIA[id]) return;
+    if (doc[FLAG] && doc.querySelector('[data-swm="' + MARK + '"]')) return;
+    const entry = MEDIA[id];
+    const host = playerIn(doc);
+    doc[FLAG + "Tries"] = (doc[FLAG + "Tries"] || 0) + 1;
+    if (!host && doc[FLAG + "Tries"] < 20) return;   // give the page's own rendering a moment
+    for (const v of doc.querySelectorAll("video")) {
+      try { v.pause(); v.removeAttribute("src"); v.load(); } catch (_) {}
+    }
+    const box = doc.createElement("div");
+    box.setAttribute("data-swm", MARK);
+    box.style.cssText = "position:relative;z-index:2147483647;background:#000;color:#ddd;"
+      + "font:13px system-ui,sans-serif;";
+    const video = doc.createElement("video");
+    video.controls = true;
+    video.preload = "metadata";
+    video.src = entry.url;
+    video.style.cssText = "display:block;width:100%;max-height:70vh;background:#000;";
+    const note = doc.createElement("div");
+    note.style.cssText = "padding:6px 10px;";
+    note.textContent = "SWM replay: playing the file downloaded during capture (" + entry.file
+      + (entry.resolution ? ", " + entry.resolution : "") + "). The archived page's own player "
+      + "has no streams to play: the WARC holds the page as it loaded, the file beside it is the video.";
+    box.appendChild(video);
+    box.appendChild(note);
+    if (host) {
+      host.innerHTML = "";
+      host.style.minHeight = "360px";
+      host.appendChild(box);
+    } else {
+      doc.body.insertBefore(box, doc.body.firstChild);
+    }
+    doc[FLAG] = true;
+  }
+  function collectFrames(root, frames) {
+    try {
+      for (const iframe of root.querySelectorAll("iframe")) frames.push(iframe);
+      for (const element of root.querySelectorAll("*")) {
+        if (element.shadowRoot) collectFrames(element.shadowRoot, frames);
+      }
+    } catch (_) {}
+  }
+  function scanWindow(win, seen) {
+    if (!win || seen.has(win)) return;
+    seen.add(win);
+    patch(win);
+    const frames = [];
+    try { collectFrames(win.document, frames); } catch (_) { return; }
+    for (const frame of frames) {
+      try { scanWindow(frame.contentWindow, seen); } catch (_) {}
+    }
+  }
+  const scan = () => scanWindow(window, new WeakSet());
+  window.addEventListener("load", scan);
+  setInterval(scan, 500);
+})();
+"""
+
 
 def _is_x_seed(seed_url: str | None) -> bool:
     from urllib.parse import urlsplit
@@ -357,11 +443,14 @@ def detect_start_url(warc_paths: list[Path]) -> str | None:
 
 def build_replay_site(warc_paths: list[Path], site_dir: Path,
                       seed_url: str | None = None,
-                      self_host: bool = False) -> Path:
+                      self_host: bool = False,
+                      youtube_media: dict | None = None) -> Path:
     """Assemble a self-contained ReplayWeb.page site for a set of WARCs.
 
     Returns the site directory. Combining the WARCs is idempotent-friendly: the
-    archive is rebuilt from the current file list each call.
+    archive is rebuilt from the current file list each call. ``youtube_media``
+    maps a video id to ``{"url", "file", "resolution"}`` for the file a YouTube
+    capture downloaded; the replayed watch page then plays that file.
     """
     site_dir = Path(site_dir).resolve()
     (site_dir / "replay").mkdir(parents=True, exist_ok=True)
@@ -449,6 +538,10 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
     compat_js = _REPLAY_COMPAT_JS
     if _is_x_seed(seed_url):
         compat_js = _X_SESSION_COOKIES_JS + compat_js
+    if youtube_media:
+        import json as _json
+        compat_js += _YOUTUBE_PLAYBACK_JS.replace(
+            "__SWM_YOUTUBE_MEDIA__", _json.dumps(youtube_media).replace("</", "<\\/"))
     (site_dir / "index.html").write_text(
         _INDEX_HTML.format(coll=site_dir.name, ui_src=ui_src,
                            url_attr=url_attr, archive=archive_name,

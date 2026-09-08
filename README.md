@@ -641,7 +641,11 @@ Every run writes `youtube-videos.jsonl`/`.csv`, `youtube-posts.jsonl`/`.csv`,
 `raw/responses/`, `pages/` built from the records, and optionally a WARC
 of the browser's exchanges on the Posts tab and on each captured video's
 watch page, loaded as a person would see it. Video streams are never in
-the WARC: the downloaded files are the objects, and the manifest's replay
+the WARC, so YouTube's own player has nothing to play on replay; during
+local replay SWM swaps that player for one playing the downloaded file,
+with a note saying so, and the WARC stays as captured. A WARC opened in
+another viewer shows the page without playback. Video streams are never
+in the WARC: the downloaded files are the objects, and the manifest's replay
 statement says what the WARC can and cannot show. Captures of the Posts
 tab were built against YouTube's documented shapes and a fixture; the
 first real capture calibrates them, and a run that lists nothing records

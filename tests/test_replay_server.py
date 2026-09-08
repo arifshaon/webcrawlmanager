@@ -119,3 +119,22 @@ class XReplayTests(unittest.TestCase):
         for seed in ("https://www.instagram.com/qnl/", "https://example.org/", None):
             with self.subTest(seed=seed):
                 self.assertNotIn("twid=", self.index_for(seed))
+
+    def test_a_youtube_archive_plays_the_downloaded_file_in_the_watch_page(self):
+        """The WARC of a YouTube capture holds the watch page, never the
+        streams; the replay page swaps the archived player for the file."""
+        from unittest import mock
+        site = self.tmp / "site-yt"
+        media = {"wGA27zJEnaU": {"url": "http://127.0.0.1:8006/captures/9/media/videos/wGA27zJEnaU/wGA27zJEnaU.mp4",
+                                 "file": "media/videos/wGA27zJEnaU/wGA27zJEnaU.mp4",
+                                 "resolution": "1920x1080"}}
+        with mock.patch("webarc.replay._ensure_vendor_assets", return_value=True):
+            (site / "vendor").mkdir(parents=True, exist_ok=True)
+            build_replay_site([self.warc], site, seed_url="https://www.youtube.com/watch?v=wGA27zJEnaU",
+                              youtube_media=media)
+        index = (site / "index.html").read_text(encoding="utf-8")
+        self.assertIn("/captures/9/media/videos/wGA27zJEnaU/wGA27zJEnaU.mp4", index)
+        self.assertIn('"resolution": "1920x1080"', index)
+        self.assertIn("#movie_player", index)
+        self.assertNotIn("__SWM_YOUTUBE_MEDIA__", index)
+        self.assertNotIn("swm-youtube-playback", self.index_for("https://www.youtube.com/@qnl"))
