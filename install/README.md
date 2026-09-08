@@ -1,6 +1,6 @@
 # Windows installer
 
-SWM 0.5.0 deliberately returns to the proven 0.2.0 Windows installer architecture.
+SWM 0.5.1 deliberately returns to the proven 0.2.0 Windows installer architecture.
 
 ## Runtime layout
 
@@ -20,7 +20,9 @@ The user chooses the installation directory. SWM keeps its private runtime benea
 
 No system-wide Python is installed and no separate LocalAppData Python runtime is used. The generated launchers explicitly call `<install>\.runtime\python\python.exe`.
 
-## Download failure behaviour in 0.5.0
+## Download failure behaviour in 0.5.1
+
+0.5.1 also updates the Playwright manual-download parser for the output format introduced in Playwright 1.58 and used by Playwright 1.62.
 
 The 0.2.0 automatic download path is retained. When a required download fails, the installer no longer immediately terminates.
 
@@ -47,13 +49,13 @@ The setup is compiled with Inno Setup 6:
 The development workflow builds and verifies:
 
 ```text
-install/dist/SWM-Setup-0.5.0.exe
+install/dist/SWM-Setup-0.5.1.exe
 ```
 
 The repository distribution package is:
 
 ```text
-install/SWM-Setup-0.5.0.zip
+install/SWM-Setup-0.5.1.zip
 ```
 
 Repository ZIPs are treated as checked packages: the CI publishing step will not silently overwrite an existing ZIP for the same version.
