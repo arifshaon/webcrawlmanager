@@ -303,8 +303,8 @@ function Install-SwmIntoLocalPython([string]$TargetDir) {
         "pip", "install",
         "--python", $PythonExe,
         "--reinstall",
-        "-e", "$TargetDir[dashboard,youtube]"
-    ) -Description "Installing SWM packages (with yt-dlp for YouTube capture) into the local SWM Python"
+        "-e", "$TargetDir[dashboard,instagram-listing,youtube]"
+    ) -Description "Installing SWM packages (dashboard, gallery-dl Instagram listing, and yt-dlp YouTube capture) into the local SWM Python"
 
     Invoke-External -Exe $PythonExe -ArgumentList @(
         "-m", "playwright", "install", "chromium"
