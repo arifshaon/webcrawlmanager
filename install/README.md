@@ -4,17 +4,19 @@ The Windows release installer is built from `SWM-Windows-Setup.iss` with Inno Se
 
 ## End-user installer
 
-The final distributable is:
+The build produces:
 
 ```text
 install/dist/SWM-Setup-<version>.exe
 ```
 
+For repository distribution, the verified EXE can then be placed inside `install/SWM-Setup-<version>.zip`.
+
 The installer shows a normal **Select Destination Location** page. For a standard-user installation the default resolves to the current user's Programs area; an administrator/all-users installation can use Program Files. The user can browse to another writable location.
 
 The EXE embeds `install-windows.ps1`. During installation it:
 
-- downloads or updates SWM from the configured GitHub branch;
+- installs the SWM source snapshot bundled into the setup EXE at build time (so installation does not require anonymous access to the private GitHub repository);
 - does **not** install Python system-wide;
 - downloads a pinned portable `uv` binary and verifies its published SHA-256;
 - installs a pinned private CPython 3.13 runtime under `<install>/.runtime/python` with no Windows Python-registry registration and no PATH changes;
@@ -31,6 +33,8 @@ The Inno installer also creates a Start Menu shortcut and, by default, a desktop
 ### Why the private Python runtime
 
 The application must be installable on managed Windows desktops where the user cannot install Python machine-wide. SWM therefore treats Python as an application runtime, not as a system prerequisite. The managed Python files remain inside the selected SWM directory and can be removed with the application files.
+
+The setup embeds a build-time snapshot containing `pyproject.toml`, `README.md`, `LICENSE`, `config.yaml`, and the `webarc` package. This is important now that the development repository is private: an installed copy is based on the exact source snapshot used to build the EXE rather than attempting an unauthenticated branch download.
 
 The portable bootstrapper is pinned to `uv 0.11.29` for reproducibility. Its Windows x64 archive SHA-256 is checked before extraction. The installer also downloads the pinned CPython 3.13 runtime from Astral's `python-build-standalone` release, verifies its SHA-256, and keeps the complete runtime inside the selected SWM directory.
 
