@@ -24,6 +24,7 @@
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\Simple Webcrawl Manager"),
     [string]$Branch = "feature/record-session",
+    [string]$SourceZip,
     [int]$DashboardPort = 8080,
     [int]$ReplayPort = 8091,
     [switch]$Yes,
@@ -88,6 +89,41 @@ function Invoke-External {
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         throw "$Description failed with exit code $exitCode."
+    }
+}
+
+function Install-BundledSource([string]$TargetDir, [string]$BundlePath) {
+    if (-not (Test-Path -LiteralPath $BundlePath)) {
+        throw "Bundled SWM source archive was not found: $BundlePath"
+    }
+
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("swm-bundled-source-" + [Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+    try {
+        Write-Info "Installing the SWM source snapshot bundled inside this setup."
+        Expand-Archive -LiteralPath $BundlePath -DestinationPath $tmp -Force
+
+        if (-not (Test-Path -LiteralPath (Join-Path $tmp "pyproject.toml"))) {
+            throw "The bundled SWM source archive is missing pyproject.toml."
+        }
+
+        New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
+        $config = Join-Path $TargetDir "config.yaml"
+        if (Test-Path -LiteralPath $config) {
+            $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+            Copy-Item -LiteralPath $config -Destination "$config.$stamp.bak" -Force
+            Write-Info "Existing config.yaml backed up before source refresh."
+        }
+
+        foreach ($item in Get-ChildItem -LiteralPath $tmp -Force) {
+            if ($item.Name -in @('.runtime', 'install.log', 'server-port.txt')) {
+                continue
+            }
+            Copy-Item -LiteralPath $item.FullName -Destination $TargetDir -Recurse -Force
+        }
+    } finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -434,8 +470,13 @@ try {
     Write-Host "Install directory: $InstallDir"
     Write-Host "Local Python: $PythonExe"
 
-    Write-Step "1. Download / update SWM"
-    Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
+    Write-Step "1. Install SWM source"
+    if ($SourceZip) {
+        Install-BundledSource -TargetDir $InstallDir -BundlePath $SourceZip
+    } else {
+        Write-Warn "No bundled source archive was supplied; falling back to a GitHub branch download."
+        Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
+    }
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
         throw "pyproject.toml is missing after source download."
     }
