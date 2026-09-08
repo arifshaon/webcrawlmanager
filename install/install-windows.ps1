@@ -468,16 +468,39 @@ function Install-LocalPython {
 
 
 function Install-SwmPythonPackages([string]$TargetDir) {
-    $onlineArgs = @(
+    $coreRequirements = Join-Path $TargetDir "requirements.txt"
+    $dashboardRequirements = Join-Path $TargetDir "requirements-dashboard.txt"
+
+    foreach ($requiredFile in @($coreRequirements, $dashboardRequirements)) {
+        if (-not (Test-Path -LiteralPath $requiredFile)) {
+            throw "Required dependency file is missing: $requiredFile"
+        }
+    }
+
+    $requirementsArgs = @(
         "pip", "install",
         "--python", $PythonExe,
         "--reinstall",
-        "-e", "$TargetDir[dashboard]"
+        "-r", $coreRequirements,
+        "-r", $dashboardRequirements
+    )
+
+    $packageArgs = @(
+        "pip", "install",
+        "--python", $PythonExe,
+        "--reinstall",
+        "--no-deps",
+        "-e", $TargetDir
     )
 
     while ($true) {
         try {
-            Invoke-External -Exe $UvExe -ArgumentList $onlineArgs -Description "Installing SWM packages into the local SWM Python"
+            # Follow the repository's documented dashboard installation path
+            # explicitly, rather than relying only on the pyproject dashboard
+            # extra. This makes requirements-dashboard.txt visible in the log
+            # and guarantees it is installed before launchers are created.
+            Invoke-External -Exe $UvExe -ArgumentList $requirementsArgs -Description "Installing requirements.txt and requirements-dashboard.txt into the local SWM Python"
+            Invoke-External -Exe $UvExe -ArgumentList $packageArgs -Description "Installing the SWM package into the local SWM Python"
             return
         } catch {
             $reason = $_.Exception.Message
@@ -498,6 +521,10 @@ $url
 YES  = open PyPI and select a folder containing the downloaded .whl/.tar.gz dependency files
 NO   = retry the automatic package installation
 CANCEL = abort the installation
+
+The installer must satisfy both:
+  requirements.txt
+  requirements-dashboard.txt
 
 For offline installation, place all required packages (including build requirements such as setuptools) in one folder.
 "@
@@ -529,8 +556,11 @@ For offline installation, place all required packages (including build requireme
                     "--reinstall",
                     "--no-index",
                     "--find-links", $folder,
-                    "-e", "$TargetDir[dashboard]"
-                ) -Description "Installing SWM packages from manually downloaded dependency files"
+                    "-r", $coreRequirements,
+                    "-r", $dashboardRequirements
+                ) -Description "Installing requirements.txt and requirements-dashboard.txt from manually downloaded packages"
+
+                Invoke-External -Exe $UvExe -ArgumentList $packageArgs -Description "Installing the SWM package into the local SWM Python"
                 Write-Ok "Python dependencies installed from $folder"
                 return
             } catch {
