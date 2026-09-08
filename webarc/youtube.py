@@ -250,6 +250,7 @@ class YouTubeVideo:
     files: list[dict] = field(default_factory=list)
     surface: str = "videos"
     source: str = "yt-dlp"
+    complete: bool = False              # read whole, not a listing's flat entry
     unavailable_reason: Optional[str] = None
     comment_capture: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
@@ -1431,7 +1432,7 @@ class YouTubeCaptureSession:
                     continue
             decision = self._decide(video, prior, target)
             if decision == "select":
-                self._take_video(video, target, already_full=bool(video.raw))
+                self._take_video(video, target, already_full=video.complete)
                 consecutive_older = 0
             elif decision == "older":
                 self.exclusions["older_than_requested"] += 1
@@ -1501,6 +1502,7 @@ class YouTubeCaptureSession:
                                   f"reading video {video.video_id}")
         assert isinstance(full, YouTubeVideo)
         full.surface = video.surface
+        full.complete = True
         if not full.kind or full.kind == "video":
             full.kind = video.kind
         return full

@@ -25,7 +25,10 @@ dashboard = ["fastapi>=0.110", "uvicorn>=0.29"]
 instagram-listing = ["gallery-dl>=1.30"]
 # YouTube capture: yt-dlp lists channel tabs and playlists, reads video
 # records and comments, and downloads the files (imported as a library).
-youtube = ["yt-dlp>=2025.1.1"]
+# yt-dlp's own "default" extra (certifi, brotli, websockets ...) and
+# curl_cffi, which it uses to impersonate a browser on requests YouTube
+# answers differently otherwise.
+youtube = ["yt-dlp[default,curl-cffi]>=2025.1.1"]
 
 [project.scripts]
 swm = "webarc.cli:main"

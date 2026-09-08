@@ -165,7 +165,8 @@ def _availability(entry: dict) -> str:
 
 
 def video_from_info(info: dict, *, surface: str = "videos", source: str = "yt-dlp",
-                    provenance: Optional[dict] = None, trimmed_raw: bool = True) -> YouTubeVideo:
+                    provenance: Optional[dict] = None, trimmed_raw: bool = True,
+                    complete: bool = False) -> YouTubeVideo:
     """A video record from a yt-dlp info dict, flat or full."""
     kind = _KIND_OF_SURFACE.get(surface, "video")
     if info.get("live_status") in ("was_live", "is_live", "post_live"):
@@ -207,7 +208,40 @@ def video_from_info(info: dict, *, surface: str = "videos", source: str = "yt-dl
         categories=[c for c in (info.get("categories") or []) if isinstance(c, str)],
         tags=[t for t in (info.get("tags") or []) if isinstance(t, str)],
         chapters=[c for c in (info.get("chapters") or []) if isinstance(c, dict)],
-        surface=surface, source=source, raw=raw, provenance=dict(provenance or {}))
+        surface=surface, source=source, complete=complete, raw=raw,
+        provenance=dict(provenance or {}))
+
+
+def subtitle_languages(info: dict, *, captions: bool, auto_captions: bool, live_chat: bool
+                       ) -> tuple[list[str], set[str]]:
+    """Which subtitle tracks to ask for, by name, and which are automatic.
+
+    "all" is the wrong request: YouTube's automatic captions include
+    machine translations into some 170 languages, and asking for every one
+    is 170 requests per video that YouTube answers with 429. A video's
+    manual tracks are few and wanted; of the automatic ones only the
+    original language (yt-dlp names it ``<lang>-orig``) is the video's
+    own. Without a record to read from, only the original-language
+    automatic track and the live chat can be named.
+    """
+    manual = {lang for lang in (info.get("subtitles") or {}) if lang != "live_chat"}
+    automatic = info.get("automatic_captions") or {}
+    wanted: list[str] = sorted(manual) if captions else []
+    auto: set[str] = set()
+    if auto_captions:
+        original = sorted(lang for lang in automatic if lang.endswith("-orig"))
+        if original:
+            auto = set(original)
+        elif not info:
+            auto = {".*-orig"}
+        else:
+            language = info.get("language")
+            if language and language in automatic and language not in manual:
+                auto = {language}
+    wanted += sorted(auto)
+    if live_chat and (not info or "live_chat" in (info.get("subtitles") or {})):
+        wanted.append("live_chat")
+    return wanted, auto
 
 
 def comments_from_info(info: dict, target_id: str, *, provenance: Optional[dict] = None
@@ -514,7 +548,7 @@ class YtDlpClient:
         self._infos[str(info["id"])] = info
         self._comments[str(info["id"])] = comments_from_info(info, str(info["id"]),
                                                               provenance=provenance)
-        return video_from_info(info, provenance=provenance)
+        return video_from_info(info, provenance=provenance, complete=True)
 
     def comments(self, video: YouTubeVideo) -> Iterator[YouTubeComment]:
         found = self._comments.get(video.video_id)
@@ -554,19 +588,18 @@ class YtDlpClient:
                     raise
                 raise DownloadCancelled(str(exc)) from exc
 
-        languages = ["all"]
-        if not self.live_chat:
-            languages = ["all", "-live_chat"]
-        if not self.captions and not self.auto_captions:
-            languages = ["live_chat"] if self.live_chat else []
+        languages, automatic = subtitle_languages(
+            self._infos.get(video.video_id) or {}, captions=self.captions,
+            auto_captions=self.auto_captions, live_chat=self.live_chat)
+        self._automatic_languages = automatic
         options = {
             "format": self.effective_format_selector,
             "outtmpl": {"default": str(dest / "%(id)s.%(ext)s")},
             "paths": {"home": str(dest)},
             "skip_download": not self.capture_media,
             "writethumbnail": self.thumbnails,
-            "writesubtitles": bool(languages) and (self.captions or self.live_chat),
-            "writeautomaticsub": self.auto_captions,
+            "writesubtitles": bool(languages),
+            "writeautomaticsub": bool(automatic),
             "subtitleslangs": languages,
             "continuedl": True, "nooverwrites": False, "overwrites": False,
             "progress_hooks": [hook],
@@ -616,7 +649,11 @@ class YtDlpClient:
                 entry = {"role": "thumbnail"}
             elif suffix in _SUBTITLE_EXTENSIONS or ".live_chat" in name:
                 lang = name[len(video.video_id) + 1:-len(suffix)] if name.startswith(video.video_id + ".") else None
-                entry = {"role": "captions", "language": lang}
+                automatic = bool(lang) and (lang.endswith("-orig") or lang in getattr(
+                    self, "_automatic_languages", set()))
+                entry = {"role": "captions", "language": lang, "automatic": automatic,
+                         "meaning": ("YouTube's automatic captions in the video's original "
+                                     "language" if automatic else "a caption track the uploader published")}
             else:
                 entry = {"role": "other"}
             entry["path"] = str(path)

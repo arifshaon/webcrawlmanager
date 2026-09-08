@@ -119,7 +119,8 @@ python -m webarc.cli replay ./warcs/example-session
 - Playwright, `warcio` and PyYAML, installed from `requirements.txt`.
 - Google Chrome for `headed` or `native` browser modes. Playwright's bundled
   Chromium is used for headless crawling.
-- For YouTube capture: `yt-dlp` (`pip install -e ".[youtube]"`, into the
+- For YouTube capture: `yt-dlp` with its `default` and `curl-cffi` extras
+  (`pip install -e ".[youtube]"` brings all of it, into the
   same Python that runs SWM), `ffmpeg` to join the video and audio streams
   YouTube serves separately above 720p, and a JavaScript runtime (`deno`
   or `node`) for yt-dlp's player challenges. The Windows installer

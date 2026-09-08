@@ -306,6 +306,7 @@ class YtDlpClientTests(unittest.TestCase):
         listing = client.list_items(parse_youtube_target("qnl"), "shorts")
         first = next(listing)
         self.assertEqual(first.video_id, "vid00000001")
+        self.assertFalse(first.complete)          # a flat entry: the engine reads it whole later
         self.assertEqual(first.kind, "short")
         self.assertEqual(first.availability, "unknown")
         self.assertEqual(first.provenance["listing_position"], 1)
@@ -337,9 +338,35 @@ class YtDlpClientTests(unittest.TestCase):
         self.assertTrue(comments[1].author_is_uploader)
         self.assertEqual(comments[0].published_time, "2025-09-03T14:33:20Z")
 
+    def test_captions_are_asked_for_by_name_never_all(self):
+        """The first real run asked for "all" subtitles with automatic
+        captions on: 170 machine translations per video, and a 429 from
+        YouTube on the first of them (Abkhazian)."""
+        from webarc.youtube_ytdlp import subtitle_languages
+        info = {"subtitles": {"en": [], "ar": [], "live_chat": []},
+                "automatic_captions": {"en-orig": [], "en": [], "ab": [], "af": [], "ar": []},
+                "language": "en"}
+        self.assertEqual(subtitle_languages(info, captions=True, auto_captions=True, live_chat=True),
+                         (["ar", "en", "en-orig", "live_chat"], {"en-orig"}))
+        self.assertEqual(subtitle_languages(info, captions=True, auto_captions=False, live_chat=False),
+                         (["ar", "en"], set()))
+        self.assertEqual(subtitle_languages(info, captions=False, auto_captions=True, live_chat=False),
+                         (["en-orig"], {"en-orig"}))
+        older = {"subtitles": {}, "automatic_captions": {"en": [], "ab": []}, "language": "en"}
+        self.assertEqual(subtitle_languages(older, captions=True, auto_captions=True, live_chat=True),
+                         (["en"], {"en"}))
+        self.assertEqual(subtitle_languages({}, captions=True, auto_captions=True, live_chat=True),
+                         ([".*-orig", "live_chat"], {".*-orig"}))
+        self.assertEqual(subtitle_languages(info, captions=False, auto_captions=False, live_chat=False),
+                         ([], set()))
+
     def test_a_download_writes_under_the_video_folder_and_describes_each_file(self):
         client = self.client()
         progress: list[dict] = []
+        FakeYoutubeDL.script["https://www.youtube.com/watch?v=vid00000001"] = full_info(
+            "vid00000001", subtitles={"en": [], "live_chat": []},
+            automatic_captions={"en-orig": [], "ab": [], "en": []})
+        self.assertTrue(client.video("vid00000001").complete)
 
         def download(ydl, _download):
             home = Path(ydl.options["paths"]["home"])
@@ -349,6 +376,7 @@ class YtDlpClientTests(unittest.TestCase):
             (home / "vid00000001.mp4").write_bytes(b"video")
             (home / "vid00000001.jpg").write_bytes(b"thumb")
             (home / "vid00000001.en.vtt").write_bytes(b"WEBVTT")
+            (home / "vid00000001.en-orig.vtt").write_bytes(b"WEBVTT")
             (home / "vid00000001.live_chat.json").write_bytes(b"{}")
             (home / "vid00000001.mp4.part").write_bytes(b"partial")
             return {**full_info("vid00000001"), "requested_downloads": [
@@ -360,16 +388,18 @@ class YtDlpClientTests(unittest.TestCase):
 
         roles = {Path(f["path"]).name: f["role"] for f in files}
         self.assertEqual(roles, {"vid00000001.mp4": "video", "vid00000001.jpg": "thumbnail",
-                                 "vid00000001.en.vtt": "captions",
+                                 "vid00000001.en.vtt": "captions", "vid00000001.en-orig.vtt": "captions",
                                  "vid00000001.live_chat.json": "live_chat"})
         main = next(f for f in files if f["role"] == "video")
         self.assertEqual(main["resolution"], "1920x1080")
         self.assertEqual(main["format_id"], "137+140")
-        captions = next(f for f in files if f["role"] == "captions")
-        self.assertEqual(captions["language"], "en")
+        captions = {f["language"]: f["automatic"] for f in files if f["role"] == "captions"}
+        self.assertEqual(captions, {"en": False, "en-orig": True})
         self.assertEqual(progress[0]["percent"], 50.0)
         options = FakeYoutubeDL.calls[-1]
-        self.assertEqual(options["subtitleslangs"], ["all"])
+        self.assertEqual(options["subtitleslangs"], ["en", "en-orig", "live_chat"])
+        self.assertTrue(options["writesubtitles"])
+        self.assertTrue(options["writeautomaticsub"])
         self.assertTrue(options["continuedl"])
         self.assertTrue(options["writethumbnail"])
 
@@ -523,6 +553,7 @@ class FakeClient:
             if found is None:
                 raise TargetUnavailable("no such video", "unavailable")
         full = YouTubeVideo(**{**found.__dict__})
+        full.complete = True
         full.raw = {"id": video_id, "full": True}
         full.provenance = {"evidence": f"evidence/yt-dlp/{video_id}.info.json"}
         return full
@@ -880,6 +911,18 @@ class EngineTests(EngineTestCase):
         self.assertEqual(rows[1]["availability"], "deleted")
         self.assertEqual(self.manifest()["counts"]["playlists_exported"], 1)
         self.assertIsNone(session.newest_by_target.get("youtube:playlist/PLtalkstalkstalks"))
+
+    def test_a_listed_video_is_read_whole_before_it_is_downloaded(self):
+        listed = vid(1, when="2026-08-01T00:00:00Z")
+        listed.raw = {"id": listed.video_id, "_type": "url", "flat": True}   # what a listing gives
+        client = FakeClient(videos=[listed])
+        session = self.session(client, surfaces=["videos"], include_comments=False)
+        session.run()
+
+        self.assertEqual([c[0] for c in client.calls if c[0] in ("video", "download")],
+                         ["video", "download"])
+        row = self.rows("youtube-videos.jsonl")[0]
+        self.assertEqual(row["provenance"]["evidence"], "evidence/yt-dlp/vid00000001.info.json")
 
     def test_a_single_video_target_is_read_whole_and_downloaded(self):
         client = FakeClient(full={"wGA27zJEnaU": YouTubeVideo(
