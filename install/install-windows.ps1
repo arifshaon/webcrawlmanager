@@ -246,7 +246,7 @@ function Get-RequiredDownload {
             try {
                 Copy-Item -LiteralPath $selected -Destination $Destination -Force
                 Assert-DownloadHash -Path $Destination -ExpectedSha256 $ExpectedSha256 -Name $Name
-                Write-Ok "Using manually downloaded $Name: $selected"
+                Write-Ok "Using manually downloaded ${Name}: $selected"
                 return
             } catch {
                 $automaticFailure = $_.Exception.Message
@@ -552,16 +552,6 @@ function Get-PlaywrightInstallPlan {
     $currentName = $null
     $currentLocation = $null
     $currentUrl = $null
-
-    function Add-CurrentPlanItem {
-        if ($currentName -and $currentLocation -and $currentUrl) {
-            $script:items += [PSCustomObject]@{
-                Name = $currentName
-                InstallLocation = $currentLocation
-                Url = $currentUrl
-            }
-        }
-    }
 
     foreach ($raw in $output) {
         $line = $raw.ToString().Trim()
