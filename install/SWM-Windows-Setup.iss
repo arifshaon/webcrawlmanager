@@ -3,7 +3,7 @@
 ; before release distribution. Unsigned builds are supported for testing.
 
 #ifndef AppVersion
-  #define AppVersion "0.5.0"
+  #define AppVersion "0.5.1"
 #endif
 #ifndef SourceBranch
   #define SourceBranch "feature/record-session"
