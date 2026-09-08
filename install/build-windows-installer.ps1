@@ -43,7 +43,6 @@ $ProgressPreference = "SilentlyContinue"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $IssPath = Join-Path $PSScriptRoot "SWM-Windows-Setup.iss"
 $PyProjectPath = Join-Path $RepoRoot "pyproject.toml"
-$SourceBundlePath = Join-Path $PSScriptRoot "SWM-source.zip"
 
 function Write-Step([string]$Text) {
     Write-Host ""
@@ -104,37 +103,6 @@ function Invoke-External {
     & $Exe @ArgumentList
     if ($LASTEXITCODE -ne 0) {
         throw "$Description failed with exit code $LASTEXITCODE."
-    }
-}
-
-function New-SourceBundle {
-    $stage = Join-Path ([IO.Path]::GetTempPath()) ("swm-source-bundle-" + [Guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Path $stage -Force | Out-Null
-
-    try {
-        foreach ($name in @("pyproject.toml", "README.md", "LICENSE", "config.yaml")) {
-            $source = Join-Path $RepoRoot $name
-            if (-not (Test-Path -LiteralPath $source)) {
-                throw "Required installer source file is missing: $source"
-            }
-            Copy-Item -LiteralPath $source -Destination (Join-Path $stage $name) -Force
-        }
-
-        $packageSource = Join-Path $RepoRoot "webarc"
-        if (-not (Test-Path -LiteralPath $packageSource)) {
-            throw "SWM package directory is missing: $packageSource"
-        }
-        Copy-Item -LiteralPath $packageSource -Destination (Join-Path $stage "webarc") -Recurse -Force
-
-        Remove-Item -LiteralPath $SourceBundlePath -Force -ErrorAction SilentlyContinue
-        Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $SourceBundlePath -CompressionLevel Optimal -Force
-
-        if (-not (Test-Path -LiteralPath $SourceBundlePath)) {
-            throw "Source bundle was not created: $SourceBundlePath"
-        }
-        Write-Ok "Bundled current SWM source snapshot: $SourceBundlePath"
-    } finally {
-        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -201,21 +169,14 @@ Use -AllowUnsigned only for a local development build; do not distribute it.
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 $OutputDir = (Resolve-Path -LiteralPath $OutputDir).Path
 
-Write-Step "Bundle current source"
-New-SourceBundle
-
 Write-Step "Compile installer"
-try {
-    Invoke-External -Exe $inno -ArgumentList @(
-        "/Qp",
-        "/DAppVersion=$version",
-        "/DSourceBranch=$Branch",
-        "/O$OutputDir",
-        $IssPath
-    ) -Description "Compiling SWM $version with Inno Setup"
-} finally {
-    Remove-Item -LiteralPath $SourceBundlePath -Force -ErrorAction SilentlyContinue
-}
+Invoke-External -Exe $inno -ArgumentList @(
+    "/Qp",
+    "/DAppVersion=$version",
+    "/DSourceBranch=$Branch",
+    "/O$OutputDir",
+    $IssPath
+) -Description "Compiling SWM $version with Inno Setup"
 
 $exe = Join-Path $OutputDir "SWM-Setup-$version.exe"
 if (-not (Test-Path -LiteralPath $exe)) {
