@@ -84,16 +84,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.comment_sort, "new")
         self.assertFalse(config.write_warc)
 
-    def test_only_a_channel_with_the_posts_surface_opens_the_browser_up_front(self):
-        from webarc.youtube import needs_posts_browser
-        self.assertTrue(needs_posts_browser(YouTubeCaptureConfig.from_dict({"targets": ["qnl"]})))
-        self.assertFalse(needs_posts_browser(YouTubeCaptureConfig.from_dict(
+    def test_the_browser_opens_up_front_for_a_posts_tab_or_a_warc_only(self):
+        from webarc.youtube import needs_browser
+        self.assertTrue(needs_browser(YouTubeCaptureConfig.from_dict({"targets": ["qnl"]})))
+        self.assertFalse(needs_browser(YouTubeCaptureConfig.from_dict(
             {"targets": ["qnl"], "surfaces": ["videos", "shorts"]})))
-        self.assertFalse(needs_posts_browser(YouTubeCaptureConfig.from_dict(
+        self.assertFalse(needs_browser(YouTubeCaptureConfig.from_dict(
             {"targets": ["https://youtu.be/wGA27zJEnaU",
                          "https://www.youtube.com/playlist?list=PLabcdefghijklmnop"]})))
-        self.assertTrue(needs_posts_browser(YouTubeCaptureConfig.from_dict(
+        self.assertTrue(needs_browser(YouTubeCaptureConfig.from_dict(
             {"targets": ["https://youtu.be/wGA27zJEnaU", "qnl"]})))
+        self.assertTrue(needs_browser(YouTubeCaptureConfig.from_dict(
+            {"targets": ["https://youtu.be/wGA27zJEnaU"], "write_warc": True})))
 
     def test_no_media_when_the_resolution_is_none(self):
         config = YouTubeCaptureConfig.from_dict({"targets": ["qnl"], "max_resolution": "none"})
@@ -617,6 +619,10 @@ class FakeClient:
         self.calls.append(("fetch", url))
         return b"\x89PNG" + url.encode(), "image/png"
 
+    def visit_video(self, video):
+        self.calls.append(("visit_video", video.video_id))
+        return f"https://www.youtube.com/watch?v={video.video_id}"
+
     def use_cookies(self, cookies):
         self.cookies_used.append(cookies)
 
@@ -941,6 +947,30 @@ class EngineTests(EngineTestCase):
                          ["video", "download"])
         row = self.rows("youtube-videos.jsonl")[0]
         self.assertEqual(row["provenance"]["evidence"], "evidence/yt-dlp/vid00000001.info.json")
+
+    def test_a_warc_request_loads_each_videos_watch_page_and_a_video_job_without_a_browser_says_so(self):
+        """The first WARC of a video job held its two header records and
+        nothing else: no browser had been opened for a video target."""
+        from webarc.youtube import ComposedClient
+        client = FakeClient(videos=[vid(1, when="2026-08-01T00:00:00Z"), vid(2, when="2026-07-01T00:00:00Z")])
+        session = self.session(client, surfaces=["videos"], include_comments=False, write_warc=True)
+        session.run()
+        self.assertEqual([c[1] for c in client.calls if c[0] == "visit_video"], ["vid00000001", "vid00000002"])
+        self.assertEqual(session.counters["watch_pages_recorded"], 2)
+        row = self.rows("youtube-videos.jsonl")[0]
+        self.assertEqual(row["provenance"]["watch_page_in_warc"], "https://www.youtube.com/watch?v=vid00000001")
+        self.assertEqual(self.manifest()["layers"]["web_context"]["watch_pages_recorded"], 2)
+
+        quiet = FakeClient(videos=[vid(3, when="2026-06-01T00:00:00Z")])
+        self.session(quiet, surfaces=["videos"], include_comments=False).run()
+        self.assertNotIn("visit_video", [c[0] for c in quiet.calls])
+
+        headless = ComposedClient(videos=FakeClient(videos=[vid(4, when="2026-05-01T00:00:00Z")]), posts=None)
+        session = self.session(headless, surfaces=["videos"], include_comments=False, write_warc=True)
+        session.run()
+        skipped = [e for e in self.events() if e["event"] == "watch_page_not_recorded"]
+        self.assertEqual(skipped[-1]["video_id"], "vid00000004")
+        self.assertIn("browser", skipped[-1]["reason"])
 
     def test_a_single_video_target_is_read_whole_and_downloaded(self):
         client = FakeClient(full={"wGA27zJEnaU": YouTubeVideo(

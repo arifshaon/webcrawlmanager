@@ -161,7 +161,7 @@ media/channels/<id>/         the avatar
 evidence/yt-dlp/<id>.info.json
 raw/responses/               the browser's observed responses
 pages/                       reader pages built from the records
-*.warc.gz                    optional; the Posts tab exchanges, never video streams
+*.warc.gz                    optional; the Posts tab and each video's watch page, never video streams
 ```
 
 The manifest's `replay` section says what a WARC of this capture can

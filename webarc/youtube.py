@@ -448,6 +448,9 @@ class ComposedClient:
         self._last_comments_from = self._need("posts")
         return self._last_comments_from.post_comments(post)
 
+    def visit_video(self, video):
+        return self._need("posts").visit_video(video)
+
     def fetch(self, url):
         client = self.posts_client or self.videos
         return client.fetch(url)
@@ -1530,6 +1533,8 @@ class YouTubeCaptureSession:
         if self.config.include_comments:
             self._collect_comments(video, "video", video.video_id,
                                    lambda: self.client.comments(video))
+        if self.config.write_warc:
+            self._record_watch_page(video)
         self.archive.update_video(video)
         self.phase_detail = (f"Collecting {target.label}: {len(self.archive.videos)} videos, "
                              f"{len(self.archive.posts)} posts, "
@@ -1609,6 +1614,33 @@ class YouTubeCaptureSession:
                     "fetch_initiator": "swm", "fetched_via": "yt-dlp"})
                 video.files.append(record)
             return
+
+    def _record_watch_page(self, video: YouTubeVideo) -> None:
+        """With a WARC requested, the browser loads the video's watch page
+        so the WARC holds the presentation; a WARC of a video job would
+        otherwise hold nothing but its header records."""
+        visit = getattr(self.client, "visit_video", None)
+        if not callable(visit):
+            self.counters["watch_pages_not_recorded"] += 1
+            self.archive.event("watch_page_not_recorded", video_id=video.video_id,
+                               reason="no browser client")
+            return
+        try:
+            url = self._with_retries(lambda: visit(video), video.url or "",
+                                     f"recording the page of video {video.video_id}")
+        except TargetUnavailable as exc:
+            if str(exc) == "stopped":
+                return
+            self.counters["watch_pages_not_recorded"] += 1
+            self.archive.event("watch_page_not_recorded", video_id=video.video_id, reason=str(exc))
+            return
+        except YouTubeError as exc:
+            self.counters["watch_pages_not_recorded"] += 1
+            self.archive.event("watch_page_not_recorded", video_id=video.video_id, reason=str(exc))
+            return
+        self.counters["watch_pages_recorded"] += 1
+        video.provenance = {**video.provenance, "watch_page_in_warc": url}
+        self.archive.event("watch_page_recorded", video_id=video.video_id, url=url)
 
     def _fetch_into(self, folder: Path, url: str, stem: str, entry: dict) -> Optional[dict]:
         try:
@@ -1914,15 +1946,18 @@ class YouTubeCaptureSession:
                 "web_context": {
                     "warc": "*.warc.gz" if has_warc else None,
                     "meaning": "Optional record of the browser's exchanges while reading the "
-                               "Posts tab. Video streams are never in it: the downloaded files "
-                               "are the objects, the WARC is evidence of presentation.",
+                               "Posts tab and, for each captured video, its watch page as "
+                               "YouTube presented it. Video streams are never in it: the "
+                               "downloaded files are the objects, the WARC is evidence of "
+                               "presentation.",
+                    "watch_pages_recorded": self.counters.get("watch_pages_recorded", 0),
                 },
                 "fixity": "checksums.sha256",
             },
             "replay": {
                 "expected": "partial" if has_warc else "none",
-                "preserves": ["captured page structure", "post text", "post images",
-                              "thumbnails"] if has_warc else [],
+                "preserves": ["captured page structure", "video watch pages as loaded",
+                              "post text", "post images", "thumbnails"] if has_warc else [],
                 "not_expected": ["video streaming playback", "complete interactive comments",
                                  "session-dependent YouTube application behaviour"],
                 "meaning": "A green replay load is not evidence of completeness; the records, "
@@ -1972,12 +2007,14 @@ class YouTubeCaptureSession:
         }
 
 
-def needs_posts_browser(config: YouTubeCaptureConfig) -> bool:
-    """Whether this run will read a Posts tab, which only a channel has.
-
-    The browser is opened up front only then; a video or playlist job
-    opens one on demand, for a sign-in YouTube asks for, and otherwise
-    never, so no empty window sits beside the run."""
+def needs_browser(config: YouTubeCaptureConfig) -> bool:
+    """Whether this run opens the browser up front: to read a Posts tab,
+    which only a channel has, or to load each video's watch page into the
+    WARC the curator asked for. Otherwise a job opens one on demand, for a
+    sign-in YouTube asks for, and never else, so no empty window sits
+    beside the run."""
+    if config.write_warc:
+        return True
     return "posts" in config.surfaces and any(
         parse_youtube_target(url).kind == "channel" for url in config.targets)
 

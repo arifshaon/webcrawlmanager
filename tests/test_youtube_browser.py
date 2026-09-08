@@ -172,6 +172,8 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
         client._context.add_cookies([
             {"name": "SAPISID", "value": "secret-sapisid", "domain": "127.0.0.1", "path": "/"}])
         self.session(client, latest_n=6, include_comments=False).run()   # past the first page
+        from webarc.youtube import YouTubeVideo
+        client.visit_video(YouTubeVideo(video_id="wGA27zJEnaU"))
         warc.close()
 
         requests = []
@@ -186,6 +188,9 @@ class BrowserCollectorTests(BrowserCollectorTestCase):
                         urls.append(record.rec_headers.get_header("WARC-Target-URI"))
                         bodies += record.content_stream().read()
         self.assertTrue(any(u.endswith("/posts") for u in urls))
+        self.assertTrue(any("/watch?v=" in u for u in urls))         # the attached video's page
+        self.assertTrue(any("/thumb/wGA27zJEnaU" in u for u in urls))
+        self.assertFalse(any("/videoplayback" in u for u in urls))     # never the stream
         self.assertTrue(any("/youtubei/v1/browse" in u for u in urls))
         self.assertTrue(any("/img/one=" in u for u in urls))
         self.assertFalse(any(k.lower() in ("cookie", "authorization") for h in requests for k, _ in h))

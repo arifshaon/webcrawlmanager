@@ -639,7 +639,8 @@ Every run writes `youtube-videos.jsonl`/`.csv`, `youtube-posts.jsonl`/`.csv`,
 `youtube-media.json`, `youtube-manifest.json`, `youtube-checkpoint.json`,
 `youtube-events.jsonl`, `checksums.sha256`, `media/`, `evidence/yt-dlp/`,
 `raw/responses/`, `pages/` built from the records, and optionally a WARC
-of the browser's exchanges on the Posts tab. Video streams are never in
+of the browser's exchanges on the Posts tab and on each captured video's
+watch page, loaded as a person would see it. Video streams are never in
 the WARC: the downloaded files are the objects, and the manifest's replay
 statement says what the WARC can and cannot show. Captures of the Posts
 tab were built against YouTube's documented shapes and a fixture; the

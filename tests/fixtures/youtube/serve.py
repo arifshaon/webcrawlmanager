@@ -208,6 +208,12 @@ class Handler(BaseHTTPRequestHandler):
                         [continuation("posts-page-2")]
                 return self._send(self._page("Posts", channel_initial(items), "posts-page-2"))
             return self._send(self._page("Channel", channel_initial([]), None))
+        if parts.path == "/watch":
+            video_id = dict(p.split("=", 1) for p in parts.query.split("&") if "=" in p).get("v", "")
+            extra = (f"<img src='http://MEDIAHOST/thumb/{video_id}'>"
+                     f"<video src='http://MEDIAHOST/videoplayback?id={video_id}' autoplay></video>")
+            return self._send(self._page(f"Watch {video_id}", channel_initial([]), None,
+                                         extra=extra.replace("MEDIAHOST", self.media_host)))
         if segs[:1] == ["@nobody"]:
             return self._send(b"<html><body>This channel doesn\xe2\x80\x99t exist.</body></html>")
         if segs[:1] == ["post"] and len(segs) == 2:

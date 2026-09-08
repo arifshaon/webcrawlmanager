@@ -30,7 +30,8 @@ from .browser import operator_launch_kwargs
 from .config import BrowserConfig
 from .instagram_browser import _PAGE_FETCH_JS
 from .youtube import (CheckpointRequired, LoginRequired, RateLimited, TargetUnavailable,
-                      YouTubeChannel, YouTubeComment, YouTubeError, YouTubePost, YouTubeTarget)
+                      YouTubeChannel, YouTubeComment, YouTubeError, YouTubePost, YouTubeTarget,
+                      YouTubeVideo)
 from .youtube_extract import (channel_from, comments_from, continuation_tokens,
                               describe_youtubei_request, iter_documents, posts_from,
                               read_initial_data)
@@ -41,6 +42,7 @@ _YT_HOSTS = ("youtube.com", "youtu.be")
 _MEDIA_HOST_MARKERS = ("ggpht.com", "ytimg.com", "googleusercontent.com")
 # streams are the downloaded files' business, never the WARC's
 _EXCLUDED_WARC_MARKERS = ("googlevideo.com",)
+_EXCLUDED_WARC_PATHS = ("/videoplayback",)      # the stream itself, wherever it is served from
 _SESSION_COOKIES = ("SAPISID", "__Secure-3PAPISID", "__Secure-3PSID", "SID", "HSID", "SSID",
                     "APISID", "LOGIN_INFO", "__Secure-1PSID")
 
@@ -240,7 +242,8 @@ class YouTubeBrowserClient:
             media_host = netloc in self._media_hosts or any(m in host for m in _MEDIA_HOST_MARKERS)
             if not ours and not media_host:
                 return
-            if any(m in host for m in _EXCLUDED_WARC_MARKERS):
+            if any(m in host for m in _EXCLUDED_WARC_MARKERS) or \
+                    (urlsplit(url).path or "").startswith(_EXCLUDED_WARC_PATHS):
                 return
             request = response.request
             body = b""
@@ -447,6 +450,23 @@ class YouTubeBrowserClient:
     def comments_more(self) -> Optional[bool]:
         tokens = self.observed.tokens_in(self.navigation)
         return bool(tokens) if tokens is not None else None
+
+    def visit_video(self, video: YouTubeVideo) -> str:
+        """Load the video's watch page so the WARC holds it as YouTube
+        presented it: the page, its scripts, thumbnails and the comments
+        it loads. Playback is paused at once; the streams are never
+        recorded, the downloaded file is the object."""
+        url = f"{self.base_url}/watch?v={video.video_id}"
+        self._goto(url)
+        try:
+            self._page.evaluate("() => { for (const v of document.querySelectorAll('video')) "
+                                "{ try { v.pause(); v.muted = true; } catch (_) {} } }")
+        except Exception:
+            pass
+        for _ in range(2):          # far enough down for the comments to be asked for
+            self._scroll()
+        self._check_page_state()
+        return url
 
     def fetch(self, url: str) -> tuple[bytes, str]:
         page_host = (urlsplit(self._page.url or self.base_url).netloc or "").lower() \
