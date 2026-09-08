@@ -17,10 +17,10 @@ The EXE embeds `install-windows.ps1`. During installation it:
 - downloads or updates SWM from the configured GitHub branch;
 - does **not** install Python system-wide;
 - downloads a pinned portable `uv` binary and verifies its published SHA-256;
-- uses `uv` to install a private CPython 3.13 runtime under `<install>/.runtime/python` with no Windows Python-registry registration and no PATH changes;
-- creates `<install>/.venv` from that private runtime;
-- installs SWM and its dashboard dependencies;
+- installs a pinned private CPython 3.13 runtime under `<install>/.runtime/python` with no Windows Python-registry registration and no PATH changes;
+- installs SWM directly into that private interpreter (no `.venv`), including dashboard, Instagram `gallery-dl` listing support, and YouTube `yt-dlp[default,curl-cffi]` support;
 - installs Playwright Chromium under `<install>/.runtime/ms-playwright`;
+- attempts to install `ffmpeg` and Deno through `winget` for full YouTube download/challenge support;
 - checks whether Google Chrome is present for the interactive headed/native recorder, but does not attempt an administrator-level Chrome installation;
 - verifies the SWM CLI;
 - checks the dashboard and replay ports, selecting the next free local port when a preferred port is occupied;
@@ -32,7 +32,7 @@ The Inno installer also creates a Start Menu shortcut and, by default, a desktop
 
 The application must be installable on managed Windows desktops where the user cannot install Python machine-wide. SWM therefore treats Python as an application runtime, not as a system prerequisite. The managed Python files remain inside the selected SWM directory and can be removed with the application files.
 
-The portable bootstrapper is pinned to `uv 0.11.29` for reproducibility. Its Windows x64 archive SHA-256 is checked before extraction. `uv` then downloads its managed CPython distribution from Astral's `python-build-standalone` source.
+The portable bootstrapper is pinned to `uv 0.11.29` for reproducibility. Its Windows x64 archive SHA-256 is checked before extraction. The installer also downloads the pinned CPython 3.13 runtime from Astral's `python-build-standalone` release, verifies its SHA-256, and keeps the complete runtime inside the selected SWM directory.
 
 ## Proper Windows signature
 
@@ -92,8 +92,8 @@ The script refuses to produce an unsigned release by default.
 The build script already performs both checks below, but they can also be run manually:
 
 ```powershell
-signtool verify /pa /all /v .\install\dist\SWM-Setup-0.2.0.exe
-Get-AuthenticodeSignature .\install\dist\SWM-Setup-0.2.0.exe | Format-List *
+signtool verify /pa /all /v .\install\dist\SWM-Setup-0.4.0.exe
+Get-AuthenticodeSignature .\install\dist\SWM-Setup-0.4.0.exe | Format-List *
 ```
 
 For a release, `Get-AuthenticodeSignature` must report `Status : Valid` and `signtool verify` must succeed.
