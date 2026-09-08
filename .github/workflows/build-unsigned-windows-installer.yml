@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -172,10 +172,44 @@ jobs:
             throw 'Testing workflow unexpectedly produced a signed installer.'
           }
 
+      - name: Package checked installer ZIP
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem .\install\dist\SWM-Setup-*.exe | Select-Object -First 1
+          if (-not $exe) { throw 'Verified installer EXE was not found for packaging.' }
+
+          $zipPath = Join-Path (Resolve-Path '.\install').Path ($exe.BaseName + '.zip')
+          if (Test-Path -LiteralPath $zipPath) {
+            Write-Host "Checked package already exists and will not be overwritten: $zipPath"
+          } else {
+            Compress-Archive -LiteralPath $exe.FullName -DestinationPath $zipPath -CompressionLevel Optimal
+            Write-Host "Created checked package: $zipPath"
+          }
+
+      - name: Commit new checked installer ZIP
+        shell: powershell
+        run: |
+          $zip = Get-ChildItem .\install\SWM-Setup-0.5.0.zip -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $zip) { throw 'SWM-Setup-0.5.0.zip was not created.' }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- $zip.FullName
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host '0.5.0 checked installer package already exists; leaving it unchanged.'
+          } else {
+            git commit -m "Add checked SWM 0.5.0 Windows installer [skip ci]"
+            git push origin HEAD:feature/record-session
+          }
+
       - name: Upload unsigned installer
         uses: actions/upload-artifact@v4
         with:
           name: SWM-unsigned-windows-installer
-          path: install/dist/SWM-Setup-*.exe
+          path: |
+            install/dist/SWM-Setup-*.exe
+            install/SWM-Setup-0.5.0.zip
           if-no-files-found: error
           retention-days: 14
