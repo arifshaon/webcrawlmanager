@@ -543,6 +543,7 @@ For offline installation, place all required packages (including build requireme
 function Get-PlaywrightInstallPlan {
     $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
     $output = @(& $PythonExe -m playwright install --dry-run chromium 2>&1)
+
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "Could not obtain Playwright's browser download plan."
         $output | ForEach-Object { Write-Warn $_.ToString() }
@@ -557,14 +558,50 @@ function Get-PlaywrightInstallPlan {
     foreach ($raw in $output) {
         $line = $raw.ToString().Trim()
 
-        # Playwright <=1.57 used:
+        # Playwright <= 1.57:
         #   browser: chromium version ...
-        # Playwright >=1.58 uses headings such as:
+        #
+        # Playwright >= 1.58:
         #   Chrome for Testing 151.0.7922.34 (playwright chromium v1234)
-        # Accept both formats so the manual-download fallback survives
-        # Playwright CLI presentation changes.
+        #
+        # Accept both formats.
         $newName = $null
-        if ($line -match '^browser:\s*(.+?)(?:\s+version\s+.+)?
+
+        if ($line -match '^browser:\s*(.+?)(?:\s+version\s+.+)?$') {
+            $newName = $Matches[1].Trim()
+        }
+        elseif ($line -match '^(.+?)\s+\(playwright\s+([^\s\)]+)\s+v\d+\)$') {
+            $displayName = $Matches[1].Trim()
+            $browserId = $Matches[2].Trim()
+            $newName = "$browserId - $displayName"
+        }
+
+        if ($newName) {
+            if ($currentName -and $currentLocation -and $currentUrl) {
+                $items += [PSCustomObject]@{
+                    Name = $currentName
+                    InstallLocation = $currentLocation
+                    Url = $currentUrl
+                }
+            }
+
+            $currentName = $newName
+            $currentLocation = $null
+            $currentUrl = $null
+            continue
+        }
+
+        if ($line -match '^Install location:\s*(.+)$') {
+            $currentLocation = $Matches[1].Trim()
+            continue
+        }
+
+        if ($line -match '^Download url:\s*(https?://\S+)$') {
+            $currentUrl = $Matches[1].Trim()
+            continue
+        }
+    }
+
     if ($currentName -and $currentLocation -and $currentUrl) {
         $items += [PSCustomObject]@{
             Name = $currentName
@@ -579,6 +616,12 @@ function Get-PlaywrightInstallPlan {
             $unique[$item.InstallLocation] = $item
         }
     }
+
+    if ($unique.Count -eq 0) {
+        Write-Warn "Playwright returned a dry-run plan, but the installer could not parse it."
+        $output | ForEach-Object { Write-Warn $_.ToString() }
+    }
+
     return @($unique.Values)
 }
 
