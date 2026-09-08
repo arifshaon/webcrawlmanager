@@ -14,6 +14,7 @@
 #define AppURL "https://github.com/arifshaon/webcrawlmanager"
 #define BootstrapScript "install-windows.ps1"
 #define BootstrapWrapper "run-bootstrap.ps1"
+#define SourceBundle "SWM-source.zip"
 
 [Setup]
 AppId={{E131A061-383B-4C35-A5DF-B5C944552F10}
@@ -57,6 +58,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 [Files]
 Source: "{#BootstrapScript}"; Flags: dontcopy
 Source: "{#BootstrapWrapper}"; Flags: dontcopy
+Source: "{#SourceBundle}"; Flags: dontcopy
 
 ; The bootstrap creates Start SWM Server.cmd in {app}. These shortcuts are
 ; created after the bootstrap finishes and give the end user a normal
@@ -81,6 +83,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   ScriptPath: String;
   WrapperPath: String;
+  SourceZipPath: String;
   InstallLogPath: String;
   LogText: AnsiString;
   LogTail: String;
@@ -92,6 +95,7 @@ begin
 
   ExtractTemporaryFile('{#BootstrapScript}');
   ExtractTemporaryFile('{#BootstrapWrapper}');
+  ExtractTemporaryFile('{#SourceBundle}');
   ScriptPath := ExpandConstant('{tmp}\{#BootstrapScript}');
   WrapperPath := ExpandConstant('{tmp}\{#BootstrapWrapper}');
   InstallLogPath := ExpandConstant('{app}\install.log');
@@ -100,7 +104,8 @@ begin
             AddQuotes(WrapperPath) +
             ' -BootstrapScript ' + AddQuotes(ScriptPath) +
             ' -InstallDir ' + AddQuotes(ExpandConstant('{app}')) +
-            ' -Branch ' + AddQuotes('{#SourceBranch}');
+            ' -Branch ' + AddQuotes('{#SourceBranch}') +
+            ' -SourceZip ' + AddQuotes(SourceZipPath);
 
   Log('Starting SWM bootstrap wrapper: ' + PowerShellExe() + ' ' + Params);
   Ok := Exec(PowerShellExe(), Params, '', SW_SHOW, ewWaitUntilTerminated,
