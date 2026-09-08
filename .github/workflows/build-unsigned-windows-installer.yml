@@ -44,20 +44,35 @@ jobs:
           if ($text -notmatch '%~dp0\.runtime\\python\\python\.exe') {
             throw 'Generated launchers do not explicitly reference the Python inside the install directory.'
           }
+          if ($wrapperText -notmatch 'SourceZip') {
+            throw 'Bootstrap wrapper does not accept the bundled source archive.'
+          }
 
-          Write-Host 'Installer architecture is self-contained under InstallDir.'
+          Write-Host 'Installer architecture is self-contained and accepts a bundled source snapshot.'
 
       - name: Smoke test self-contained runtime bootstrap
         shell: powershell
         run: |
           $testDir = Join-Path $env:RUNNER_TEMP 'swm-self-contained-test'
-          if (Test-Path $testDir) { Remove-Item $testDir -Recurse -Force }
+          $sourceStage = Join-Path $env:RUNNER_TEMP 'swm-installer-source-stage'
+          $sourceZip = Join-Path $env:RUNNER_TEMP 'SWM-source-test.zip'
+          foreach ($path in @($testDir, $sourceStage, $sourceZip)) {
+            if (Test-Path $path) { Remove-Item $path -Recurse -Force }
+          }
+
+          New-Item -ItemType Directory -Path $sourceStage -Force | Out-Null
+          foreach ($name in @('pyproject.toml', 'README.md', 'LICENSE', 'config.yaml')) {
+            Copy-Item -LiteralPath (Join-Path $PWD $name) -Destination (Join-Path $sourceStage $name) -Force
+          }
+          Copy-Item -LiteralPath (Join-Path $PWD 'webarc') -Destination (Join-Path $sourceStage 'webarc') -Recurse -Force
+          Compress-Archive -Path (Join-Path $sourceStage '*') -DestinationPath $sourceZip -CompressionLevel Optimal
 
           $bootstrapArgs = @(
             '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
             '-File', (Resolve-Path '.\install\install-windows.ps1').Path,
             '-InstallDir', $testDir,
             '-Branch', 'feature/record-session',
+            '-SourceZip', $sourceZip,
             '-DashboardPort', '18080',
             '-ReplayPort', '18091',
             '-Yes'
