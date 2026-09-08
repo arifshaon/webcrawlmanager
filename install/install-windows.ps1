@@ -545,6 +545,7 @@ function Get-PlaywrightInstallPlan {
     $output = @(& $PythonExe -m playwright install --dry-run chromium 2>&1)
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "Could not obtain Playwright's browser download plan."
+        $output | ForEach-Object { Write-Warn $_.ToString() }
         return @()
     }
 
@@ -555,7 +556,627 @@ function Get-PlaywrightInstallPlan {
 
     foreach ($raw in $output) {
         $line = $raw.ToString().Trim()
-        if ($line -match '^browser:\s*(.+?)(?:\s+version\s+.+)?$') {
+
+        # Playwright <=1.57 used:
+        #   browser: chromium version ...
+        # Playwright >=1.58 uses headings such as:
+        #   Chrome for Testing 151.0.7922.34 (playwright chromium v1234)
+        # Accept both formats so the manual-download fallback survives
+        # Playwright CLI presentation changes.
+        $newName = $null
+        if ($line -match '^browser:\s*(.+?)(?:\s+version\s+.+)?
+    if ($currentName -and $currentLocation -and $currentUrl) {
+        $items += [PSCustomObject]@{
+            Name = $currentName
+            InstallLocation = $currentLocation
+            Url = $currentUrl
+        }
+    }
+
+    $unique = @{}
+    foreach ($item in $items) {
+        if (-not $unique.ContainsKey($item.InstallLocation)) {
+            $unique[$item.InstallLocation] = $item
+        }
+    }
+    return @($unique.Values)
+}
+
+function Test-PlaywrightComponentArchive {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$InstallLocation
+    )
+
+    $pattern = $null
+    if ($Name -match 'chromium-headless-shell') {
+        $pattern = 'chrome-headless-shell.exe'
+    } elseif ($Name -match '^chromium') {
+        $pattern = 'chrome.exe'
+    } elseif ($Name -match '^ffmpeg') {
+        $pattern = 'ffmpeg*.exe'
+    } elseif ($Name -match '^winldd') {
+        $pattern = 'PrintDeps.exe'
+    }
+
+    if (-not $pattern) {
+        return $true
+    }
+
+    return $null -ne (Get-ChildItem -LiteralPath $InstallLocation -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+function Install-ManualPlaywrightComponent {
+    param([Parameter(Mandatory=$true)]$PlanItem)
+
+    $name = $PlanItem.Name
+    $url = $PlanItem.Url
+    $target = $PlanItem.InstallLocation
+    $marker = Join-Path $target "INSTALLATION_COMPLETE"
+
+    if (Test-Path -LiteralPath $marker) {
+        Write-Ok "Playwright component already present: $name"
+        return
+    }
+
+    while ($true) {
+        $choice = Show-DownloadChoice -Name "Playwright $name" -Url $url -Reason "Playwright could not download this browser component automatically."
+        if ($choice -eq "Abort") {
+            throw "Installation aborted by the user while obtaining Playwright $name."
+        }
+        if ($choice -eq "Retry") {
+            throw [System.OperationCanceledException]::new("RETRY_PLAYWRIGHT_AUTOMATIC")
+        }
+
+        $selected = Select-DownloadedFile -Name "Playwright $name" -Url $url -Filter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
+        if (-not $selected) {
+            Write-Warn "No file was selected for Playwright $name."
+            continue
+        }
+
+        try {
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Expand-Archive -LiteralPath $selected -DestinationPath $target -Force
+
+            if (-not (Test-PlaywrightComponentArchive -Name $name -InstallLocation $target)) {
+                throw "The selected archive does not contain the expected executable for Playwright $name."
+            }
+
+            New-Item -ItemType File -Path $marker -Force | Out-Null
+            Write-Ok "Installed manually downloaded Playwright component: $name"
+            return
+        } catch {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Warn $_.Exception.Message
+        }
+    }
+}
+
+function Test-PlaywrightChromiumLaunch {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    & $PythonExe -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop()"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-PlaywrightChromium {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    while ($true) {
+        try {
+            Invoke-External -Exe $PythonExe -ArgumentList @(
+                "-m", "playwright", "install", "chromium"
+            ) -Description "Installing Playwright Chromium inside the SWM installation"
+            return
+        } catch {
+            $reason = $_.Exception.Message
+            if ($NonInteractive) {
+                throw
+            }
+
+            $plan = @(Get-PlaywrightInstallPlan)
+            if (-not $plan -or $plan.Count -eq 0) {
+                throw "Playwright Chromium download failed, and the installer could not determine the browser download URLs. $reason"
+            }
+
+            $first = $plan | Select-Object -First 1
+            $choice = Show-DownloadChoice -Name "Playwright Chromium browser" -Url $first.Url -Reason $reason
+            if ($choice -eq "Abort") {
+                throw "Installation aborted by the user while installing Playwright Chromium."
+            }
+            if ($choice -eq "Retry") {
+                continue
+            }
+
+            $retryAutomatic = $false
+            foreach ($item in $plan) {
+                $marker = Join-Path $item.InstallLocation "INSTALLATION_COMPLETE"
+                if (Test-Path -LiteralPath $marker) {
+                    continue
+                }
+                try {
+                    Install-ManualPlaywrightComponent -PlanItem $item
+                } catch [System.OperationCanceledException] {
+                    if ($_.Exception.Message -eq "RETRY_PLAYWRIGHT_AUTOMATIC") {
+                        $retryAutomatic = $true
+                        break
+                    }
+                    throw
+                }
+            }
+
+            if ($retryAutomatic) {
+                continue
+            }
+
+            if (-not (Test-PlaywrightChromiumLaunch)) {
+                throw "The manually supplied Playwright browser files were placed in $PlaywrightDir, but Chromium could not be launched."
+            }
+
+            Write-Ok "Manually supplied Playwright Chromium files were verified."
+            return
+        }
+    }
+}
+
+function Install-SwmIntoLocalPython([string]$TargetDir) {
+    New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $PlaywrightDir -Force | Out-Null
+
+    $env:UV_CACHE_DIR = $UvCacheDir
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    Install-SwmPythonPackages -TargetDir $TargetDir
+    Install-PlaywrightChromium
+}
+
+function Test-PortAvailable([int]$Port) {
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+function Find-FreePort([int]$StartPort) {
+    for ($port = $StartPort; $port -lt ($StartPort + 100); $port++) {
+        if (Test-PortAvailable $port) { return $port }
+    }
+    return $null
+}
+
+function Resolve-Port([string]$Name, [int]$PreferredPort) {
+    if (Test-PortAvailable $PreferredPort) {
+        Write-Ok "$Name port $PreferredPort is free on 127.0.0.1."
+        return $PreferredPort
+    }
+
+    $next = Find-FreePort ($PreferredPort + 1)
+    if (-not $next) {
+        throw "No free $Name port was found between $($PreferredPort + 1) and $($PreferredPort + 99)."
+    }
+    Write-Info "$Name port $PreferredPort is busy; using $next instead."
+    return $next
+}
+
+function Write-Launchers([string]$TargetDir, [int]$ServerPort) {
+    $cliLauncher = Join-Path $TargetDir "swm.cmd"
+    @'
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  exit /b 1
+)
+"%SWM_PYTHON%" -m webarc.cli %*
+exit /b %ERRORLEVEL%
+'@ | Set-Content -LiteralPath $cliLauncher -Encoding ASCII
+
+    $serverLauncher = Join-Path $TargetDir "Start SWM Server.cmd"
+    $serverText = @"
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+set "SWM_PORT=$ServerPort"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  pause
+  exit /b 1
+)
+echo Starting Simple Webcrawl Manager on http://127.0.0.1:%SWM_PORT%
+start "SWM Server" /D "%~dp0" "%SWM_PYTHON%" -m webarc.cli serve --host 127.0.0.1 --port %SWM_PORT%
+timeout /t 2 /nobreak >nul
+start "" "http://127.0.0.1:%SWM_PORT%"
+endlocal
+"@
+    $serverText | Set-Content -LiteralPath $serverLauncher -Encoding ASCII
+
+    Set-Content -LiteralPath (Join-Path $TargetDir "server-port.txt") -Value $ServerPort -Encoding ASCII
+    Write-Ok "Created local-runtime server launcher: $serverLauncher"
+}
+
+try {
+    Write-Host "Simple Webcrawl Manager (SWM) - Windows Installer" -ForegroundColor White
+    Write-Host "Branch: $Branch"
+    Write-Host "Install directory: $InstallDir"
+    Write-Host "Local Python: $PythonExe"
+    Write-Host "Download fallback: retry / manual file selection / abort"
+
+    Write-Step "1. Download / update SWM"
+    Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
+        throw "pyproject.toml is missing after source download."
+    }
+    Write-Ok "SWM source is ready at $InstallDir."
+
+    Write-Step "2. Install local runtime"
+    New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+    Install-PortableUv
+    Install-LocalPython
+    Install-SwmIntoLocalPython -TargetDir $InstallDir
+
+    Write-Step "3. Verify local SWM runtime"
+    $version = Get-LocalPythonVersion -ExePath $PythonExe
+    if (-not $version) {
+        throw "Local SWM Python verification failed."
+    }
+
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    Invoke-External -Exe $PythonExe -ArgumentList @("-m", "webarc.cli", "--help") -Description "Running SWM CLI smoke test with local Python"
+    Write-Ok "SWM is running from local Python $version at $PythonExe."
+
+    Write-Step "4. Check local ports"
+    $actualDashboardPort = Resolve-Port -Name "Dashboard" -PreferredPort $DashboardPort
+    $actualReplayPort = Resolve-Port -Name "Replay" -PreferredPort $ReplayPort
+
+    Write-Step "5. Create launchers"
+    Write-Launchers -TargetDir $InstallDir -ServerPort $actualDashboardPort
+
+    Write-Step "Installation complete"
+    Write-Host "Installed to: $InstallDir" -ForegroundColor Green
+    Write-Host "Local Python: $PythonExe" -ForegroundColor Green
+    Write-Host "Playwright: $PlaywrightDir"
+    Write-Host ""
+    Write-Host "Start SWM by double-clicking:"
+    Write-Host "  $InstallDir\Start SWM Server.cmd" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Dashboard: http://127.0.0.1:$actualDashboardPort"
+    Write-Host "Replay default port: $actualReplayPort"
+    exit 0
+} catch {
+    Write-Host ""
+    Write-Host "INSTALLATION FAILED" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Expected local Python location: $PythonExe"
+    Write-Host "Nothing under a separate system or LocalAppData runtime is required."
+    exit 1
+}
+) {
+            $newName = $Matches[1].Trim()
+        } elseif ($line -match '^(.+?)\s+\(playwright\s+([^\s\)]+)\s+v\d+\)
+    if ($currentName -and $currentLocation -and $currentUrl) {
+        $items += [PSCustomObject]@{
+            Name = $currentName
+            InstallLocation = $currentLocation
+            Url = $currentUrl
+        }
+    }
+
+    $unique = @{}
+    foreach ($item in $items) {
+        if (-not $unique.ContainsKey($item.InstallLocation)) {
+            $unique[$item.InstallLocation] = $item
+        }
+    }
+    return @($unique.Values)
+}
+
+function Test-PlaywrightComponentArchive {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$InstallLocation
+    )
+
+    $pattern = $null
+    if ($Name -match 'chromium-headless-shell') {
+        $pattern = 'chrome-headless-shell.exe'
+    } elseif ($Name -match '^chromium') {
+        $pattern = 'chrome.exe'
+    } elseif ($Name -match '^ffmpeg') {
+        $pattern = 'ffmpeg*.exe'
+    } elseif ($Name -match '^winldd') {
+        $pattern = 'PrintDeps.exe'
+    }
+
+    if (-not $pattern) {
+        return $true
+    }
+
+    return $null -ne (Get-ChildItem -LiteralPath $InstallLocation -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+function Install-ManualPlaywrightComponent {
+    param([Parameter(Mandatory=$true)]$PlanItem)
+
+    $name = $PlanItem.Name
+    $url = $PlanItem.Url
+    $target = $PlanItem.InstallLocation
+    $marker = Join-Path $target "INSTALLATION_COMPLETE"
+
+    if (Test-Path -LiteralPath $marker) {
+        Write-Ok "Playwright component already present: $name"
+        return
+    }
+
+    while ($true) {
+        $choice = Show-DownloadChoice -Name "Playwright $name" -Url $url -Reason "Playwright could not download this browser component automatically."
+        if ($choice -eq "Abort") {
+            throw "Installation aborted by the user while obtaining Playwright $name."
+        }
+        if ($choice -eq "Retry") {
+            throw [System.OperationCanceledException]::new("RETRY_PLAYWRIGHT_AUTOMATIC")
+        }
+
+        $selected = Select-DownloadedFile -Name "Playwright $name" -Url $url -Filter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
+        if (-not $selected) {
+            Write-Warn "No file was selected for Playwright $name."
+            continue
+        }
+
+        try {
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Expand-Archive -LiteralPath $selected -DestinationPath $target -Force
+
+            if (-not (Test-PlaywrightComponentArchive -Name $name -InstallLocation $target)) {
+                throw "The selected archive does not contain the expected executable for Playwright $name."
+            }
+
+            New-Item -ItemType File -Path $marker -Force | Out-Null
+            Write-Ok "Installed manually downloaded Playwright component: $name"
+            return
+        } catch {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Warn $_.Exception.Message
+        }
+    }
+}
+
+function Test-PlaywrightChromiumLaunch {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    & $PythonExe -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop()"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-PlaywrightChromium {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    while ($true) {
+        try {
+            Invoke-External -Exe $PythonExe -ArgumentList @(
+                "-m", "playwright", "install", "chromium"
+            ) -Description "Installing Playwright Chromium inside the SWM installation"
+            return
+        } catch {
+            $reason = $_.Exception.Message
+            if ($NonInteractive) {
+                throw
+            }
+
+            $plan = @(Get-PlaywrightInstallPlan)
+            if (-not $plan -or $plan.Count -eq 0) {
+                throw "Playwright Chromium download failed, and the installer could not determine the browser download URLs. $reason"
+            }
+
+            $first = $plan | Select-Object -First 1
+            $choice = Show-DownloadChoice -Name "Playwright Chromium browser" -Url $first.Url -Reason $reason
+            if ($choice -eq "Abort") {
+                throw "Installation aborted by the user while installing Playwright Chromium."
+            }
+            if ($choice -eq "Retry") {
+                continue
+            }
+
+            $retryAutomatic = $false
+            foreach ($item in $plan) {
+                $marker = Join-Path $item.InstallLocation "INSTALLATION_COMPLETE"
+                if (Test-Path -LiteralPath $marker) {
+                    continue
+                }
+                try {
+                    Install-ManualPlaywrightComponent -PlanItem $item
+                } catch [System.OperationCanceledException] {
+                    if ($_.Exception.Message -eq "RETRY_PLAYWRIGHT_AUTOMATIC") {
+                        $retryAutomatic = $true
+                        break
+                    }
+                    throw
+                }
+            }
+
+            if ($retryAutomatic) {
+                continue
+            }
+
+            if (-not (Test-PlaywrightChromiumLaunch)) {
+                throw "The manually supplied Playwright browser files were placed in $PlaywrightDir, but Chromium could not be launched."
+            }
+
+            Write-Ok "Manually supplied Playwright Chromium files were verified."
+            return
+        }
+    }
+}
+
+function Install-SwmIntoLocalPython([string]$TargetDir) {
+    New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $PlaywrightDir -Force | Out-Null
+
+    $env:UV_CACHE_DIR = $UvCacheDir
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    Install-SwmPythonPackages -TargetDir $TargetDir
+    Install-PlaywrightChromium
+}
+
+function Test-PortAvailable([int]$Port) {
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+function Find-FreePort([int]$StartPort) {
+    for ($port = $StartPort; $port -lt ($StartPort + 100); $port++) {
+        if (Test-PortAvailable $port) { return $port }
+    }
+    return $null
+}
+
+function Resolve-Port([string]$Name, [int]$PreferredPort) {
+    if (Test-PortAvailable $PreferredPort) {
+        Write-Ok "$Name port $PreferredPort is free on 127.0.0.1."
+        return $PreferredPort
+    }
+
+    $next = Find-FreePort ($PreferredPort + 1)
+    if (-not $next) {
+        throw "No free $Name port was found between $($PreferredPort + 1) and $($PreferredPort + 99)."
+    }
+    Write-Info "$Name port $PreferredPort is busy; using $next instead."
+    return $next
+}
+
+function Write-Launchers([string]$TargetDir, [int]$ServerPort) {
+    $cliLauncher = Join-Path $TargetDir "swm.cmd"
+    @'
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  exit /b 1
+)
+"%SWM_PYTHON%" -m webarc.cli %*
+exit /b %ERRORLEVEL%
+'@ | Set-Content -LiteralPath $cliLauncher -Encoding ASCII
+
+    $serverLauncher = Join-Path $TargetDir "Start SWM Server.cmd"
+    $serverText = @"
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+set "SWM_PORT=$ServerPort"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  pause
+  exit /b 1
+)
+echo Starting Simple Webcrawl Manager on http://127.0.0.1:%SWM_PORT%
+start "SWM Server" /D "%~dp0" "%SWM_PYTHON%" -m webarc.cli serve --host 127.0.0.1 --port %SWM_PORT%
+timeout /t 2 /nobreak >nul
+start "" "http://127.0.0.1:%SWM_PORT%"
+endlocal
+"@
+    $serverText | Set-Content -LiteralPath $serverLauncher -Encoding ASCII
+
+    Set-Content -LiteralPath (Join-Path $TargetDir "server-port.txt") -Value $ServerPort -Encoding ASCII
+    Write-Ok "Created local-runtime server launcher: $serverLauncher"
+}
+
+try {
+    Write-Host "Simple Webcrawl Manager (SWM) - Windows Installer" -ForegroundColor White
+    Write-Host "Branch: $Branch"
+    Write-Host "Install directory: $InstallDir"
+    Write-Host "Local Python: $PythonExe"
+    Write-Host "Download fallback: retry / manual file selection / abort"
+
+    Write-Step "1. Download / update SWM"
+    Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
+        throw "pyproject.toml is missing after source download."
+    }
+    Write-Ok "SWM source is ready at $InstallDir."
+
+    Write-Step "2. Install local runtime"
+    New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+    Install-PortableUv
+    Install-LocalPython
+    Install-SwmIntoLocalPython -TargetDir $InstallDir
+
+    Write-Step "3. Verify local SWM runtime"
+    $version = Get-LocalPythonVersion -ExePath $PythonExe
+    if (-not $version) {
+        throw "Local SWM Python verification failed."
+    }
+
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    Invoke-External -Exe $PythonExe -ArgumentList @("-m", "webarc.cli", "--help") -Description "Running SWM CLI smoke test with local Python"
+    Write-Ok "SWM is running from local Python $version at $PythonExe."
+
+    Write-Step "4. Check local ports"
+    $actualDashboardPort = Resolve-Port -Name "Dashboard" -PreferredPort $DashboardPort
+    $actualReplayPort = Resolve-Port -Name "Replay" -PreferredPort $ReplayPort
+
+    Write-Step "5. Create launchers"
+    Write-Launchers -TargetDir $InstallDir -ServerPort $actualDashboardPort
+
+    Write-Step "Installation complete"
+    Write-Host "Installed to: $InstallDir" -ForegroundColor Green
+    Write-Host "Local Python: $PythonExe" -ForegroundColor Green
+    Write-Host "Playwright: $PlaywrightDir"
+    Write-Host ""
+    Write-Host "Start SWM by double-clicking:"
+    Write-Host "  $InstallDir\Start SWM Server.cmd" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Dashboard: http://127.0.0.1:$actualDashboardPort"
+    Write-Host "Replay default port: $actualReplayPort"
+    exit 0
+} catch {
+    Write-Host ""
+    Write-Host "INSTALLATION FAILED" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Expected local Python location: $PythonExe"
+    Write-Host "Nothing under a separate system or LocalAppData runtime is required."
+    exit 1
+}
+) {
+            $displayName = $Matches[1].Trim()
+            $browserId = $Matches[2].Trim()
+            $newName = "$browserId - $displayName"
+        }
+
+        if ($newName) {
             if ($currentName -and $currentLocation -and $currentUrl) {
                 $items += [PSCustomObject]@{
                     Name = $currentName
@@ -563,16 +1184,621 @@ function Get-PlaywrightInstallPlan {
                     Url = $currentUrl
                 }
             }
-            $currentName = $Matches[1].Trim()
+            $currentName = $newName
             $currentLocation = $null
             $currentUrl = $null
             continue
         }
-        if ($line -match '^Install location:\s*(.+)$') {
+
+        if ($line -match '^Install location:\s*(.+)
+    if ($currentName -and $currentLocation -and $currentUrl) {
+        $items += [PSCustomObject]@{
+            Name = $currentName
+            InstallLocation = $currentLocation
+            Url = $currentUrl
+        }
+    }
+
+    $unique = @{}
+    foreach ($item in $items) {
+        if (-not $unique.ContainsKey($item.InstallLocation)) {
+            $unique[$item.InstallLocation] = $item
+        }
+    }
+    return @($unique.Values)
+}
+
+function Test-PlaywrightComponentArchive {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$InstallLocation
+    )
+
+    $pattern = $null
+    if ($Name -match 'chromium-headless-shell') {
+        $pattern = 'chrome-headless-shell.exe'
+    } elseif ($Name -match '^chromium') {
+        $pattern = 'chrome.exe'
+    } elseif ($Name -match '^ffmpeg') {
+        $pattern = 'ffmpeg*.exe'
+    } elseif ($Name -match '^winldd') {
+        $pattern = 'PrintDeps.exe'
+    }
+
+    if (-not $pattern) {
+        return $true
+    }
+
+    return $null -ne (Get-ChildItem -LiteralPath $InstallLocation -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+function Install-ManualPlaywrightComponent {
+    param([Parameter(Mandatory=$true)]$PlanItem)
+
+    $name = $PlanItem.Name
+    $url = $PlanItem.Url
+    $target = $PlanItem.InstallLocation
+    $marker = Join-Path $target "INSTALLATION_COMPLETE"
+
+    if (Test-Path -LiteralPath $marker) {
+        Write-Ok "Playwright component already present: $name"
+        return
+    }
+
+    while ($true) {
+        $choice = Show-DownloadChoice -Name "Playwright $name" -Url $url -Reason "Playwright could not download this browser component automatically."
+        if ($choice -eq "Abort") {
+            throw "Installation aborted by the user while obtaining Playwright $name."
+        }
+        if ($choice -eq "Retry") {
+            throw [System.OperationCanceledException]::new("RETRY_PLAYWRIGHT_AUTOMATIC")
+        }
+
+        $selected = Select-DownloadedFile -Name "Playwright $name" -Url $url -Filter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
+        if (-not $selected) {
+            Write-Warn "No file was selected for Playwright $name."
+            continue
+        }
+
+        try {
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Expand-Archive -LiteralPath $selected -DestinationPath $target -Force
+
+            if (-not (Test-PlaywrightComponentArchive -Name $name -InstallLocation $target)) {
+                throw "The selected archive does not contain the expected executable for Playwright $name."
+            }
+
+            New-Item -ItemType File -Path $marker -Force | Out-Null
+            Write-Ok "Installed manually downloaded Playwright component: $name"
+            return
+        } catch {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Warn $_.Exception.Message
+        }
+    }
+}
+
+function Test-PlaywrightChromiumLaunch {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    & $PythonExe -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop()"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-PlaywrightChromium {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    while ($true) {
+        try {
+            Invoke-External -Exe $PythonExe -ArgumentList @(
+                "-m", "playwright", "install", "chromium"
+            ) -Description "Installing Playwright Chromium inside the SWM installation"
+            return
+        } catch {
+            $reason = $_.Exception.Message
+            if ($NonInteractive) {
+                throw
+            }
+
+            $plan = @(Get-PlaywrightInstallPlan)
+            if (-not $plan -or $plan.Count -eq 0) {
+                throw "Playwright Chromium download failed, and the installer could not determine the browser download URLs. $reason"
+            }
+
+            $first = $plan | Select-Object -First 1
+            $choice = Show-DownloadChoice -Name "Playwright Chromium browser" -Url $first.Url -Reason $reason
+            if ($choice -eq "Abort") {
+                throw "Installation aborted by the user while installing Playwright Chromium."
+            }
+            if ($choice -eq "Retry") {
+                continue
+            }
+
+            $retryAutomatic = $false
+            foreach ($item in $plan) {
+                $marker = Join-Path $item.InstallLocation "INSTALLATION_COMPLETE"
+                if (Test-Path -LiteralPath $marker) {
+                    continue
+                }
+                try {
+                    Install-ManualPlaywrightComponent -PlanItem $item
+                } catch [System.OperationCanceledException] {
+                    if ($_.Exception.Message -eq "RETRY_PLAYWRIGHT_AUTOMATIC") {
+                        $retryAutomatic = $true
+                        break
+                    }
+                    throw
+                }
+            }
+
+            if ($retryAutomatic) {
+                continue
+            }
+
+            if (-not (Test-PlaywrightChromiumLaunch)) {
+                throw "The manually supplied Playwright browser files were placed in $PlaywrightDir, but Chromium could not be launched."
+            }
+
+            Write-Ok "Manually supplied Playwright Chromium files were verified."
+            return
+        }
+    }
+}
+
+function Install-SwmIntoLocalPython([string]$TargetDir) {
+    New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $PlaywrightDir -Force | Out-Null
+
+    $env:UV_CACHE_DIR = $UvCacheDir
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    Install-SwmPythonPackages -TargetDir $TargetDir
+    Install-PlaywrightChromium
+}
+
+function Test-PortAvailable([int]$Port) {
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+function Find-FreePort([int]$StartPort) {
+    for ($port = $StartPort; $port -lt ($StartPort + 100); $port++) {
+        if (Test-PortAvailable $port) { return $port }
+    }
+    return $null
+}
+
+function Resolve-Port([string]$Name, [int]$PreferredPort) {
+    if (Test-PortAvailable $PreferredPort) {
+        Write-Ok "$Name port $PreferredPort is free on 127.0.0.1."
+        return $PreferredPort
+    }
+
+    $next = Find-FreePort ($PreferredPort + 1)
+    if (-not $next) {
+        throw "No free $Name port was found between $($PreferredPort + 1) and $($PreferredPort + 99)."
+    }
+    Write-Info "$Name port $PreferredPort is busy; using $next instead."
+    return $next
+}
+
+function Write-Launchers([string]$TargetDir, [int]$ServerPort) {
+    $cliLauncher = Join-Path $TargetDir "swm.cmd"
+    @'
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  exit /b 1
+)
+"%SWM_PYTHON%" -m webarc.cli %*
+exit /b %ERRORLEVEL%
+'@ | Set-Content -LiteralPath $cliLauncher -Encoding ASCII
+
+    $serverLauncher = Join-Path $TargetDir "Start SWM Server.cmd"
+    $serverText = @"
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+set "SWM_PORT=$ServerPort"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  pause
+  exit /b 1
+)
+echo Starting Simple Webcrawl Manager on http://127.0.0.1:%SWM_PORT%
+start "SWM Server" /D "%~dp0" "%SWM_PYTHON%" -m webarc.cli serve --host 127.0.0.1 --port %SWM_PORT%
+timeout /t 2 /nobreak >nul
+start "" "http://127.0.0.1:%SWM_PORT%"
+endlocal
+"@
+    $serverText | Set-Content -LiteralPath $serverLauncher -Encoding ASCII
+
+    Set-Content -LiteralPath (Join-Path $TargetDir "server-port.txt") -Value $ServerPort -Encoding ASCII
+    Write-Ok "Created local-runtime server launcher: $serverLauncher"
+}
+
+try {
+    Write-Host "Simple Webcrawl Manager (SWM) - Windows Installer" -ForegroundColor White
+    Write-Host "Branch: $Branch"
+    Write-Host "Install directory: $InstallDir"
+    Write-Host "Local Python: $PythonExe"
+    Write-Host "Download fallback: retry / manual file selection / abort"
+
+    Write-Step "1. Download / update SWM"
+    Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
+        throw "pyproject.toml is missing after source download."
+    }
+    Write-Ok "SWM source is ready at $InstallDir."
+
+    Write-Step "2. Install local runtime"
+    New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+    Install-PortableUv
+    Install-LocalPython
+    Install-SwmIntoLocalPython -TargetDir $InstallDir
+
+    Write-Step "3. Verify local SWM runtime"
+    $version = Get-LocalPythonVersion -ExePath $PythonExe
+    if (-not $version) {
+        throw "Local SWM Python verification failed."
+    }
+
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    Invoke-External -Exe $PythonExe -ArgumentList @("-m", "webarc.cli", "--help") -Description "Running SWM CLI smoke test with local Python"
+    Write-Ok "SWM is running from local Python $version at $PythonExe."
+
+    Write-Step "4. Check local ports"
+    $actualDashboardPort = Resolve-Port -Name "Dashboard" -PreferredPort $DashboardPort
+    $actualReplayPort = Resolve-Port -Name "Replay" -PreferredPort $ReplayPort
+
+    Write-Step "5. Create launchers"
+    Write-Launchers -TargetDir $InstallDir -ServerPort $actualDashboardPort
+
+    Write-Step "Installation complete"
+    Write-Host "Installed to: $InstallDir" -ForegroundColor Green
+    Write-Host "Local Python: $PythonExe" -ForegroundColor Green
+    Write-Host "Playwright: $PlaywrightDir"
+    Write-Host ""
+    Write-Host "Start SWM by double-clicking:"
+    Write-Host "  $InstallDir\Start SWM Server.cmd" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Dashboard: http://127.0.0.1:$actualDashboardPort"
+    Write-Host "Replay default port: $actualReplayPort"
+    exit 0
+} catch {
+    Write-Host ""
+    Write-Host "INSTALLATION FAILED" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Expected local Python location: $PythonExe"
+    Write-Host "Nothing under a separate system or LocalAppData runtime is required."
+    exit 1
+}
+) {
             $currentLocation = $Matches[1].Trim()
             continue
         }
-        if ($line -match '^Download url:\s*(https?://\S+)$') {
+        if ($line -match '^Download url:\s*(https?://\S+)
+    if ($currentName -and $currentLocation -and $currentUrl) {
+        $items += [PSCustomObject]@{
+            Name = $currentName
+            InstallLocation = $currentLocation
+            Url = $currentUrl
+        }
+    }
+
+    $unique = @{}
+    foreach ($item in $items) {
+        if (-not $unique.ContainsKey($item.InstallLocation)) {
+            $unique[$item.InstallLocation] = $item
+        }
+    }
+    return @($unique.Values)
+}
+
+function Test-PlaywrightComponentArchive {
+    param(
+        [Parameter(Mandatory=$true)][string]$Name,
+        [Parameter(Mandatory=$true)][string]$InstallLocation
+    )
+
+    $pattern = $null
+    if ($Name -match 'chromium-headless-shell') {
+        $pattern = 'chrome-headless-shell.exe'
+    } elseif ($Name -match '^chromium') {
+        $pattern = 'chrome.exe'
+    } elseif ($Name -match '^ffmpeg') {
+        $pattern = 'ffmpeg*.exe'
+    } elseif ($Name -match '^winldd') {
+        $pattern = 'PrintDeps.exe'
+    }
+
+    if (-not $pattern) {
+        return $true
+    }
+
+    return $null -ne (Get-ChildItem -LiteralPath $InstallLocation -Filter $pattern -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1)
+}
+
+function Install-ManualPlaywrightComponent {
+    param([Parameter(Mandatory=$true)]$PlanItem)
+
+    $name = $PlanItem.Name
+    $url = $PlanItem.Url
+    $target = $PlanItem.InstallLocation
+    $marker = Join-Path $target "INSTALLATION_COMPLETE"
+
+    if (Test-Path -LiteralPath $marker) {
+        Write-Ok "Playwright component already present: $name"
+        return
+    }
+
+    while ($true) {
+        $choice = Show-DownloadChoice -Name "Playwright $name" -Url $url -Reason "Playwright could not download this browser component automatically."
+        if ($choice -eq "Abort") {
+            throw "Installation aborted by the user while obtaining Playwright $name."
+        }
+        if ($choice -eq "Retry") {
+            throw [System.OperationCanceledException]::new("RETRY_PLAYWRIGHT_AUTOMATIC")
+        }
+
+        $selected = Select-DownloadedFile -Name "Playwright $name" -Url $url -Filter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
+        if (-not $selected) {
+            Write-Warn "No file was selected for Playwright $name."
+            continue
+        }
+
+        try {
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $target -Force | Out-Null
+            Expand-Archive -LiteralPath $selected -DestinationPath $target -Force
+
+            if (-not (Test-PlaywrightComponentArchive -Name $name -InstallLocation $target)) {
+                throw "The selected archive does not contain the expected executable for Playwright $name."
+            }
+
+            New-Item -ItemType File -Path $marker -Force | Out-Null
+            Write-Ok "Installed manually downloaded Playwright component: $name"
+            return
+        } catch {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Warn $_.Exception.Message
+        }
+    }
+}
+
+function Test-PlaywrightChromiumLaunch {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    & $PythonExe -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop()"
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Install-PlaywrightChromium {
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    while ($true) {
+        try {
+            Invoke-External -Exe $PythonExe -ArgumentList @(
+                "-m", "playwright", "install", "chromium"
+            ) -Description "Installing Playwright Chromium inside the SWM installation"
+            return
+        } catch {
+            $reason = $_.Exception.Message
+            if ($NonInteractive) {
+                throw
+            }
+
+            $plan = @(Get-PlaywrightInstallPlan)
+            if (-not $plan -or $plan.Count -eq 0) {
+                throw "Playwright Chromium download failed, and the installer could not determine the browser download URLs. $reason"
+            }
+
+            $first = $plan | Select-Object -First 1
+            $choice = Show-DownloadChoice -Name "Playwright Chromium browser" -Url $first.Url -Reason $reason
+            if ($choice -eq "Abort") {
+                throw "Installation aborted by the user while installing Playwright Chromium."
+            }
+            if ($choice -eq "Retry") {
+                continue
+            }
+
+            $retryAutomatic = $false
+            foreach ($item in $plan) {
+                $marker = Join-Path $item.InstallLocation "INSTALLATION_COMPLETE"
+                if (Test-Path -LiteralPath $marker) {
+                    continue
+                }
+                try {
+                    Install-ManualPlaywrightComponent -PlanItem $item
+                } catch [System.OperationCanceledException] {
+                    if ($_.Exception.Message -eq "RETRY_PLAYWRIGHT_AUTOMATIC") {
+                        $retryAutomatic = $true
+                        break
+                    }
+                    throw
+                }
+            }
+
+            if ($retryAutomatic) {
+                continue
+            }
+
+            if (-not (Test-PlaywrightChromiumLaunch)) {
+                throw "The manually supplied Playwright browser files were placed in $PlaywrightDir, but Chromium could not be launched."
+            }
+
+            Write-Ok "Manually supplied Playwright Chromium files were verified."
+            return
+        }
+    }
+}
+
+function Install-SwmIntoLocalPython([string]$TargetDir) {
+    New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $PlaywrightDir -Force | Out-Null
+
+    $env:UV_CACHE_DIR = $UvCacheDir
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+
+    Install-SwmPythonPackages -TargetDir $TargetDir
+    Install-PlaywrightChromium
+}
+
+function Test-PortAvailable([int]$Port) {
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $Port)
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+function Find-FreePort([int]$StartPort) {
+    for ($port = $StartPort; $port -lt ($StartPort + 100); $port++) {
+        if (Test-PortAvailable $port) { return $port }
+    }
+    return $null
+}
+
+function Resolve-Port([string]$Name, [int]$PreferredPort) {
+    if (Test-PortAvailable $PreferredPort) {
+        Write-Ok "$Name port $PreferredPort is free on 127.0.0.1."
+        return $PreferredPort
+    }
+
+    $next = Find-FreePort ($PreferredPort + 1)
+    if (-not $next) {
+        throw "No free $Name port was found between $($PreferredPort + 1) and $($PreferredPort + 99)."
+    }
+    Write-Info "$Name port $PreferredPort is busy; using $next instead."
+    return $next
+}
+
+function Write-Launchers([string]$TargetDir, [int]$ServerPort) {
+    $cliLauncher = Join-Path $TargetDir "swm.cmd"
+    @'
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  exit /b 1
+)
+"%SWM_PYTHON%" -m webarc.cli %*
+exit /b %ERRORLEVEL%
+'@ | Set-Content -LiteralPath $cliLauncher -Encoding ASCII
+
+    $serverLauncher = Join-Path $TargetDir "Start SWM Server.cmd"
+    $serverText = @"
+@echo off
+setlocal
+cd /d "%~dp0"
+set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
+set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
+set "SWM_PORT=$ServerPort"
+if not exist "%SWM_PYTHON%" (
+  echo SWM local Python was not found: "%SWM_PYTHON%"
+  pause
+  exit /b 1
+)
+echo Starting Simple Webcrawl Manager on http://127.0.0.1:%SWM_PORT%
+start "SWM Server" /D "%~dp0" "%SWM_PYTHON%" -m webarc.cli serve --host 127.0.0.1 --port %SWM_PORT%
+timeout /t 2 /nobreak >nul
+start "" "http://127.0.0.1:%SWM_PORT%"
+endlocal
+"@
+    $serverText | Set-Content -LiteralPath $serverLauncher -Encoding ASCII
+
+    Set-Content -LiteralPath (Join-Path $TargetDir "server-port.txt") -Value $ServerPort -Encoding ASCII
+    Write-Ok "Created local-runtime server launcher: $serverLauncher"
+}
+
+try {
+    Write-Host "Simple Webcrawl Manager (SWM) - Windows Installer" -ForegroundColor White
+    Write-Host "Branch: $Branch"
+    Write-Host "Install directory: $InstallDir"
+    Write-Host "Local Python: $PythonExe"
+    Write-Host "Download fallback: retry / manual file selection / abort"
+
+    Write-Step "1. Download / update SWM"
+    Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
+        throw "pyproject.toml is missing after source download."
+    }
+    Write-Ok "SWM source is ready at $InstallDir."
+
+    Write-Step "2. Install local runtime"
+    New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
+    Install-PortableUv
+    Install-LocalPython
+    Install-SwmIntoLocalPython -TargetDir $InstallDir
+
+    Write-Step "3. Verify local SWM runtime"
+    $version = Get-LocalPythonVersion -ExePath $PythonExe
+    if (-not $version) {
+        throw "Local SWM Python verification failed."
+    }
+
+    $env:PLAYWRIGHT_BROWSERS_PATH = $PlaywrightDir
+    Invoke-External -Exe $PythonExe -ArgumentList @("-m", "webarc.cli", "--help") -Description "Running SWM CLI smoke test with local Python"
+    Write-Ok "SWM is running from local Python $version at $PythonExe."
+
+    Write-Step "4. Check local ports"
+    $actualDashboardPort = Resolve-Port -Name "Dashboard" -PreferredPort $DashboardPort
+    $actualReplayPort = Resolve-Port -Name "Replay" -PreferredPort $ReplayPort
+
+    Write-Step "5. Create launchers"
+    Write-Launchers -TargetDir $InstallDir -ServerPort $actualDashboardPort
+
+    Write-Step "Installation complete"
+    Write-Host "Installed to: $InstallDir" -ForegroundColor Green
+    Write-Host "Local Python: $PythonExe" -ForegroundColor Green
+    Write-Host "Playwright: $PlaywrightDir"
+    Write-Host ""
+    Write-Host "Start SWM by double-clicking:"
+    Write-Host "  $InstallDir\Start SWM Server.cmd" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "Dashboard: http://127.0.0.1:$actualDashboardPort"
+    Write-Host "Replay default port: $actualReplayPort"
+    exit 0
+} catch {
+    Write-Host ""
+    Write-Host "INSTALLATION FAILED" -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    Write-Host ""
+    Write-Host "Expected local Python location: $PythonExe"
+    Write-Host "Nothing under a separate system or LocalAppData runtime is required."
+    exit 1
+}
+) {
             $currentUrl = $Matches[1].Trim()
             continue
         }
