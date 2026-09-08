@@ -5,13 +5,15 @@ on:
     branches:
       - feature/record-session
     paths:
-      - 'install/**'
+      - 'install/*.ps1'
+      - 'install/*.iss'
+      - 'install/README.md'
       - 'pyproject.toml'
       - '.github/workflows/build-unsigned-windows-installer.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -161,43 +163,10 @@ jobs:
             throw 'Testing workflow unexpectedly produced a signed installer.'
           }
 
-      - name: Package verified installer ZIP
-        shell: powershell
-        run: |
-          $exe = Get-ChildItem .\install\dist\SWM-Setup-*.exe | Select-Object -First 1
-          if (-not $exe) { throw 'Verified installer EXE was not found for packaging.' }
-          $zipName = $exe.BaseName + '.zip'
-          $zipPath = Join-Path (Resolve-Path '.\install').Path $zipName
-
-          Get-ChildItem .\install\SWM-Setup-*.zip -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -ne $zipPath } |
-            Remove-Item -Force
-
-          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
-          Compress-Archive -LiteralPath $exe.FullName -DestinationPath $zipPath -CompressionLevel Optimal
-          Write-Host "Repository package: $zipPath"
-
-      - name: Commit verified installer ZIP
-        shell: powershell
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- install
-
-          git diff --cached --quiet
-          if ($LASTEXITCODE -eq 0) {
-            Write-Host 'Installer ZIP already matches the verified build.'
-          } else {
-            git commit -m "Update verified Windows installer package [skip ci]"
-            git push origin HEAD:feature/record-session
-          }
-
       - name: Upload unsigned installer
         uses: actions/upload-artifact@v4
         with:
           name: SWM-unsigned-windows-installer
-          path: |
-            install/dist/SWM-Setup-*.exe
-            install/SWM-Setup-*.zip
+          path: install/dist/SWM-Setup-*.exe
           if-no-files-found: error
           retention-days: 14
