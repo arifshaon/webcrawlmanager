@@ -194,3 +194,43 @@ ig-metadata: >-
   in what you like; Title, Identifier, Date, Type and Collector are filled
   from the job where left empty, and each target can have its own values. It
   is written into metadata.json, the manifest and the archive.
+
+# Theme-based selection (crawl and record forms)
+theme: >-
+  Keep only the pages that are about one topic. Every page the job opens is judged from its own text, kept or left out, and written to a selection list with the reason, so the collection can be explained later. Without a theme, every page in scope is kept.
+theme-name: >-
+  A short name for the topic, shown on the job and written into the selection list.
+theme-brief: >-
+  What counts as this theme, in plain words, as you would explain it to a colleague: what is in, what is out. The AI judge reads this; it is also the best record of the collection's scope.
+theme-terms: >-
+  Words and phrases that mark a page as being about the theme, one per line, in any language. Arabic spelling variants and plurals are matched. A term in the headline counts most, in the section or tags next, in the text least.
+theme-exclude-terms: >-
+  Words that rule a page out when they appear in its headline, one per line. Useful for a neighbouring topic you do not want.
+theme-url-include: >-
+  Address patterns (regular expressions) that count towards the theme, one per line, such as a section path like /culture/. A match adds to the page's score; it does not keep the page by itself.
+theme-url-exclude: >-
+  Address patterns never fetched, one per line: log-in pages, comment feeds, calendars. These are skipped before any request is made.
+theme-hubs: >-
+  Address patterns for listing pages: sections, tags, search results, pagination. Hubs are always followed because they lead to theme pages, and kept as the way in unless you untick Keep hub pages.
+theme-dates: >-
+  Only pages published within these dates are kept, read from the page's own date where it states one. Pages without a date are judged on their content.
+theme-min-score: >-
+  How much evidence a page needs before the rules keep it. A term in the headline scores 3, in the section or tags 2, each mention in the text 1. Three, the default, keeps a page on one headline hit; raise it for a stricter selection.
+theme-unsure: >-
+  What happens to a page the judge could not place. Holding it in a review archive keeps it beside the job, out of the collection, for you to accept or drop later.
+theme-stop-misses: >-
+  Stop a starting page's crawl after this many pages in a row were not about the theme. 0 never stops for that reason.
+theme-ai-policy: >-
+  When an AI judge is configured: whether it decides every page, only the pages the rules are unsure about, or must agree with the rules before a page is kept. Its verdict, confidence and quoted evidence are recorded either way.
+
+# Settings: the theme judge
+tai-provider: >-
+  Which model judges pages for themes, when a theme allows it. None means the rules decide. Anthropic sends page text to Claude over its API. An OpenAI-compatible endpoint can be a local model, in which case nothing leaves this machine.
+tai-endpoint: >-
+  For an OpenAI-compatible provider: the base address of its API, such as http://127.0.0.1:11434/v1 for a local Ollama. Not used for Anthropic.
+tai-model: >-
+  The model name the provider expects, such as claude-opus-5, or the name of the local model you pulled.
+tai-key: >-
+  The API key, kept in this dashboard's own database and never written into a capture. Leave the field empty to keep the stored key; the server's ANTHROPIC_API_KEY environment variable is used when none is stored.
+tai-max-calls: >-
+  A ceiling on how many times one job may ask the model, so a runaway crawl cannot run up a bill. After it, the rules decide the rest of that job.

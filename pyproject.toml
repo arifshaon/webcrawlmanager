@@ -29,6 +29,9 @@ instagram-listing = ["gallery-dl>=1.30"]
 # curl_cffi, which it uses to impersonate a browser on requests YouTube
 # answers differently otherwise.
 youtube = ["yt-dlp[default,curl-cffi]>=2025.1.1"]
+# The optional AI judge for theme-based capture, through the Anthropic SDK.
+# A local model behind an OpenAI-compatible endpoint needs nothing extra.
+theme-ai = ["anthropic>=1.0"]
 
 [project.scripts]
 swm = "webarc.cli:main"

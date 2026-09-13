@@ -93,6 +93,8 @@ class CrawlConfig:
     seeds: list[SeedConfig]
     # descriptive metadata: {"job": [fields], "seeds": {url: [fields]}}
     metadata: dict = field(default_factory=lambda: {"job": [], "seeds": {}})
+    # optional theme: only pages about one topic are kept (see webarc.theme)
+    theme: Optional[dict] = None
 
 
 def _build_section(cls, data: dict):
@@ -130,10 +132,16 @@ def load_config(path: str | Path) -> CrawlConfig:
 
     from .metadata import from_config
 
+    theme = raw.get("theme")
+    if theme is not None:
+        from .theme import ThemeConfig
+        ThemeConfig.from_dict(theme)          # refuse a broken theme before any fetch
+
     return CrawlConfig(
         crawl_name=raw.get("crawl_name", "webarc-crawl"),
         output_dir=Path(raw.get("output_dir", "./warcs")),
         operator=raw.get("operator", "webarc"),
         seeds=seeds,
         metadata=from_config(raw),
+        theme=theme if isinstance(theme, dict) else None,
     )

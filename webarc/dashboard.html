@@ -482,6 +482,29 @@
       </div>
       <span class="help" id="res-help"></span>
     </div>
+    <div class="eyebrow">Theme judge (AI, optional)</div>
+    <div class="resource-settings" id="theme-ai-settings">
+      <div class="levels">
+        <label for="tai-provider">Provider <button type="button" class="tip" aria-label="What is this for?" data-help="tai-provider">?</button>
+          <select id="tai-provider">
+            <option value="none">None: themes use their rules alone</option>
+            <option value="anthropic">Anthropic (Claude), through its API</option>
+            <option value="openai_compatible">A model behind an OpenAI-compatible endpoint (local Ollama, LM Studio, …)</option>
+          </select></label>
+        <label for="tai-endpoint">Endpoint <button type="button" class="tip" aria-label="What is this for?" data-help="tai-endpoint">?</button>
+          <input type="text" id="tai-endpoint" placeholder="http://127.0.0.1:11434/v1"></label>
+        <label for="tai-model">Model <button type="button" class="tip" aria-label="What is this for?" data-help="tai-model">?</button>
+          <input type="text" id="tai-model" placeholder="claude-opus-5"></label>
+        <label for="tai-key">API key <button type="button" class="tip" aria-label="What is this for?" data-help="tai-key">?</button>
+          <input type="password" id="tai-key" placeholder="leave empty to keep the stored key" autocomplete="off"></label>
+        <label for="tai-max-calls">Most AI calls per job <button type="button" class="tip" aria-label="What is this for?" data-help="tai-max-calls">?</button>
+          <input type="number" id="tai-max-calls" min="1" step="1"></label>
+        <button type="button" class="secondary" id="tai-save">Save</button>
+        <button type="button" class="secondary" id="tai-test">Test</button>
+        <span class="msg" id="tai-msg"></span>
+      </div>
+      <span class="help" id="tai-help"></span>
+    </div>
   </section>
   <section class="view hidden" id="view-new">
   <div class="eyebrow">New job</div>
@@ -576,6 +599,86 @@
               <textarea id="f-exclude" rows="3">\.(zip|exe|dmg|iso)($|\?)
 /logout</textarea>
               <span class="help">One regular expression per line. Matching URLs will not be crawled.</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-section" id="crawl-theme-section">
+          <div class="section-head">
+            <span class="section-title">Theme (optional) <button type="button" class="tip" aria-label="What is this for?" data-help="theme">?</button></span>
+            <span class="section-hint">Keep only pages about one topic; every page looked at is logged with the reason.</span>
+          </div>
+          <div class="section-body" id="crawl-theme">
+            <label class="check-row"><input type="checkbox" id="ct-enabled"><span class="check-copy"><strong>Keep only pages that match a theme</strong><span>Other pages are looked at, logged with the reason, and left out of the archive.</span></span></label>
+            <div class="form-grid theme-fields" id="ct-fields">
+              <div class="field">
+                <label class="field-label" for="ct-name">Theme name <button type="button" class="tip" aria-label="What is this for?" data-help="theme-name">?</button></label>
+                <input type="text" id="ct-name">
+              </div>
+              <div class="field wide">
+                <label class="field-label" for="ct-brief">Brief: what counts as this theme, in plain words <button type="button" class="tip" aria-label="What is this for?" data-help="theme-brief">?</button></label>
+                <textarea id="ct-brief" rows="3"></textarea>
+              </div>
+              <div class="field wide">
+                <label class="field-label" for="ct-terms">Terms and phrases, one per line <button type="button" class="tip" aria-label="What is this for?" data-help="theme-terms">?</button></label>
+                <textarea id="ct-terms" rows="2"></textarea>
+              </div>
+              <div class="field wide">
+                <label class="field-label" for="ct-exclude_terms">Not this: terms that rule a page out, one per line <button type="button" class="tip" aria-label="What is this for?" data-help="theme-exclude-terms">?</button></label>
+                <textarea id="ct-exclude_terms" rows="2"></textarea>
+              </div>
+              <div class="field wide">
+                <label class="field-label" for="ct-url_include">Address patterns that count for the theme <button type="button" class="tip" aria-label="What is this for?" data-help="theme-url-include">?</button></label>
+                <textarea id="ct-url_include" rows="2"></textarea>
+              </div>
+              <div class="field wide">
+                <label class="field-label" for="ct-url_exclude">Address patterns never fetched <button type="button" class="tip" aria-label="What is this for?" data-help="theme-url-exclude">?</button></label>
+                <textarea id="ct-url_exclude" rows="2"></textarea>
+              </div>
+              <div class="field wide">
+                <label class="field-label" for="ct-hub_patterns">Hub pages: listings always followed <button type="button" class="tip" aria-label="What is this for?" data-help="theme-hubs">?</button></label>
+                <textarea id="ct-hub_patterns" rows="2"></textarea>
+              </div>
+              <div class="field">
+                <label class="field-label" for="ct-date-from">Published from <button type="button" class="tip" aria-label="What is this for?" data-help="theme-dates">?</button></label>
+                <input type="date" id="ct-date-from">
+              </div>
+              <div class="field">
+                <label class="field-label" for="ct-date-to">Published to</label>
+                <input type="date" id="ct-date-to">
+              </div>
+              <div class="field">
+                <label class="field-label" for="ct-min-score">Minimum score to keep a page <button type="button" class="tip" aria-label="What is this for?" data-help="theme-min-score">?</button></label>
+                <input type="number" id="ct-min-score" min="1" step="1" value="3">
+              </div>
+              <div class="field">
+                <label class="field-label" for="ct-unsure">When a page cannot be placed <button type="button" class="tip" aria-label="What is this for?" data-help="theme-unsure">?</button></label>
+                <select id="ct-unsure">
+                  <option value="review">Hold it in a review archive for me</option>
+                  <option value="keep">Keep it</option>
+                  <option value="reject">Leave it out</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="field-label" for="ct-stop-misses">Stop after this many non-matching pages in a row <button type="button" class="tip" aria-label="What is this for?" data-help="theme-stop-misses">?</button></label>
+                <input type="number" id="ct-stop-misses" min="0" step="1" value="0">
+              </div>
+              <div class="field">
+                <label class="check-row"><input type="checkbox" id="ct-keep-hubs" checked><span class="check-copy"><strong>Keep hub pages</strong><span>Section and listing pages are saved as the way in, even when they are not about the theme.</span></span></label>
+              </div>
+              <div class="field wide">
+                <label class="check-row"><input type="checkbox" id="ct-ai" checked><span class="check-copy"><strong>Use the AI judge when one is configured</strong><span id="ct-ai-note">Set up under Settings. Without one, the rules above decide.</span></span></label>
+              </div>
+              <div class="field">
+                <label class="field-label" for="ct-ai-policy">How the AI and the rules combine <button type="button" class="tip" aria-label="What is this for?" data-help="theme-ai-policy">?</button></label>
+                <select id="ct-ai-policy">
+                  <option value="decide">The AI decides; the rules explain and pre-filter</option>
+                  <option value="tie_break">The AI decides only pages the rules are unsure about</option>
+                  <option value="agree">Both must agree; otherwise hold for review</option>
+                </select>
+              </div>
+              <div class="field">
+                <label class="check-row"><input type="checkbox" id="ct-ai-links" checked><span class="check-copy"><strong>Let the AI skip links before they are fetched</strong><span>From the link text and its surroundings; only when it is confident.</span></span></label>
+              </div>
             </div>
           </div>
         </div>
@@ -736,6 +839,10 @@
           </div>
           <div class="section-body">
             <div class="md-editor" id="r-metadata"></div>
+          </div>
+          <div class="field wide" id="record-theme-field">
+            <label class="field-label">Theme (optional) <button type="button" class="tip" aria-label="What is this for?" data-help="theme">?</button></label>
+            <div id="record-theme"></div>
           </div>
         </div>
       </div>
@@ -1352,6 +1459,81 @@ const fmtBytes = b => {
 const clone = value => value ? JSON.parse(JSON.stringify(value)) : value;
 let lastCrawls = [];          // the job list as last fetched; filters and the metadata editor read it
 const openState = new Set();
+// A theme: the same fields in the crawl form and the record form. The
+// crawl form carries the markup; the record form gets a copy with its own
+// ids; both are read and filled through the prefix.
+function themeField(prefix, key) { return document.getElementById(`${prefix}-${key}`); }
+function installTheme(container, prefix) {
+  const host = document.getElementById(container);
+  if (!host || host.dataset.themePrefix) return;
+  host.dataset.themePrefix = prefix;
+  if (prefix !== "ct") {
+    const source = document.getElementById("crawl-theme");
+    for (const node of Array.from(source.children)) {
+      const copy = node.cloneNode(true);
+      for (const el of [copy, ...copy.querySelectorAll("[id], [for]")]) {
+        if (el.id && el.id.startsWith("ct-")) el.id = prefix + el.id.slice(2);
+        const target = el.getAttribute && el.getAttribute("for");
+        if (target && target.startsWith("ct-")) el.setAttribute("for", prefix + target.slice(2));
+      }
+      host.appendChild(copy);
+    }
+  }
+  const sync = () => themeField(prefix, "fields").classList.toggle("hidden", !themeField(prefix, "enabled").checked);
+  themeField(prefix, "enabled").addEventListener("change", sync);
+  sync();
+}
+function readTheme(prefix) {
+  if (!themeField(prefix, "enabled") || !themeField(prefix, "enabled").checked) return null;
+  const linesOf = key => themeField(prefix, key).value.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  return {
+    enabled: true,
+    name: themeField(prefix, "name").value.trim(),
+    brief: themeField(prefix, "brief").value.trim(),
+    terms: linesOf("terms"), exclude_terms: linesOf("exclude_terms"),
+    url_include: linesOf("url_include"), url_exclude: linesOf("url_exclude"),
+    hub_patterns: linesOf("hub_patterns"),
+    date_from: themeField(prefix, "date-from").value || null,
+    date_to: themeField(prefix, "date-to").value || null,
+    min_score: Math.max(1, Math.trunc(Number(themeField(prefix, "min-score").value) || 3)),
+    unsure_action: themeField(prefix, "unsure").value,
+    stop_after_misses: Math.max(0, Math.trunc(Number(themeField(prefix, "stop-misses").value) || 0)),
+    keep_hubs: themeField(prefix, "keep-hubs").checked,
+    ai_enabled: themeField(prefix, "ai").checked,
+    ai_policy: themeField(prefix, "ai-policy").value,
+    ai_triage_links: themeField(prefix, "ai-links").checked,
+  };
+}
+function fillTheme(prefix, theme) {
+  const t = theme && typeof theme === "object" ? theme : {};
+  const lines = v => Array.isArray(v) ? v.join("\n") : (v || "");
+  themeField(prefix, "enabled").checked = Boolean(theme) && t.enabled !== false;
+  themeField(prefix, "name").value = t.name || "";
+  themeField(prefix, "brief").value = t.brief || "";
+  ["terms", "exclude_terms", "url_include", "url_exclude", "hub_patterns"].forEach(k => { themeField(prefix, k).value = lines(t[k]); });
+  themeField(prefix, "date-from").value = (t.date_from || "").slice(0, 10);
+  themeField(prefix, "date-to").value = (t.date_to || "").slice(0, 10);
+  themeField(prefix, "min-score").value = t.min_score || 3;
+  themeField(prefix, "unsure").value = t.unsure_action || "review";
+  themeField(prefix, "stop-misses").value = t.stop_after_misses || 0;
+  themeField(prefix, "keep-hubs").checked = t.keep_hubs !== false;
+  themeField(prefix, "ai").checked = t.ai_enabled !== false;
+  themeField(prefix, "ai-policy").value = t.ai_policy || "decide";
+  themeField(prefix, "ai-links").checked = t.ai_triage_links !== false;
+  themeField(prefix, "enabled").dispatchEvent(new Event("change"));
+}
+function noteThemeAi(capability) {
+  for (const prefix of ["ct", "rt"]) {
+    const note = themeField(prefix, "ai-note");
+    if (!note) continue;
+    note.textContent = capability && capability.available
+      ? `Configured: ${capability.provider} / ${capability.model}.`
+      : `Not configured (${capability && capability.reason ? capability.reason : "see Settings"}); the rules above decide.`;
+  }
+}
+installTheme("crawl-theme", "ct");
+installTheme("record-theme", "rt");
+
 let editorMode = "guided";
 let rawBaseConfig = null;
 const EXAMPLE_CONFIG = {
@@ -1485,6 +1667,8 @@ function buildFormConfig() {
     const existing = existingSeeds.find(seed => seed && seed.url === url);
     return existing ? {...existing, url} : {url};
   });
+  const theme = readTheme("ct");
+  if (theme) config.theme = theme; else delete config.theme;
   return config;
 }
 function sectionValue(config, section, key, fallback) {
@@ -1515,6 +1699,7 @@ function populateForm(config) {
   $("#f-consent-preference").value = sectionValue(config, "behavior", "consent_preference", "decline");
   $("#f-warc-size").value = sectionValue(config, "warc", "max_size_mb", 900);
   $("#f-dedup").checked = Boolean(sectionValue(config, "warc", "dedup", true));
+  fillTheme("ct", config.theme);
   $("#seed-list").innerHTML = "";
   const seeds = Array.isArray(config.seeds) && config.seeds.length ? config.seeds : [{url:""}];
   seeds.forEach(seed => addSeed(seed.url || ""));
@@ -1581,6 +1766,7 @@ let facebookCapability = null;
 let instagramCapability = null;
 let xCapability = null;
 let youtubeCapability = null;
+let themeAiCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
@@ -1589,6 +1775,7 @@ async function loadCapabilities() {
     instagramCapability = caps.instagram || {available: false, reason: "not reported by the server"};
     xCapability = caps.x || {available: false, reason: "not reported by the server"};
     youtubeCapability = caps.youtube || {available: false, reason: "not reported by the server"};
+    themeAiCapability = caps.theme_ai || {available: false, reason: "not reported by the server"};
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
     facebookCapability = {available: false, reason: "capability check failed"};
@@ -1637,6 +1824,7 @@ async function loadCapabilities() {
   if (youtubeCapability && youtubeCapability.note) {
     $("#youtube-cap-note").textContent = youtubeCapability.note;
   }
+  noteThemeAi(themeAiCapability);
 }
 function switchJob(job) {
   // A disabled tab has to say why where it can be seen: the form it belongs
@@ -1678,6 +1866,8 @@ async function startRecording() {
     if ($("#r-name").value.trim()) body.name = $("#r-name").value.trim();
     if ($("#r-operator").value.trim()) body.operator = $("#r-operator").value.trim();
     if ($("#r-storage").value.trim()) body.storage_dir = $("#r-storage").value.trim();
+    const recTheme = readTheme("rt");
+    if (recTheme) body.theme = recTheme;
     body.metadata = metadataEditors.record.value();
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setRecMessage("Cancelled.", ""); return; }
@@ -2064,6 +2254,7 @@ async function startYouTube() {
     $("#youtube-start-btn").disabled = false;
   }
 }
+function openSelection(id) { window.open(`/captures/${id}/pages/selection.html`, "_blank"); }
 function statusClass(s) { return s.toLowerCase(); }
 
 // Ask the server whether the machine has room before creating a job. A
@@ -2542,6 +2733,7 @@ async function refresh() {
     const settings = await api("/api/settings");
     renderStorageDefault(settings);
     renderResourceSettings(settings);
+    renderThemeAiSettings(settings);
     $("#nav-active").textContent = active ? String(active) : "";
     lastCrawls = crawls;
     renderJobList();
@@ -2759,6 +2951,51 @@ async function saveStorageDefault() {
 
 $("#storage-root").addEventListener("input", () => storageRootEdited = true);
 $("#storage-save").addEventListener("click", saveStorageDefault);
+
+let themeAiEdited = false;
+function renderThemeAiSettings(settings) {
+  const ai = settings.theme_ai || {};
+  if (!themeAiEdited) {
+    $("#tai-provider").value = ai.provider || "none";
+    $("#tai-endpoint").value = ai.endpoint || "";
+    $("#tai-model").value = ai.model || "";
+    $("#tai-max-calls").value = ai.max_calls || 2000;
+    $("#tai-key").value = "";
+  }
+  const cap = ai.capability || {};
+  const keyNote = ai.has_key ? (ai.key_from_environment ? "A key is set in the server's environment." : "A key is stored.") : "No key is stored.";
+  $("#tai-help").textContent = (cap.available ? `Ready: ${cap.provider} / ${cap.model}. ` : (cap.reason ? cap.reason + " " : ""))
+    + keyNote + " The key never enters a capture; page text goes to the provider only for jobs whose theme allows the AI judge.";
+  themeAiCapability = cap;
+  noteThemeAi(cap);
+}
+async function saveThemeAiSettings() {
+  const msg = $("#tai-msg");
+  msg.textContent = "Saving…"; msg.className = "msg";
+  const theme_ai = {provider: $("#tai-provider").value, endpoint: $("#tai-endpoint").value.trim(),
+                    model: $("#tai-model").value.trim(), max_calls: Number($("#tai-max-calls").value) || 2000};
+  if ($("#tai-key").value) theme_ai.api_key = $("#tai-key").value;
+  try {
+    const settings = await api("/api/settings", {method: "PUT", headers: {"Content-Type": "application/json"},
+                                                 body: JSON.stringify({theme_ai})});
+    themeAiEdited = false;
+    renderThemeAiSettings(settings);
+    msg.textContent = "Saved."; msg.className = "msg ok";
+  } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
+}
+async function testThemeAi() {
+  const msg = $("#tai-msg");
+  msg.textContent = "Asking the judge about a sample page…"; msg.className = "msg";
+  try {
+    const result = await api("/api/theme/ai/test", {method: "POST"});
+    const v = result.verdict || {};
+    msg.textContent = `${result.judge.provider} / ${result.judge.model} answered: ${v.decision} (${Number(v.confidence).toFixed(2)}) ${v.reasons || ""}`;
+    msg.className = "msg ok";
+  } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
+}
+["tai-provider", "tai-endpoint", "tai-model", "tai-key", "tai-max-calls"].forEach(id => $(`#${id}`).addEventListener("input", () => themeAiEdited = true));
+$("#tai-save").addEventListener("click", saveThemeAiSettings);
+$("#tai-test").addEventListener("click", testThemeAi);
 
 let resourceLevelsEdited = false;
 const RESOURCE_FIELDS = [["res-cpu", "cpu_free_percent"], ["res-memory", "memory_free_percent"], ["res-disk", "disk_free_percent"]];

@@ -384,6 +384,22 @@ class BrowserDriver:
         except Exception:
             return []
 
+    @staticmethod
+    def extract_link_details(page: Page) -> list[dict]:
+        """Every link with its text and the words around it on the page,
+        which is what a theme's link triage judges from."""
+        try:
+            found = page.evaluate("""
+              () => Array.from(document.querySelectorAll('a[href]')).map(a => {
+                const block = a.closest('li, article, p, td, h1, h2, h3, h4, figure, section, div');
+                const around = block && block !== document.body ? (block.innerText || '') : '';
+                return {url: a.href, text: (a.innerText || a.textContent || '').trim().slice(0, 200),
+                        context: around.replace(/\s+/g, ' ').trim().slice(0, 300)};
+              })""")
+        except Exception:
+            return []
+        return [f for f in (found or []) if isinstance(f, dict) and f.get("url")]
+
     def fetch_direct(self, url: str, timeout: float = 45.0):
         """GET a URL through the browser context (same cookies/session),
         bypassing page navigation. Used for resources the page cannot

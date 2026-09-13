@@ -5,6 +5,7 @@ and WARC session, reporting to and taking direction from a Controller.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import time
 from collections import Counter
 
@@ -249,11 +250,100 @@ def _capture_nonrenderable_url(warc: WarcSession, driver: BrowserDriver,
         _dispose_response(direct)
 
 
+class _ThemedSeed:
+    """A theme's bookkeeping for one seed: the hold every page's traffic
+    waits in, the review WARC for pages the judge could not place, and
+    the counts the dashboard shows."""
+
+    def __init__(self, judge, seed: SeedConfig, crawl: CrawlConfig, seed_idx: int):
+        from .theme import PageHold
+        self.judge = judge
+        self.seed = seed
+        self.crawl = crawl
+        self.seed_idx = seed_idx
+        self.hold = PageHold()
+        self.review: WarcSession | None = None
+        self.counts = {"kept": 0, "rejected": 0, "unsure": 0, "links_skipped": 0, "misses": 0}
+
+    def review_warc(self) -> WarcSession:
+        if self.review is None:
+            self.review = WarcSession(
+                Path(self.crawl.output_dir) / "review", self.crawl.crawl_name + "-review",
+                self.seed.url, self.seed_idx, self.crawl.operator, self.seed.warc,
+                info_extra={"description": "Pages the theme judge could not place: held here "
+                                           "for a curator's decision, not part of the collection "
+                                           "until accepted."},
+                metadata_fields=seed_metadata(self.crawl, self.seed.url))
+        return self.review
+
+    def settle(self, warc: WarcSession, url: str, depth: int, page_text) -> tuple[bool, bool]:
+        """Judge the page and commit or drop its held traffic. Returns
+        (kept, expand): whether the page is in the archive, and whether its
+        links are worth following."""
+        from .theme import KEEP, REJECT, UNSURE
+        hub = depth == 0 or self.judge.rules.is_hub(url)
+        decision = self.judge.judge_page(page_text, hub=hub, seed=self.seed.url, depth=depth)
+        outcome = decision.decision
+        if outcome == UNSURE:
+            action = self.judge.theme.unsure_action
+            if action == "keep":
+                outcome = KEEP
+            elif action == "reject":
+                outcome = REJECT
+        if outcome == KEEP:
+            self.hold.commit(warc)
+            self.counts["kept"] += 1
+        elif outcome == UNSURE:
+            self.hold.commit(self.review_warc())
+            self.counts["unsure"] += 1
+        else:
+            self.hold.discard()
+            self.counts["rejected"] += 1
+        matched = decision.decision == KEEP
+        self.counts["misses"] = 0 if matched else self.counts["misses"] + 1
+        log.info("Theme %s: %s (%s)", outcome, url, decision.reason[:160])
+        return outcome == KEEP, matched or hub
+
+    def links_to_follow(self, driver: BrowserDriver, page, url: str, scope: ScopeMatcher) -> list[str]:
+        """The page's links the theme thinks worth a request, triaged from
+        their text and surroundings before any of them is fetched."""
+        candidates: list[dict] = []
+        seen: set[str] = set()
+        for link in driver.extract_link_details(page):
+            canon = canonicalize(link.get("url"), base=url)
+            if not canon or canon in seen or not scope.in_scope(canon):
+                continue
+            seen.add(canon)
+            candidates.append({"url": canon, "text": link.get("text") or "",
+                               "context": link.get("context") or ""})
+        results = self.judge.triage_links(candidates, from_url=url)
+        wanted = [r["url"] for r in results if r["decision"] != "skip"]
+        self.counts["links_skipped"] += sum(1 for r in results if r["decision"] == "skip"
+                                            and not r.get("cached"))
+        return wanted
+
+    def exhausted(self) -> bool:
+        limit = self.judge.theme.stop_after_misses
+        return bool(limit) and self.counts["misses"] >= limit
+
+    def finish(self) -> None:
+        from .theme import render_selection_page
+        if self.review is not None:
+            self.review.close()
+        try:
+            self.judge.write_summary(Path(self.crawl.output_dir),
+                                     {"seed": self.seed.url, "seed_counts": dict(self.counts)})
+            render_selection_page(Path(self.crawl.output_dir))
+        except OSError as exc:
+            log.warning("Could not write the theme summary: %s", exc)
+
+
 def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
-               controller: Controller) -> dict:
-    log.info("=== Seed %d: %s (mode=%s, scope=%s, depth<=%d, pages<=%d)",
+               controller: Controller, theme_judge=None) -> dict:
+    log.info("=== Seed %d: %s (mode=%s, scope=%s, depth<=%d, pages<=%d%s)",
              seed_idx, seed.url, seed.browser.mode, seed.scope.strategy,
-             seed.scope.max_depth, seed.scope.max_pages)
+             seed.scope.max_depth, seed.scope.max_pages,
+             f", theme={theme_judge.theme.name or 'unnamed'}" if theme_judge else "")
 
     scope = ScopeMatcher(seed.url, seed.scope)
     frontier = Frontier(seed.scope.max_depth, seed.scope.max_pages)
@@ -263,6 +353,8 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
     warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
                        seed_idx, crawl.operator, seed.warc,
                        metadata_fields=seed_metadata(crawl, seed.url))
+    themed = _ThemedSeed(theme_judge, seed, crawl, seed_idx) if theme_judge else None
+    sink = themed.hold if themed else warc
     stats = {"visited": 0, "skipped_robots": 0, "failed": 0, "blocked": 0,
              "dynamic_incomplete": 0, "consent_dismissed": 0,
              "consent_unresolved": 0}
@@ -271,10 +363,11 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
     blocks = BlockController(seed.behavior)
     stopped = False
     blocked_out = False
+    theme_exhausted = False
 
     try:
         with BrowserDriver(seed.browser, seed.behavior) as driver:
-            capture = PageCapture(warc, driver)
+            capture = PageCapture(sink, driver)
             page = driver.new_page(capture.on_response)
             page.on("requestfinished", capture.on_request_finished)
             page.on("requestfailed", capture.on_request_failed)
@@ -333,13 +426,21 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
                         "records or 'could not load content' errors", url,
                         ", ".join(f"{k}={v}" for k, v in sorted(dyn.items())))
                 if resp is None:
-                    if _capture_nonrenderable_url(warc, driver, url):
+                    if _capture_nonrenderable_url(sink, driver, url):
                         stats["visited"] += 1
+                        if themed:
+                            # a file, not a page: judged by its address alone
+                            from .theme import PageText
+                            themed.settle(warc, url, depth,
+                                          PageText(url=url, title=url.rsplit("/", 1)[-1]))
                         controller.report(seed_idx, visited=stats["visited"],
                                           queued=len(frontier),
-                                          bytes_written=warc.total_bytes)
+                                          bytes_written=warc.total_bytes,
+                                          details={"theme": themed.counts} if themed else None)
                         driver.inter_page_delay()
                         continue
+                    if themed:
+                        themed.hold.discard()
                     stats["failed"] += 1
                     controller.report(seed_idx, failed=stats["failed"])
                     continue
@@ -350,6 +451,8 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
                     blocked, reason = detect_block(resp.status, title, html)
                     decision = blocks.record(blocked)
                     if blocked:
+                        if themed:
+                            themed.hold.discard()      # a block page is not the theme's
                         stats["blocked"] += 1
                         log.warning("Block detected at %s (%s) [%d in a row]",
                                     url, reason, decision.consecutive)
@@ -377,19 +480,41 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
 
                 stats["visited"] += 1
 
-                if depth < seed.scope.max_depth:
-                    for href in driver.extract_links(page):
-                        canon = canonicalize(href, base=url)
-                        if canon and scope.in_scope(canon):
+                expand = True
+                if themed:
+                    from .theme import extract_page_text
+                    try:
+                        html = page.content()
+                    except Exception:
+                        html = ""
+                    _kept, expand = themed.settle(warc, url, depth, extract_page_text(html, url))
+                    if themed.exhausted():
+                        log.info("Seed %d: %d pages in a row were not the theme's; stopping "
+                                 "this seed", seed_idx, themed.counts["misses"])
+                        theme_exhausted = True
+
+                if depth < seed.scope.max_depth and expand and not theme_exhausted:
+                    if themed:
+                        for canon in themed.links_to_follow(driver, page, url, scope):
                             frontier.add(canon, depth + 1)
+                    else:
+                        for href in driver.extract_links(page):
+                            canon = canonicalize(href, base=url)
+                            if canon and scope.in_scope(canon):
+                                frontier.add(canon, depth + 1)
 
                 controller.report(seed_idx,
                                   visited=stats["visited"],
                                   queued=len(frontier),
-                                  bytes_written=warc.total_bytes)
+                                  bytes_written=warc.total_bytes,
+                                  details={"theme": themed.counts} if themed else None)
+                if theme_exhausted:
+                    break
                 driver.inter_page_delay()
     finally:
         warc.close()
+        if themed:
+            themed.finish()
 
     if blocked_out:
         final = "blocked"
@@ -397,8 +522,11 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
         final = STOPPED
     else:
         final = COMPLETED
+    if themed:
+        stats["theme"] = dict(themed.counts)
     controller.report(seed_idx, status=final, visited=stats["visited"],
-                      queued=len(frontier), bytes_written=warc.total_bytes)
+                      queued=len(frontier), bytes_written=warc.total_bytes,
+                      details={"theme": themed.counts} if themed else None)
     log.info("Seed %d %s: %s", seed_idx, final, stats)
     return stats
 
@@ -423,18 +551,33 @@ def write_crawl_metadata(crawl: CrawlConfig, job_id=None) -> None:
         metadata=meta, existing=read_document(crawl.output_dir)))
 
 
-def run_crawl(crawl: CrawlConfig, controller: Controller | None = None) -> None:
+def _env_setting(key: str) -> str | None:
+    """Settings for a command-line crawl come from the environment:
+    theme.ai.provider -> SWM_THEME_AI_PROVIDER, and so on."""
+    import os
+    return os.environ.get("SWM_" + key.upper().replace(".", "_"))
+
+
+def run_crawl(crawl: CrawlConfig, controller: Controller | None = None,
+              theme_judge=None) -> None:
     controller = controller or NullController()
     try:
         write_crawl_metadata(crawl)
     except OSError as exc:                 # pragma: no cover - a full disk
         log.warning("Could not write metadata.json: %s", exc)
+    if theme_judge is None and getattr(crawl, "theme", None):
+        from .theme import build_theme_judge
+        theme_judge = build_theme_judge(crawl.theme, _env_setting, Path(crawl.output_dir))
+        if theme_judge is not None:
+            log.info("Theme %r: %s", theme_judge.theme.name,
+                     "AI judge " + str(theme_judge.ai.describe()) if theme_judge.ai
+                     else "rules only")
     for idx, seed in enumerate(crawl.seeds, start=1):
         if controller.should_stop():
             log.info("Crawl stop requested; skipping remaining seeds")
             break
         try:
-            crawl_seed(seed, crawl, idx, controller)
+            crawl_seed(seed, crawl, idx, controller, theme_judge=theme_judge)
         except Exception:
             log.exception("Seed %d (%s) aborted", idx, seed.url)
             controller.seed_status(idx, "failed")

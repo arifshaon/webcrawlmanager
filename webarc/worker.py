@@ -53,12 +53,14 @@ def _config_from_row(row: dict) -> CrawlConfig:
             warc=_build_section(WarcConfig, m.get("warc", {})),
         ))
     from .metadata import from_config
+    theme = raw.get("theme")
     return CrawlConfig(
         crawl_name=raw.get("crawl_name", row["name"]),
         output_dir=Path(row["output_dir"]),
         operator=raw.get("operator", "webarc"),
         seeds=seeds,
         metadata=from_config(raw),
+        theme=theme if isinstance(theme, dict) else None,
     )
 
 
@@ -182,10 +184,10 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
 
     last_state = {"state": None}
 
-    def on_progress(state, visited, bytes_written, current_url):
+    def on_progress(state, visited, bytes_written, current_url, details=None):
         store.update_progress(crawl_id, 1, status=state, visited=visited,
                               bytes_written=bytes_written,
-                              current_url=current_url)
+                              current_url=current_url, details=details)
         if state != last_state["state"]:
             last_state["state"] = state
             if state == R_PAUSED:
@@ -193,9 +195,11 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
             elif state == R_RECORDING:
                 store.set_status(crawl_id, RUNNING)
 
+    from .theme import build_theme_judge
+    judge = build_theme_judge(rec.get("theme"), store.get_setting, Path(row["output_dir"]))
     session = RecordingSession(start_url, browser, warc,
                                control_poll=control_poll,
-                               on_progress=on_progress)
+                               on_progress=on_progress, theme_judge=judge)
     session.run()
 
 
@@ -691,7 +695,13 @@ def main(argv: list[str] | None = None) -> int:
             facebook_result = _run_youtube(store, args.crawl_id, row)
         else:
             from .crawler import run_crawl
-            run_crawl(_config_from_row(row), controller)
+            from .theme import build_theme_judge
+            config = _config_from_row(row)
+            judge = build_theme_judge(config.theme, store.get_setting, Path(row["output_dir"]))
+            if judge is not None:
+                log.info("Theme %r: %s", judge.theme.name,
+                         "AI judge " + str(judge.ai.describe()) if judge.ai else "rules only")
+            run_crawl(config, controller, theme_judge=judge)
     except Exception as exc:
         log.exception("Crawl %d failed", args.crawl_id)
         store.set_status(args.crawl_id, FAILED, error=str(exc))

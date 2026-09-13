@@ -64,6 +64,7 @@ SWM is designed around two complementary approaches to web archiving:
 - [X capture](#x-capture)
 - [YouTube capture](#youtube-capture)
 - [Automated crawling](#automated-crawling)
+- [Theme-based capture](#theme-based-capture)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
 - [Replay](#replay-replaywebpage)
@@ -676,6 +677,70 @@ Core crawl capabilities include:
 - randomised delays, scrolling, mouse movement and network-idle waits;
 - block-page detection and controlled back-off;
 - compressed WARC/1.1 output with request, response, warcinfo and revisit records.
+
+## Theme-based capture
+
+An automated crawl or a recorded session can carry a **theme**: only
+pages about one topic are kept, and every page looked at is written to a
+selection list with the reason. It applies to the traditional captures,
+not to the social media modes, which select by account and date.
+
+**What a theme is.** A name, a brief in plain words ("news about the
+restoration of heritage sites in Doha; not general tourism"), terms and
+phrases in any language (Arabic spelling variants, clitics and plurals
+are matched: مكتبة, المكتبات and مكتبةٍ are one term), terms that rule a
+page out, address patterns that count for the theme or are never
+fetched, hub patterns for listing pages, a date window, and a minimum
+score. It lives in the crawl form, the record form, or a `theme:` block
+in the YAML configuration, and is written whole into the job's
+`theme-summary.json`.
+
+**How a crawl uses it.** Three tiers, cheapest first. Address rules
+decide before anything is requested. Links are then triaged from what
+the parent page says about them, the link text and the words around it,
+and a link the theme is confident about is never fetched. What remains
+is fetched, read, and judged from the page's *main* content, with the
+menus, headers and footers set aside so a site-wide "Culture" link does
+not make every page cultural. Only then is the page's traffic committed
+to the WARC. A rejected page cost a request and leaves no record in the
+archive; a page the judge could not place goes to a separate review WARC
+under `review/`, outside the collection until a curator accepts it. Hub
+pages, including the starting page, are always followed and kept as the
+way in unless the theme says otherwise. A rejected page's links are not
+followed.
+
+**The rules judge** is always on and explainable: a term in the headline
+scores 3, in the section, tags or description 2, each mention in the
+text 1, an address rule 3; the page is kept at the minimum score, unsure
+below it, rejected at zero or on a hard rule (an excluded term in the
+headline, a date outside the window, an excluded address).
+
+**The AI judge** is optional and answers the actual question, "is this
+page about this news?", from the extracted content SWM already holds. It
+never fetches a page itself: a fetch by the model would be a different
+fetch, by a different client, of a page that may not be the one in the
+archive. Configure it under Settings: Anthropic's Claude through its API
+(`pip install -e ".[theme-ai]"`), or any model behind an
+OpenAI-compatible endpoint, which for a local Ollama or LM Studio means
+nothing leaves the machine. A theme chooses how the two judges combine:
+the AI decides with the rules as pre-filter and explanation (the default),
+the AI breaks ties only, or both must agree. The AI also triages links in
+one call per page and may skip only what it is confident about. A ceiling
+on calls per job guards the bill; past it the rules decide.
+
+**Provenance.** `selection.jsonl` holds one line per page judged and per
+link triaged: the decision, which judge made it, the rules' score and
+the matched passages, the AI's verdict, confidence, reasons and quoted
+evidence (checked to occur in the page), the model and a hash of the
+prompt. `theme-summary.json` holds the theme, the judge, and the counts.
+The job list shows kept, left out and held for review as the run goes,
+and a **Selection** button opens a page built from the log. The API key
+is kept in the dashboard's database and never written into a capture.
+
+**In a recorded session** the operator's visit is the curatorial act, so
+nothing is held back: each page opened is judged and the verdict, with
+its reason, appears in the recording control at the bottom right of the
+window and in the selection list.
 
 ## Browser modes
 

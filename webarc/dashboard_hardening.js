@@ -79,6 +79,9 @@ function crawlRow(c) {
       ? `<div class="cur">▸ ${escapeHtml(sd.current_url)}</div>`
       : "";
     const details = sd.details || {};
+    const th = details.theme && typeof details.theme === "object" ? details.theme : null;
+    const themeDetail = th && !isSocial ? `
+      <div class="cur">theme: ${Number(th.kept) || 0} kept · ${Number(th.rejected) || 0} left out · ${Number(th.unsure) || 0} for review${th.links_skipped != null ? ` · ${Number(th.links_skipped) || 0} links skipped` : ""}</div>` : "";
     const facebookDetail = isFacebook ? `
       <div class="cur">${escapeHtml(details.message || details.phase || "")}</div>
       <div class="cur">newest: ${escapeHtml(details.newest_post || "not yet observed")} · oldest: ${escapeHtml(details.oldest_post || "not yet observed")} · pagination failures: ${Number(details.pagination_failures) || 0}</div>` : "";
@@ -96,6 +99,7 @@ function crawlRow(c) {
         <div>
           <div class="url">${isTargeted ? `${Number(fb.targets_done) || 0} of ${Number(fb.targets_total) || seeds.length} targets` : escapeHtml(sd.seed_url)}</div>
           ${isTargeted ? "" : current}
+          ${themeDetail}
           ${facebookDetail}
           ${instagramDetail}
         </div>
@@ -113,7 +117,7 @@ function crawlRow(c) {
       <div class="gutter g-${statusCss}"></div>
       <div>
         <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : isInstagram ? '<span class="fb-chip ig-chip">IG</span>' : isX ? '<span class="fb-chip x-chip">X</span>' : isYouTube ? '<span class="fb-chip yt-chip">YT</span>' : ""}${name}</div>
-        <div class="meta"><span class="id">#${id}</span> · ${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
+        <div class="meta"><span class="id">#${id}</span> · ${c.theme ? `<span class="theme-chip" title="theme-based selection">theme: ${escapeHtml(c.theme)}</span> · ` : ""}${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
       </div>
       <div class="counts">
         ${isRec
@@ -150,6 +154,7 @@ function crawlRow(c) {
       : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
       <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
       : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
+      ${c.has_selection ? `<button class="act replay" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
       <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
     </div>

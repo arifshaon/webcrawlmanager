@@ -39,6 +39,31 @@ defaults:
     max_size_mb: 900        # rotate WARC when exceeded
     dedup: true             # digest-based revisit records within the crawl
 
+# Optional theme: keep only pages about one topic. Every page opened is
+# judged from its own text and logged in selection.jsonl with the reason;
+# links are triaged from their text before they are fetched. An AI judge
+# is used when one is configured in the dashboard's Settings (or, from the
+# command line, through SWM_THEME_AI_PROVIDER / _MODEL / _ENDPOINT and
+# ANTHROPIC_API_KEY); otherwise the rules below decide.
+# theme:
+#   name: heritage sites
+#   brief: >-
+#     News about the restoration and reopening of heritage sites in Doha:
+#     announcements, interviews and opinion pieces; not general tourism.
+#   terms: ["heritage site", "restoration", "سوق واقف", "تراث"]
+#   exclude_terms: ["football"]
+#   url_include: ["/culture/"]
+#   url_exclude: ["/login", "/comments/feed"]
+#   hub_patterns: ["/culture/$", "/tag/", "\\?page="]
+#   keep_hubs: true
+#   date_from: 2026-01-01
+#   min_score: 3
+#   unsure_action: review     # review | keep | reject
+#   stop_after_misses: 0
+#   ai_enabled: true
+#   ai_policy: decide         # decide | tie_break | agree
+#   ai_triage_links: true
+
 seeds:
   - url: https://example.org/
     # inherits all defaults

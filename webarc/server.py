@@ -32,6 +32,7 @@ pages. Stop also hard-kills the pid as a fallback if the worker is wedged.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import os
@@ -215,6 +216,39 @@ def _x_capability() -> dict:
                 "sign in and to run, which cannot open here.")}
 
 
+def _write_theme_ai_settings(wanted: object) -> None:
+    """Store the AI judge's settings. The key is written only when one is
+    sent, cleared by an empty string, and never read back to the page."""
+    from .theme import PROVIDERS, SETTING_PREFIX
+    if not isinstance(wanted, dict):
+        raise HTTPException(400, "theme_ai must be an object")
+    provider = str(wanted.get("provider") or "none").strip()
+    if provider not in PROVIDERS:
+        raise HTTPException(400, "theme_ai.provider must be one of " + ", ".join(PROVIDERS))
+    endpoint = str(wanted.get("endpoint") or "").strip()
+    if provider == "openai_compatible" and not endpoint.lower().startswith(("http://", "https://")):
+        raise HTTPException(400, "theme_ai.endpoint must be an http(s) URL")
+    model = str(wanted.get("model") or "").strip()[:200]
+    try:
+        max_calls = int(wanted.get("max_calls") or 2000)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "theme_ai.max_calls must be a whole number") from exc
+    if not 1 <= max_calls <= 1_000_000:
+        raise HTTPException(400, "theme_ai.max_calls must be between 1 and 1,000,000")
+    store = _store()
+    store.set_setting(SETTING_PREFIX + "provider", provider)
+    store.set_setting(SETTING_PREFIX + "endpoint", endpoint[:500])
+    store.set_setting(SETTING_PREFIX + "model", model)
+    store.set_setting(SETTING_PREFIX + "max_calls", str(max_calls))
+    if "api_key" in wanted:
+        store.set_setting(SETTING_PREFIX + "api_key", str(wanted.get("api_key") or "").strip()[:500])
+
+
+def _theme_ai_capability() -> dict:
+    from .theme import ai_capability
+    return ai_capability(_store().get_setting)
+
+
 def _youtube_capability() -> dict:
     """YouTube capture needs yt-dlp for videos and a browser window for the
     Posts tab and for the sign-in YouTube demands; either half can be
@@ -246,7 +280,7 @@ def _youtube_capability() -> dict:
             "po_token_provider": po_token_provider_available()}
 
 
-def _youtube_refusal(config, targets) -> Optional[str]:
+def _youtube_refusal(config, targets) -> str | None:
     """Why this YouTube run cannot start here, or None.
 
     A run that needs yt-dlp (videos, Shorts, live streams, a video or a
@@ -322,7 +356,26 @@ def _validate_config(config: object) -> dict:
     for index, seed in enumerate(seeds, 1):
         if not isinstance(seed, dict) or not seed.get("url"):
             raise HTTPException(400, f"seed {index} must define a URL")
+    if config.get("theme") is not None:
+        from .theme import ThemeConfig
+        try:
+            ThemeConfig.from_dict(config["theme"])
+        except ValueError as exc:
+            raise HTTPException(400, f"theme: {exc}") from exc
     return config
+
+
+def _theme_from_payload(payload: dict) -> dict | None:
+    """A recording's theme, validated, or None when none was asked for."""
+    raw = payload.get("theme")
+    if raw in (None, "", False):
+        return None
+    from .theme import ThemeConfig
+    try:
+        theme = ThemeConfig.from_dict(raw)
+    except ValueError as exc:
+        raise HTTPException(400, f"theme: {exc}") from exc
+    return theme.to_dict() if theme.enabled else None
 
 
 def _parse_yaml(source: object) -> dict:
@@ -629,6 +682,10 @@ def _crawl_view(row: dict) -> dict:
         # Where this crawl's files are, so the dashboard can show a capture
         # kept somewhere other than the default without guessing.
         "output_dir": str(crawl_dir),
+        "has_selection": (crawl_dir / "pages" / "selection.html").is_file(),
+        "theme": ((json.loads(row["config_json"]).get("theme")
+                   or (json.loads(row["config_json"]).get("recording") or {}).get("theme") or {})
+                  .get("name") if row.get("config_json") else None),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
@@ -732,7 +789,53 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "instagram": _instagram_capability(),
             "x": _x_capability(),
             "youtube": _youtube_capability(),
+            "theme_ai": _theme_ai_capability(),
         }
+
+    @app.post("/api/theme/check")
+    def theme_check(payload: dict = Body(...)):
+        """Judge one page's text against a theme, for calibrating a theme
+        before a run. {"theme": {...}, "page": {"url", "title", "html" or
+        "text"}, "use_ai": bool}"""
+        from .theme import PageText, ThemeConfig, ThemeJudge, extract_page_text, make_ai_judge
+        try:
+            theme = ThemeConfig.from_dict(payload.get("theme") or {})
+        except ValueError as exc:
+            raise HTTPException(400, f"theme: {exc}") from exc
+        page_raw = payload.get("page") or {}
+        if not isinstance(page_raw, dict):
+            raise HTTPException(400, "page must be an object")
+        url = str(page_raw.get("url") or "https://example.org/")
+        if page_raw.get("html"):
+            page = extract_page_text(str(page_raw["html"]), url)
+        else:
+            page = PageText(url=url, title=str(page_raw.get("title") or ""),
+                            headline=str(page_raw.get("headline") or page_raw.get("title") or ""),
+                            body=str(page_raw.get("text") or ""), main_found=True)
+        ai = make_ai_judge(_store().get_setting) if payload.get("use_ai") else None
+        judge = ThemeJudge(theme, ai, None)
+        decision = judge.judge_page(page, hub=judge.rules.is_hub(url))
+        return {"page": page.to_dict(), **decision.to_dict(), "ai_configured": ai is not None}
+
+    @app.post("/api/theme/ai/test")
+    def theme_ai_test():
+        """One small question to the configured AI judge, to prove the
+        settings work before a run depends on them."""
+        from .theme import AIJudgeError, PageText, ThemeConfig, make_ai_judge
+        ai = make_ai_judge(_store().get_setting)
+        if ai is None:
+            raise HTTPException(409, _theme_ai_capability().get("reason") or "No AI judge is configured.")
+        theme = ThemeConfig.from_dict({"name": "libraries", "terms": ["library"],
+                                       "brief": "News about public libraries."})
+        page = PageText(url="https://example.org/news/library-opens", title="New public library opens",
+                        headline="New public library opens", body="The city opened a new public "
+                        "library on Monday with a reading room and a children's section.",
+                        main_found=True)
+        try:
+            verdict = ai.judge_page(theme, page)
+        except AIJudgeError as exc:
+            raise HTTPException(502, f"The AI judge did not answer: {exc}") from exc
+        return {"ok": True, "judge": ai.describe(), "verdict": verdict}
 
     @app.post("/api/recordings")
     def create_recording(payload: dict = Body(...)):
@@ -772,6 +875,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "seeds": [{"url": url}],
             "metadata": _metadata_from(payload, [url]),
         }
+        theme = _theme_from_payload(payload)
+        if theme:
+            config["recording"]["theme"] = theme
         # Resolved before the row exists: a location that cannot serve
         # should fail the request, not leave a crawl pointing nowhere.
         storage_root = _storage_root_for(payload.get("storage_dir"))
@@ -1548,6 +1654,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     @app.get("/api/settings")
     def read_settings():
         configured = (_store().get_setting(_STORAGE_ROOT_SETTING) or "").strip()
+        from .theme import ai_settings
         return {
             "storage_root": configured,
             "effective_storage_root": str(_default_storage_root()),
@@ -1556,6 +1663,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "resources": _resource_thresholds(),
             "resources_measured": _monitor().snapshot().get("measured", False),
             "resources_note": resources.measurement_note(),
+            "theme_ai": {**ai_settings(_store().get_setting), "capability": _theme_ai_capability()},
         }
 
     @app.get("/api/resources")
@@ -1609,8 +1717,10 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         directory it was written to, so a changed default applies to captures
         made after it.
         """
-        if "storage_root" not in payload and "resources" not in payload:
-            raise HTTPException(400, "provide storage_root or resources")
+        if not any(k in payload for k in ("storage_root", "resources", "theme_ai")):
+            raise HTTPException(400, "provide storage_root, resources or theme_ai")
+        if "theme_ai" in payload:
+            _write_theme_ai_settings(payload.get("theme_ai"))
         if "storage_root" in payload:
             requested = str(payload.get("storage_root") or "").strip()
             if requested:
