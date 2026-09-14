@@ -231,7 +231,7 @@ tai-provider: >-
 tai-endpoint: >-
   For Azure OpenAI: the resource address, such as https://my-resource.openai.azure.com. For an OpenAI-compatible provider: the base address of its API, such as http://127.0.0.1:11434/v1 for a local Ollama. Not used for Anthropic.
 tai-model: >-
-  The model name the provider expects, such as claude-opus-5, the name of the local model you pulled, or, for Azure, the deployment name.
+  The model name the provider expects, such as claude-opus-5 or the name of the local model you pulled. For Azure OpenAI this field is the deployment name: the name you gave the model when you deployed it on the resource, not the model's own name.
 tai-api-version: >-
   Azure OpenAI only: the API version on the request, such as 2024-10-21. Leave empty for the default.
 tai-max-prompt: >-

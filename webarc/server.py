@@ -230,7 +230,8 @@ def _write_theme_ai_settings(wanted: object) -> None:
         raise HTTPException(400, "theme_ai.endpoint must be an http(s) URL")
     if provider == "azure_openai" and not endpoint.lower().startswith("https://"):
         raise HTTPException(400, "theme_ai.endpoint must be the Azure OpenAI resource's https address")
-    model = str(wanted.get("model") or "").strip()[:200]
+    # Azure calls it a deployment; either name is accepted and stored as the model
+    model = str(wanted.get("model") or wanted.get("deployment") or "").strip()[:200]
     try:
         max_calls = int(wanted.get("max_calls") or 2000)
         tokens_per_minute = int(wanted.get("tokens_per_minute") or 0)

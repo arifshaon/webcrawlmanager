@@ -731,8 +731,9 @@ text and surroundings, and the model names only the links it is
 confident are not the theme's; everything else is fetched and read.
 
 Configure the judge under Settings: Anthropic's Claude through its API
-(`pip install -e ".[theme-ai]"`), Azure OpenAI (the resource address, a
-deployment name, the key and an API version), or any model behind an
+(`pip install -e ".[theme-ai]"`), Azure OpenAI (the resource address
+such as `https://my-resource.openai.azure.com`, the deployment name in
+the model field, the key and an API version), or any model behind an
 OpenAI-compatible endpoint, which for a local Ollama or LM Studio means
 nothing leaves the machine. A tokens-per-minute figure makes SWM pace its
 questions to stay under the provider's allowance and wait when the minute

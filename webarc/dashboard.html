@@ -494,7 +494,7 @@
           </select></label>
         <label for="tai-endpoint">Endpoint <button type="button" class="tip" aria-label="What is this for?" data-help="tai-endpoint">?</button>
           <input type="text" id="tai-endpoint" placeholder="http://127.0.0.1:11434/v1"></label>
-        <label for="tai-model">Model <button type="button" class="tip" aria-label="What is this for?" data-help="tai-model">?</button>
+        <label for="tai-model"><span id="tai-model-label">Model</span> <button type="button" class="tip" aria-label="What is this for?" data-help="tai-model">?</button>
           <input type="text" id="tai-model" placeholder="claude-opus-5"></label>
         <label for="tai-key">API key <button type="button" class="tip" aria-label="What is this for?" data-help="tai-key">?</button>
           <input type="password" id="tai-key" placeholder="leave empty to keep the stored key" autocomplete="off"></label>
@@ -2950,6 +2950,19 @@ $("#storage-root").addEventListener("input", () => storageRootEdited = true);
 $("#storage-save").addEventListener("click", saveStorageDefault);
 
 let themeAiEdited = false;
+// The provider decides what the other fields mean: Azure wants a
+// resource address, a deployment name and an API version.
+function shapeThemeAiFields() {
+  const provider = $("#tai-provider").value;
+  const azure = provider === "azure_openai";
+  $("#tai-model-label").textContent = azure ? "Deployment name" : "Model";
+  $("#tai-model").placeholder = azure ? "the deployment you created on the resource"
+    : provider === "anthropic" ? "claude-opus-5" : "llama3";
+  $("#tai-endpoint").placeholder = azure ? "https://my-resource.openai.azure.com"
+    : provider === "openai_compatible" ? "http://127.0.0.1:11434/v1" : "not used for Anthropic";
+  $("#tai-endpoint").disabled = provider === "anthropic" || provider === "none";
+  $("#tai-api-version").disabled = !azure;
+}
 function renderThemeAiSettings(settings) {
   const ai = settings.theme_ai || {};
   if (!themeAiEdited) {
@@ -2962,6 +2975,7 @@ function renderThemeAiSettings(settings) {
     $("#tai-max-prompt").value = ai.max_prompt_tokens || 0;
     $("#tai-key").value = "";
   }
+  shapeThemeAiFields();
   const cap = ai.capability || {};
   const keyNote = ai.has_key ? (ai.key_from_environment ? "A key is set in the server's environment." : "A key is stored.") : "No key is stored.";
   $("#tai-help").textContent = (cap.available ? `Ready: ${cap.provider} / ${cap.model}. ` : (cap.reason ? cap.reason + " " : ""))
@@ -2997,6 +3011,7 @@ async function testThemeAi() {
   } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
 }
 ["tai-provider", "tai-endpoint", "tai-model", "tai-key", "tai-max-calls", "tai-api-version", "tai-tpm", "tai-max-prompt"].forEach(id => $(`#${id}`).addEventListener("input", () => themeAiEdited = true));
+$("#tai-provider").addEventListener("change", shapeThemeAiFields);
 $("#tai-save").addEventListener("click", saveThemeAiSettings);
 $("#tai-test").addEventListener("click", testThemeAi);
 

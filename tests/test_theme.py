@@ -614,9 +614,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual((ai["provider"], ai["model"], ai["max_calls"], ai["has_key"], ai["tokens_per_minute"],
                           ai["max_prompt_tokens"]), ("openai_compatible", "llama3", 40, True, 30000, 0))
         azure = self.client.put("/api/settings", json={"theme_ai": {
-            "provider": "azure_openai", "endpoint": "https://qnl.openai.azure.com", "model": "gpt-judge",
-            "api_version": "2024-10-21"}})
+            "provider": "azure_openai", "endpoint": "https://qnl.openai.azure.com", "deployment": "gpt-judge",
+            "api_key": "azkey", "api_version": "2024-10-21"}})
         self.assertEqual(azure.status_code, 200, azure.text)
+        self.assertEqual((azure.json()["theme_ai"]["model"], azure.json()["theme_ai"]["deployment"]),
+                         ("gpt-judge", "gpt-judge"))
         self.assertTrue(azure.json()["theme_ai"]["capability"]["available"])
         self.assertEqual(self.client.put("/api/settings", json={"theme_ai": {
             "provider": "azure_openai", "endpoint": "http://qnl.openai.azure.com", "model": "d"}}).status_code, 400)

@@ -1081,8 +1081,9 @@ def ai_settings(get_setting: Callable[[str], Optional[str]]) -> dict:
         provider = "none"
     env_key = os.environ.get("ANTHROPIC_API_KEY", "") if provider == "anthropic" else ""
     key = values.pop("api_key", "") or env_key
+    model = values.get("model") or (DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else "")
     return {"provider": provider, "endpoint": values.get("endpoint", ""),
-            "model": values.get("model") or (DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else ""),
+            "model": model, "deployment": model if provider == "azure_openai" else None,
             "api_version": values.get("api_version") or DEFAULT_AZURE_API_VERSION,
             "has_key": bool(key), "key_from_environment": bool(env_key) and not values.get("api_key"),
             "max_calls": _whole(values.get("max_calls") or 2000, 2000),
