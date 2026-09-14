@@ -195,9 +195,11 @@ ig-metadata: >-
   from the job where left empty, and each target can have its own values. It
   is written into metadata.json, the manifest and the archive.
 
-# Theme-based selection (crawl and record forms)
+# Theme-based selection (automated crawl)
 theme: >-
-  Keep only the pages that are about one topic. Every page the job opens is judged from its own text, kept or left out, and written to a selection list with the reason, so the collection can be explained later. Without a theme, every page in scope is kept.
+  Keep only the pages that are about one topic. Every page the crawl opens is judged from its own text, kept or left out, and written to a selection list with the reason, so the collection can be explained later. Without a theme, every page in scope is kept.
+theme-ai-input: >-
+  How much of a page the AI judge is sent. The default sends the address, headline and a short excerpt and asks for one word, a few hundred tokens per page, which suits a provider with a tokens-per-minute allowance. Address and title only is smaller still but judges from less. The full text asks for reasons and quoted evidence and costs the most.
 theme-name: >-
   A short name for the topic, shown on the job and written into the selection list.
 theme-brief: >-
@@ -225,11 +227,15 @@ theme-ai-policy: >-
 
 # Settings: the theme judge
 tai-provider: >-
-  Which model judges pages for themes, when a theme allows it. None means the rules decide. Anthropic sends page text to Claude over its API. An OpenAI-compatible endpoint can be a local model, in which case nothing leaves this machine.
+  Which model judges pages for themes, when a theme allows it. None means the rules decide. Anthropic sends page text to Claude over its API. Azure OpenAI uses a deployment on your own Azure resource. An OpenAI-compatible endpoint can be a local model, in which case nothing leaves this machine.
 tai-endpoint: >-
-  For an OpenAI-compatible provider: the base address of its API, such as http://127.0.0.1:11434/v1 for a local Ollama. Not used for Anthropic.
+  For Azure OpenAI: the resource address, such as https://my-resource.openai.azure.com. For an OpenAI-compatible provider: the base address of its API, such as http://127.0.0.1:11434/v1 for a local Ollama. Not used for Anthropic.
 tai-model: >-
-  The model name the provider expects, such as claude-opus-5, or the name of the local model you pulled.
+  The model name the provider expects, such as claude-opus-5, the name of the local model you pulled, or, for Azure, the deployment name.
+tai-api-version: >-
+  Azure OpenAI only: the API version on the request, such as 2024-10-21. Leave empty for the default.
+tai-tpm: >-
+  The tokens-per-minute allowance your provider gives this deployment, so SWM paces its questions to stay under it and waits when the minute is full; an answer of 429 is waited out too. 0 means no pacing.
 tai-key: >-
   The API key, kept in this dashboard's own database and never written into a capture. Leave the field empty to keep the stored key; the server's ANTHROPIC_API_KEY environment variable is used when none is stored.
 tai-max-calls: >-

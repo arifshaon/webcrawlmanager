@@ -78,7 +78,6 @@ _WIDGET_JS = """
   if (window.__swmWidgetInstalled) return;
   window.__swmWidgetInstalled = true;
   let state = "recording";
-  let theme = null;
   let root = null;
   const LABELS = {
     recording: "\\u25CF Recording",
@@ -99,12 +98,6 @@ _WIDGET_JS = """
     const st = root.querySelector(".swm-state");
     st.textContent = LABELS[state] || state;
     st.className = "swm-state " + state;
-    const th = root.querySelector(".swm-theme");
-    if (th) {
-      th.textContent = theme ? theme.text : "";
-      th.className = "swm-theme " + (theme ? theme.decision : "");
-      th.style.display = theme ? "block" : "none";
-    }
     const bar = root.querySelector(".swm-buttons");
     while (bar.firstChild) bar.removeChild(bar.firstChild);
     for (const [cmd, label] of buttons()) {
@@ -118,7 +111,6 @@ _WIDGET_JS = """
     }
   }
   window.__swmSetState = (s) => { state = s; if (!root) install(); render(); };
-  window.__swmSetTheme = (t) => { theme = t; if (!root) install(); render(); };
   function install() {
     if (!document.documentElement || root) return;
     try {
@@ -140,11 +132,6 @@ _WIDGET_JS = """
         ".swm-state { margin-bottom: 8px; }",
         ".swm-state.recording { color: #ff5f56; }",
         ".swm-state.paused { color: #ffbd2e; }",
-        ".swm-theme { margin: 0 0 8px; max-width: 280px; font-size: 11px;",
-        "  line-height: 1.35; opacity: .9; }",
-        ".swm-theme.keep { color: #7ee787; }",
-        ".swm-theme.reject { color: #ff9a8b; }",
-        ".swm-theme.unsure { color: #ffd166; }",
         ".swm-buttons { display: flex; gap: 6px; flex-wrap: wrap; }",
         "button { font: 11px system-ui, sans-serif;",
         "  border: 1px solid rgba(255,255,255,.25);",
@@ -159,13 +146,10 @@ _WIDGET_JS = """
       title.textContent = "SWM Recording";
       const stateEl = document.createElement("div");
       stateEl.className = "swm-state";
-      const themeEl = document.createElement("div");
-      themeEl.className = "swm-theme";
-      themeEl.style.display = "none";
       const buttons = document.createElement("div");
       buttons.className = "swm-buttons";
       box.appendChild(title); box.appendChild(stateEl);
-      box.appendChild(themeEl); box.appendChild(buttons);
+      box.appendChild(buttons);
       shadow.appendChild(style); shadow.appendChild(box);
       root = shadow;
       document.documentElement.appendChild(host);
@@ -209,8 +193,7 @@ class RecordingSession:
                  control_poll: Optional[Callable[[], Optional[str]]] = None,
                  on_progress: Optional[Callable[..., None]] = None,
                  tick_seconds: float = 0.5,
-                 page_timeout: float = 45.0,
-                 theme_judge=None):
+                 page_timeout: float = 45.0):
         self.start_url = start_url
         self.browser_cfg = browser_cfg
         self.warc = warc
@@ -218,11 +201,6 @@ class RecordingSession:
         self.on_progress = on_progress or (lambda **kw: None)
         self.tick = tick_seconds
         self.page_timeout = page_timeout
-        # a theme annotates each page the operator opens: the visit is the
-        # operator's decision, the verdict is written beside the WARC and
-        # shown in the widget; nothing is held back
-        self.theme_judge = theme_judge
-        self.theme_counts = {"kept": 0, "rejected": 0, "unsure": 0}
 
         self.state = RECORDING
         self.visited = 0                  # top-level navigations while recording
@@ -599,42 +577,12 @@ class RecordingSession:
         if self.state == RECORDING:
             self.visited += 1
             self._nav_watch.append(
-                (url.split("#")[0], time.monotonic() + self.doc_grace, frame))
-
-    def _judge_frame(self, url: str, frame) -> None:
-        """Read the page the operator opened and say what the theme makes
-        of it, in the log and in the widget."""
-        if self.theme_judge is None or frame is None:
-            return
-        try:
-            page = frame.page
-            html = page.content()
-        except Exception as exc:
-            log.debug("Theme could not read %s: %s", url, exc)
-            return
-        from .theme import extract_page_text
-        try:
-            decision = self.theme_judge.judge_page(
-                extract_page_text(html, url), hub=self.theme_judge.rules.is_hub(url),
-                seed=self.start_url, via="recording")
-        except Exception as exc:
-            log.warning("Theme judge failed on %s: %s", url, exc)
-            return
-        self.theme_counts[{"keep": "kept", "reject": "rejected"}.get(decision.decision, "unsure")] += 1
-        label = {"keep": "Theme: matches", "reject": "Theme: not a match"}.get(
-            decision.decision, "Theme: unsure")
-        text = f"{label} \u2014 {decision.reason[:140]}"
-        try:
-            page.evaluate("(t) => { if (window.__swmSetTheme) window.__swmSetTheme(t); }",
-                          {"text": text, "decision": decision.decision})
-        except Exception:
-            pass
+                (url.split("#")[0], time.monotonic() + self.doc_grace))
 
     def _check_nav_watch(self) -> None:
         now = time.monotonic()
         while self._nav_watch and self._nav_watch[0][1] <= now:
-            url, _, frame = self._nav_watch.popleft()
-            self._judge_frame(url, frame)
+            url, _ = self._nav_watch.popleft()
             if url not in self._captured_docs:
                 self.capture_stats["page-doc-missing"] += 1
                 log.warning(
@@ -732,15 +680,6 @@ class RecordingSession:
         self.state = STOPPED
         self._report()
         self._log_capture_summary()
-        if self.theme_judge is not None and self.theme_judge.log is not None:
-            try:
-                from .theme import render_selection_page
-                self.theme_judge.write_summary(self.theme_judge.log.out_dir,
-                                               {"recording": self.start_url,
-                                                "seed_counts": dict(self.theme_counts)})
-                render_selection_page(self.theme_judge.log.out_dir)
-            except OSError as exc:
-                log.warning("Could not write the theme summary: %s", exc)
         return {"visited": self.visited, "bytes": self.warc.total_bytes,
                 "current_url": self.current_url}
 
@@ -793,9 +732,7 @@ class RecordingSession:
         try:
             self.on_progress(state=self.state, visited=self.visited,
                              bytes_written=bytes_written,
-                             current_url=self.current_url,
-                             **({"details": {"theme": dict(self.theme_counts)}}
-                                if self.theme_judge is not None else {}))
+                             current_url=self.current_url)
         except Exception as exc:
             log.debug("Progress report failed: %s", exc)
 

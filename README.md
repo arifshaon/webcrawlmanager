@@ -680,10 +680,11 @@ Core crawl capabilities include:
 
 ## Theme-based capture
 
-An automated crawl or a recorded session can carry a **theme**: only
-pages about one topic are kept, and every page looked at is written to a
-selection list with the reason. It applies to the traditional captures,
-not to the social media modes, which select by account and date.
+An automated crawl can carry a **theme**: only pages about one topic are
+kept, and every page looked at is written to a selection list with the
+reason. It applies to automated crawls alone: in a recorded session the
+curator reads each page and decides, and the social media modes select by
+account and date.
 
 **What a theme is.** A name, a brief in plain words ("news about the
 restoration of heritage sites in Doha; not general tourism"), terms and
@@ -716,31 +717,40 @@ below it, rejected at zero or on a hard rule (an excluded term in the
 headline, a date outside the window, an excluded address).
 
 **The AI judge** is optional and answers the actual question, "is this
-page about this news?", from the extracted content SWM already holds. It
-never fetches a page itself: a fetch by the model would be a different
-fetch, by a different client, of a page that may not be the one in the
-archive. Configure it under Settings: Anthropic's Claude through its API
-(`pip install -e ".[theme-ai]"`), or any model behind an
+page about this news?", from what SWM already holds. It never fetches a
+page itself: a fetch by the model would be a different fetch, by a
+different client, of a page that may not be the one in the archive. What
+it is sent is a choice per theme. The default sends the address, the
+headline, the section, the date and a short excerpt of the text and asks
+for one word, yes, no or unsure: a few hundred tokens per page, so a
+whole crawl fits inside a modest tokens-per-minute allowance. The address
+and title alone is smaller still, and judges from less. The full text
+asks for reasons and quoted evidence, which SWM checks against the page,
+and costs the most. Links are triaged in one call per page from their
+text and surroundings, and the model names only the links it is
+confident are not the theme's; everything else is fetched and read.
+
+Configure the judge under Settings: Anthropic's Claude through its API
+(`pip install -e ".[theme-ai]"`), Azure OpenAI (the resource address, a
+deployment name, the key and an API version), or any model behind an
 OpenAI-compatible endpoint, which for a local Ollama or LM Studio means
-nothing leaves the machine. A theme chooses how the two judges combine:
-the AI decides with the rules as pre-filter and explanation (the default),
-the AI breaks ties only, or both must agree. The AI also triages links in
-one call per page and may skip only what it is confident about. A ceiling
-on calls per job guards the bill; past it the rules decide.
+nothing leaves the machine. A tokens-per-minute figure makes SWM pace its
+questions to stay under the provider's allowance and wait when the minute
+is full; an answer of 429 is waited out for the time the provider asks. A
+ceiling on calls per job guards the bill; past it the rules decide. A
+theme chooses how the two judges combine: the AI decides with the rules
+as pre-filter and explanation (the default), the AI breaks ties only, or
+both must agree.
 
 **Provenance.** `selection.jsonl` holds one line per page judged and per
 link triaged: the decision, which judge made it, the rules' score and
-the matched passages, the AI's verdict, confidence, reasons and quoted
-evidence (checked to occur in the page), the model and a hash of the
-prompt. `theme-summary.json` holds the theme, the judge, and the counts.
-The job list shows kept, left out and held for review as the run goes,
-and a **Selection** button opens a page built from the log. The API key
-is kept in the dashboard's database and never written into a capture.
-
-**In a recorded session** the operator's visit is the curatorial act, so
-nothing is held back: each page opened is judged and the verdict, with
-its reason, appears in the recording control at the bottom right of the
-window and in the selection list.
+the matched passages, the AI's answer (and, with the full text, its
+confidence, reasons and quoted evidence), what it was sent, the model and
+a hash of the prompt. `theme-summary.json` holds the theme, the judge,
+the counts, the estimated tokens spent and the waits. The job list shows
+kept, left out and held for review as the run goes, and a **Selection**
+button opens a page built from the log. The API key is kept in the
+dashboard's database and never written into a capture.
 
 ## Browser modes
 

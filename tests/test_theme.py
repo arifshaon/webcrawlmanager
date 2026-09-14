@@ -1,7 +1,6 @@
 """Theme-based selection: the text a judge sees, the rules, the AI judge
 against stand-ins, how the two combine, the hold that keeps a page out of
-the WARC until it is judged, the log, and the crawl and recording that
-use them."""
+the WARC until it is judged, the log, and the crawl that uses them."""
 from __future__ import annotations
 
 import json
@@ -40,17 +39,20 @@ class FakeAI(AIJudge):
             raise RuntimeError("model down")
         if "Links:" in user and system.startswith("You help a web crawler"):
             if self.link_skip:
-                links = []
-                for match in re.finditer(r"^(\d+)\. (\S+)$", user, re.M):
-                    if self.link_skip in match.group(2):
-                        links.append({"i": int(match.group(1)), "decision": "skip", "confidence": 0.97,
-                                      "reason": "not news"})
-                return json.dumps({"links": links})
-            return json.dumps(self.link_answer or {"links": []})
+                skip = [int(m.group(1)) for m in re.finditer(r"^(\d+)\. (\S+)$", user, re.M)
+                        if self.link_skip in m.group(2)]
+                return json.dumps({"skip": skip, "hub": []})
+            return json.dumps(self.link_answer or {"skip": [], "hub": []})
+        nominal = "exactly one word" in system
         for needle, answer in self.page_answers.items():
             if needle in user:
-                return answer if isinstance(answer, str) else json.dumps(answer)
-        return json.dumps({"relevant": "unsure", "confidence": 0.4, "reasons": "nothing scripted"})
+                if isinstance(answer, str):
+                    return answer
+                if nominal:
+                    return {"yes": "yes", "no": "no"}.get(answer.get("relevant"), "unsure")
+                return json.dumps(answer)
+        return "unsure" if nominal else json.dumps({"relevant": "unsure", "confidence": 0.4,
+                                                    "reasons": "nothing scripted"})
 
 
 class TextTests(unittest.TestCase):
@@ -159,8 +161,30 @@ class RulesTests(unittest.TestCase):
 
 
 class AIJudgeTests(unittest.TestCase):
-    def test_the_answer_is_read_whole_and_quotes_are_checked_against_the_page(self):
+    def test_by_default_the_model_gets_a_little_and_answers_one_word(self):
         theme = ThemeConfig.from_dict(LIBRARIES)
+        page = extract_page_text(serve.ARTICLES["/news/1-library-opens"].decode(), "http://x/news/1-library-opens")
+        ai = FakeAI({"library-opens": "Yes."})
+        verdict = ai.judge_page(theme, page)
+        self.assertEqual((verdict["decision"], verdict["input"], verdict["answer"]), ("keep", "compact", "Yes."))
+        self.assertIsNone(verdict["confidence"])
+        system, user = ai.prompts[0]
+        self.assertIn("exactly one word", system)
+        self.assertIn("Headline: New public library opens", user)
+        self.assertIn("Main text:", user)
+        self.assertLess(len(user), 1500)                  # a few hundred tokens, not the page
+        self.assertEqual(T._nominal("NO, this is sport"), "reject")
+        self.assertEqual(T._nominal("Relevant"), "keep")
+        self.assertEqual(T._nominal("I cannot say"), "unsure")
+        url_only = FakeAI({"library-opens": "no"})
+        verdict = url_only.judge_page(ThemeConfig.from_dict({**LIBRARIES, "ai_input": "url"}), page)
+        self.assertEqual((verdict["decision"], verdict["input"]), ("reject", "url"))
+        self.assertNotIn("Main text:", url_only.prompts[0][1])
+        self.assertNotIn("Headline:", url_only.prompts[0][1])
+        self.assertEqual(ai.tokens_estimated, verdict and ai.tokens_estimated)   # counted per call
+
+    def test_the_full_answer_is_read_whole_and_quotes_are_checked_against_the_page(self):
+        theme = ThemeConfig.from_dict({**LIBRARIES, "ai_input": "full"})
         page = extract_page_text(serve.ARTICLES["/news/1-library-opens"].decode(), "http://x/news/1-library-opens")
         ai = FakeAI({"library-opens": {"relevant": "yes", "confidence": 0.93, "reasons": "An opening.",
                                        "quotes": ["opened a new public library", "made-up passage"]}})
@@ -170,8 +194,10 @@ class AIJudgeTests(unittest.TestCase):
         self.assertEqual(verdict["quotes"], ["opened a new public library"])
         self.assertEqual(verdict["quotes_not_in_page"], ["made-up passage"])
         self.assertEqual(verdict["model"], "fake-model")
+        self.assertEqual(verdict["input"], "full")
         self.assertEqual(len(verdict["prompt_hash"]), 16)
         system, user = ai.prompts[0]
+        self.assertIn("JSON object", system)
         self.assertIn("Curator's brief", user)
         self.assertIn("Main text:", user)
         self.assertNotIn("Library card", user)
@@ -180,7 +206,7 @@ class AIJudgeTests(unittest.TestCase):
             T._json_object("no json here")
 
     def test_a_failing_model_is_an_error_the_rules_cover(self):
-        theme = ThemeConfig.from_dict(LIBRARIES)
+        theme = ThemeConfig.from_dict({**LIBRARIES, "ai_input": "full"})
         page = PageText(url="http://x/a", title="A library", body="library")
         with self.assertRaises(AIJudgeError):
             FakeAI(fail=True).judge_page(theme, page)
@@ -189,14 +215,25 @@ class AIJudgeTests(unittest.TestCase):
 
     def test_link_triage_answers_are_bounded_to_the_batch(self):
         theme = ThemeConfig.from_dict(LIBRARIES)
-        ai = FakeAI(link_answer={"links": [{"i": 0, "decision": "skip", "confidence": 0.95, "reason": "ads"},
-                                           {"i": 1, "decision": "hub", "confidence": 0.7},
-                                           {"i": 9, "decision": "skip", "confidence": 1.0},
-                                           {"i": 0, "decision": "maybe"}]})
+        ai = FakeAI(link_answer={"skip": [0, 9, "x"], "hub": [1, 0]})
         answers = ai.triage_links(theme, [{"url": "http://x/ads", "text": "Deals"},
                                           {"url": "http://x/tag/x", "text": "More"}])
         self.assertEqual([(a["i"], a["decision"]) for a in answers], [(0, "skip"), (1, "hub")])
         self.assertEqual(ai.triage_links(theme, []), [])
+
+    def test_calls_are_paced_to_a_tokens_per_minute_allowance(self):
+        slept = []
+        ai = FakeAI({"a": "yes"})
+        ai.tokens_per_minute = 400
+        ai.sleep = slept.append
+        theme = ThemeConfig.from_dict({**LIBRARIES, "ai_input": "url"})
+        for _ in range(3):
+            ai.judge_page(theme, PageText(url="http://x/a", title="t"))
+        self.assertTrue(slept)                       # the third question did not fit in the minute
+        self.assertGreaterEqual(slept[0], 0.5)
+        self.assertEqual(ai.waits, len(slept))
+        self.assertEqual(ai.calls, 3)
+        self.assertEqual(ai.describe()["tokens_per_minute"], 400)
 
     def test_the_openai_compatible_judge_speaks_the_chat_shape(self):
         import httpx
@@ -204,8 +241,7 @@ class AIJudgeTests(unittest.TestCase):
 
         def post(url, json=None, headers=None, timeout=None):
             seen.update({"url": url, "json": json, "headers": headers})
-            return httpx.Response(200, json={"choices": [{"message": {"content":
-                '{"relevant": "no", "confidence": 0.8, "reasons": "sport", "quotes": []}'}}]})
+            return httpx.Response(200, json={"choices": [{"message": {"content": "no"}}]})
         original = httpx.post
         httpx.post = post
         try:
@@ -216,8 +252,39 @@ class AIJudgeTests(unittest.TestCase):
         self.assertEqual(verdict["decision"], "reject")
         self.assertEqual(seen["url"], "http://127.0.0.1:11434/v1/chat/completions")
         self.assertEqual(seen["json"]["model"], "llama")
+        self.assertEqual(seen["json"]["max_tokens"], 16)
         self.assertEqual(seen["headers"]["authorization"], "Bearer k")
         self.assertEqual(judge.describe()["endpoint"], "http://127.0.0.1:11434/v1")
+
+    def test_azure_openai_addresses_a_deployment_with_its_key_header_and_waits_out_429(self):
+        import httpx
+        calls = []
+
+        def post(url, json=None, headers=None, timeout=None):
+            calls.append({"url": url, "json": json, "headers": headers})
+            if len(calls) == 1:
+                return httpx.Response(429, headers={"retry-after": "2"}, text="slow down")
+            return httpx.Response(200, json={"choices": [{"message": {"content": "Yes"}}]})
+        slept = []
+        original = httpx.post
+        httpx.post = post
+        try:
+            judge = T.AzureOpenAIJudge("https://qnl.openai.azure.com", "gpt-judge", "azkey",
+                                       api_version="2024-10-21", tokens_per_minute=30000)
+            judge.sleep = slept.append
+            verdict = judge.judge_page(ThemeConfig.from_dict(LIBRARIES), PageText(url="http://x/1", title="Library"))
+        finally:
+            httpx.post = original
+        self.assertEqual(verdict["decision"], "keep")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["url"],
+                         "https://qnl.openai.azure.com/openai/deployments/gpt-judge/chat/completions?api-version=2024-10-21")
+        self.assertEqual(calls[0]["headers"]["api-key"], "azkey")
+        self.assertNotIn("authorization", calls[0]["headers"])
+        self.assertNotIn("model", calls[0]["json"])
+        self.assertEqual(slept, [2.0])
+        self.assertEqual(judge.waits, 1)
+        self.assertEqual(judge.describe()["deployment"], "gpt-judge")
 
     def test_settings_choose_the_judge_and_never_echo_the_key(self):
         stored = {}
@@ -238,6 +305,16 @@ class AIJudgeTests(unittest.TestCase):
         self.assertEqual((anthropic_judge.provider, anthropic_judge.model), ("anthropic", "m"))
         stored["theme.ai.model"] = ""
         self.assertEqual(T.make_ai_judge(get).model, T.DEFAULT_ANTHROPIC_MODEL)
+        stored.update({"theme.ai.provider": "azure_openai", "theme.ai.endpoint": "https://r.openai.azure.com",
+                       "theme.ai.model": "dep", "theme.ai.tokens_per_minute": "50000",
+                       "theme.ai.api_version": "2025-01-01-preview"})
+        azure = T.make_ai_judge(get)
+        self.assertIsInstance(azure, T.AzureOpenAIJudge)
+        self.assertEqual((azure.tokens_per_minute, azure.api_version), (50000, "2025-01-01-preview"))
+        self.assertTrue(T.ai_capability(get)["available"])
+        stored["theme.ai.api_key"] = ""
+        self.assertIsNone(T.make_ai_judge(get))
+        self.assertIn("API key", T.ai_capability(get)["reason"])
 
 
 class ComposedJudgeTests(unittest.TestCase):
@@ -279,7 +356,7 @@ class ComposedJudgeTests(unittest.TestCase):
         judge = self.judge(ai)
         budget = judge.judge_page(self.page("/news/4-city-budget"))
         self.assertEqual((budget.decision, budget.judge), ("keep", "both"))
-        self.assertEqual(budget.ai["quotes"], ["the library budget is unchanged"])
+        self.assertEqual(budget.ai["answer"], "yes")           # compact: one word, no quotes
         self.assertEqual(judge.judge_page(self.page("/news/1-library-opens")).decision, "reject")
         old = judge.judge_page(self.page("/news/5-old-library-story"))
         self.assertEqual((old.decision, old.judge), ("reject", "rules"))     # date window: no AI call
@@ -308,9 +385,8 @@ class ComposedJudgeTests(unittest.TestCase):
         second = capped.judge_page(self.page("/news/4-city-budget"))
         self.assertEqual(second.judge, "rules")
 
-    def test_link_triage_skips_only_on_confidence_and_remembers(self):
-        ai = FakeAI(link_answer={"links": [{"i": 0, "decision": "skip", "confidence": 0.95, "reason": "adverts"},
-                                           {"i": 1, "decision": "skip", "confidence": 0.5, "reason": "maybe"}]})
+    def test_link_triage_skips_only_what_the_model_names_and_remembers(self):
+        ai = FakeAI(link_answer={"skip": [0], "hub": []})
         judge = self.judge(ai)
         links = [{"url": "http://x/deals", "text": "Deals of the week", "context": "sponsored"},
                  {"url": "http://x/news/9", "text": "Council meets", "context": ""},
@@ -320,7 +396,7 @@ class ComposedJudgeTests(unittest.TestCase):
         by_url = {r["url"]: r for r in results}
         self.assertEqual(by_url["http://x/deals"]["decision"], "skip")
         self.assertEqual(by_url["http://x/deals"]["judge"], "ai")
-        self.assertEqual(by_url["http://x/news/9"]["decision"], "fetch")   # half-sure is not enough
+        self.assertEqual(by_url["http://x/news/9"]["decision"], "fetch")   # not named: fetched
         self.assertEqual(by_url["http://x/login"]["decision"], "skip")
         self.assertEqual(by_url["http://x/news/10"]["decision"], "fetch")
         self.assertEqual(ai.calls, 1)
@@ -466,7 +542,7 @@ class CrawlTests(unittest.TestCase):
         rows = judge.log.rows()
         budget = next(r for r in rows if r["kind"] == "page" and r["url"].endswith("/news/4-city-budget"))
         self.assertEqual(budget["judge"], "both")
-        self.assertEqual(budget["ai"]["quotes"], ["library budget is unchanged"])
+        self.assertEqual(budget["ai"]["answer"], "yes")
         skipped = [r for r in rows if r["kind"] == "link" and r.get("judge") == "ai" and r["decision"] == "skip"]
         self.assertEqual({r["url"].replace(self.base, "") for r in skipped}, {"/about"})
         self.assertNotIn("/about", serve.Handler.requests)         # the AI's word, before any fetch
@@ -479,53 +555,6 @@ class CrawlTests(unittest.TestCase):
                                "hub_patterns": [], "stop_after_misses": 2, "keep_hubs": False})
         self.assertLess(stats["visited"], 6)
         self.assertEqual(stats["theme"]["kept"], 0)
-
-
-class RecordingTests(unittest.TestCase):
-    def test_each_page_opened_is_judged_and_the_widget_told(self):
-        from webarc.recorder import RecordingSession
-        from webarc.config import BrowserConfig
-        from tests.test_recording_regressions import DummyWarc
-
-        class Page:
-            def __init__(self, html):
-                self.html = html
-                self.told = []
-
-            def content(self):
-                return self.html
-
-            def evaluate(self, _script, arg=None):
-                self.told.append(arg)
-
-        class Frame:
-            parent_frame = None
-
-            def __init__(self, url, page):
-                self.url, self.page = url, page
-
-        with tempfile.TemporaryDirectory() as tmp:
-            judge = ThemeJudge(ThemeConfig.from_dict(LIBRARIES), None, Path(tmp))
-            session = RecordingSession("http://x/", BrowserConfig(mode="headed"), DummyWarc(Path(tmp)),
-                                       theme_judge=judge)
-            session.doc_grace = 0
-            page = Page(serve.ARTICLES["/news/1-library-opens"].decode())
-            session._on_frame_navigated(Frame("http://x/news/1-library-opens", page))
-            session._check_nav_watch()
-            other = Page(serve.ARTICLES["/news/2-football-final"].decode())
-            session._on_frame_navigated(Frame("http://x/news/2-football-final", other))
-            session._check_nav_watch()
-
-            self.assertEqual(session.theme_counts, {"kept": 1, "rejected": 1, "unsure": 0})
-            self.assertEqual(page.told[0]["decision"], "keep")
-            self.assertTrue(page.told[0]["text"].startswith("Theme: matches"))
-            self.assertEqual(other.told[0]["decision"], "reject")
-            rows = judge.log.rows()
-            self.assertEqual([r["via"] for r in rows], ["recording", "recording"])
-            reports = []
-            session.on_progress = lambda **kw: reports.append(kw)
-            session._report()
-            self.assertEqual(reports[0]["details"], {"theme": {"kept": 1, "rejected": 1, "unsure": 0}})
 
 
 class ApiTests(unittest.TestCase):
@@ -546,11 +575,18 @@ class ApiTests(unittest.TestCase):
         self.assertIn("available", settings["theme_ai"]["capability"])
         saved = self.client.put("/api/settings", json={"theme_ai": {
             "provider": "openai_compatible", "endpoint": "http://127.0.0.1:11434/v1", "model": "llama3",
-            "api_key": "s3cret", "max_calls": 40}})
+            "api_key": "s3cret", "max_calls": 40, "tokens_per_minute": 30000}})
         self.assertEqual(saved.status_code, 200, saved.text)
         ai = saved.json()["theme_ai"]
-        self.assertEqual((ai["provider"], ai["model"], ai["max_calls"], ai["has_key"]),
-                         ("openai_compatible", "llama3", 40, True))
+        self.assertEqual((ai["provider"], ai["model"], ai["max_calls"], ai["has_key"], ai["tokens_per_minute"]),
+                         ("openai_compatible", "llama3", 40, True, 30000))
+        azure = self.client.put("/api/settings", json={"theme_ai": {
+            "provider": "azure_openai", "endpoint": "https://qnl.openai.azure.com", "model": "gpt-judge",
+            "api_version": "2024-10-21"}})
+        self.assertEqual(azure.status_code, 200, azure.text)
+        self.assertTrue(azure.json()["theme_ai"]["capability"]["available"])
+        self.assertEqual(self.client.put("/api/settings", json={"theme_ai": {
+            "provider": "azure_openai", "endpoint": "http://qnl.openai.azure.com", "model": "d"}}).status_code, 400)
         self.assertNotIn("s3cret", saved.text)
         self.assertTrue(ai["capability"]["available"])
         self.assertTrue(self.client.get("/api/capabilities").json()["theme_ai"]["available"])
@@ -587,12 +623,6 @@ class ApiTests(unittest.TestCase):
             "seeds": [{"url": "https://example.org/"}], "theme": {"terms": ["a"], "url_exclude": ["("]}}})
         self.assertEqual(bad.status_code, 400)
         self.assertIn("theme", bad.text)
-        recording = self.client.post("/api/recordings", json={"url": "https://example.org/", "theme": LIBRARIES})
-        if recording.status_code == 201:
-            stored = json.loads(self.srv._store().get_crawl(recording.json()["id"])["config_json"])
-            self.assertEqual(stored["recording"]["theme"]["name"], "libraries")
-        else:
-            self.assertEqual(recording.status_code, 409)       # no display here: refused before the theme
         made = self.client.post("/api/crawls", json={"config": {"seeds": [{"url": "https://example.org/"}]}}).json()
         self.assertIsNone(made["theme"])
         self.assertFalse(made["has_selection"])

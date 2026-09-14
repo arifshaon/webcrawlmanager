@@ -228,18 +228,26 @@ def _write_theme_ai_settings(wanted: object) -> None:
     endpoint = str(wanted.get("endpoint") or "").strip()
     if provider == "openai_compatible" and not endpoint.lower().startswith(("http://", "https://")):
         raise HTTPException(400, "theme_ai.endpoint must be an http(s) URL")
+    if provider == "azure_openai" and not endpoint.lower().startswith("https://"):
+        raise HTTPException(400, "theme_ai.endpoint must be the Azure OpenAI resource's https address")
     model = str(wanted.get("model") or "").strip()[:200]
     try:
         max_calls = int(wanted.get("max_calls") or 2000)
+        tokens_per_minute = int(wanted.get("tokens_per_minute") or 0)
     except (TypeError, ValueError) as exc:
-        raise HTTPException(400, "theme_ai.max_calls must be a whole number") from exc
+        raise HTTPException(400, "theme_ai.max_calls and tokens_per_minute must be whole numbers") from exc
     if not 1 <= max_calls <= 1_000_000:
         raise HTTPException(400, "theme_ai.max_calls must be between 1 and 1,000,000")
+    if not 0 <= tokens_per_minute <= 100_000_000:
+        raise HTTPException(400, "theme_ai.tokens_per_minute must be 0 (no limit) or a positive number")
+    api_version = str(wanted.get("api_version") or "").strip()[:40]
     store = _store()
     store.set_setting(SETTING_PREFIX + "provider", provider)
     store.set_setting(SETTING_PREFIX + "endpoint", endpoint[:500])
     store.set_setting(SETTING_PREFIX + "model", model)
     store.set_setting(SETTING_PREFIX + "max_calls", str(max_calls))
+    store.set_setting(SETTING_PREFIX + "tokens_per_minute", str(tokens_per_minute))
+    store.set_setting(SETTING_PREFIX + "api_version", api_version)
     if "api_key" in wanted:
         store.set_setting(SETTING_PREFIX + "api_key", str(wanted.get("api_key") or "").strip()[:500])
 
@@ -364,18 +372,6 @@ def _validate_config(config: object) -> dict:
             raise HTTPException(400, f"theme: {exc}") from exc
     return config
 
-
-def _theme_from_payload(payload: dict) -> dict | None:
-    """A recording's theme, validated, or None when none was asked for."""
-    raw = payload.get("theme")
-    if raw in (None, "", False):
-        return None
-    from .theme import ThemeConfig
-    try:
-        theme = ThemeConfig.from_dict(raw)
-    except ValueError as exc:
-        raise HTTPException(400, f"theme: {exc}") from exc
-    return theme.to_dict() if theme.enabled else None
 
 
 def _parse_yaml(source: object) -> dict:
@@ -683,9 +679,8 @@ def _crawl_view(row: dict) -> dict:
         # kept somewhere other than the default without guessing.
         "output_dir": str(crawl_dir),
         "has_selection": (crawl_dir / "pages" / "selection.html").is_file(),
-        "theme": ((json.loads(row["config_json"]).get("theme")
-                   or (json.loads(row["config_json"]).get("recording") or {}).get("theme") or {})
-                  .get("name") if row.get("config_json") else None),
+        "theme": ((json.loads(row["config_json"]).get("theme") or {}).get("name")
+                  if row.get("config_json") else None),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
@@ -818,7 +813,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return {"page": page.to_dict(), **decision.to_dict(), "ai_configured": ai is not None}
 
     @app.post("/api/theme/ai/test")
-    def theme_ai_test():
+    def theme_ai_test(payload: dict | None = Body(None)):
         """One small question to the configured AI judge, to prove the
         settings work before a run depends on them."""
         from .theme import AIJudgeError, PageText, ThemeConfig, make_ai_judge
@@ -826,7 +821,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         if ai is None:
             raise HTTPException(409, _theme_ai_capability().get("reason") or "No AI judge is configured.")
         theme = ThemeConfig.from_dict({"name": "libraries", "terms": ["library"],
-                                       "brief": "News about public libraries."})
+                                       "brief": "News about public libraries.",
+                                       "ai_input": str(payload.get("ai_input") or "compact")
+                                       if isinstance(payload, dict) else "compact"})
         page = PageText(url="https://example.org/news/library-opens", title="New public library opens",
                         headline="New public library opens", body="The city opened a new public "
                         "library on Monday with a reading room and a children's section.",
@@ -875,9 +872,6 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "seeds": [{"url": url}],
             "metadata": _metadata_from(payload, [url]),
         }
-        theme = _theme_from_payload(payload)
-        if theme:
-            config["recording"]["theme"] = theme
         # Resolved before the row exists: a location that cannot serve
         # should fail the request, not leave a crawl pointing nowhere.
         storage_root = _storage_root_for(payload.get("storage_dir"))

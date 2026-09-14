@@ -1,4 +1,4 @@
-"""Theme-based selection for automated crawls and recorded sessions.
+"""Theme-based selection for automated crawls.
 
 A *theme* says which pages belong in a collection: news about one topic,
 coverage of one event. The crawler fetches a page, a judge reads it, and
@@ -12,10 +12,14 @@ Two judges. The **rules judge** always runs: terms and phrases (Arabic
 normalised, light stemming), URL and section rules, site metadata, a date
 window, scored against the page's *main* content rather than its menus.
 The **AI judge** is optional and answers the real question, "is this page
-about this news?", from the extracted content SWM already holds; it never
-fetches anything itself. Its verdict, reasons and quoted evidence are
-recorded per page beside the rules' verdict, with the model and a hash of
-the prompt, so a collection can be defended later without the model.
+about this news?", from what SWM already holds; it never fetches anything
+itself. By default it is sent the address, the headline and a short
+excerpt and asked for one word, yes, no or unsure, which keeps a whole
+crawl inside a small tokens-per-minute allowance; a theme can ask for the
+address alone, or for the full text with reasons and quoted evidence.
+Whatever it answers is recorded per page beside the rules' verdict, with
+the model and a hash of the prompt, so a collection can be defended
+later without the model.
 """
 from __future__ import annotations
 
@@ -25,7 +29,9 @@ import json
 import logging
 import os
 import re
+import time
 import unicodedata
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -38,10 +44,13 @@ KEEP, REJECT, UNSURE = "keep", "reject", "unsure"
 SKIP, FETCH, HUB = "skip", "fetch", "hub"
 POLICIES = ("decide", "tie_break", "agree")
 UNSURE_ACTIONS = ("review", "keep", "reject")
-PROVIDERS = ("none", "anthropic", "openai_compatible")
+PROVIDERS = ("none", "anthropic", "openai_compatible", "azure_openai")
+AI_INPUTS = ("url", "compact", "full")
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
+DEFAULT_AZURE_API_VERSION = "2024-10-21"
 SETTING_PREFIX = "theme.ai."
-SETTING_KEYS = ("provider", "endpoint", "model", "api_key", "max_calls")
+SETTING_KEYS = ("provider", "endpoint", "model", "api_key", "max_calls", "api_version",
+                "tokens_per_minute")
 SELECTION_FILE = "selection.jsonl"
 SUMMARY_FILE = "theme-summary.json"
 PROMPT_VERSION = "swm-theme-prompt-1"
@@ -104,6 +113,7 @@ class ThemeConfig:
     ai_enabled: bool = True
     ai_policy: str = "decide"
     ai_triage_links: bool = True
+    ai_input: str = "compact"          # url | compact | full: what the model is sent
     examples: list[dict] = field(default_factory=list)
 
     @classmethod
@@ -123,6 +133,9 @@ class ThemeConfig:
         unsure = str(raw.get("unsure_action") or "review")
         if unsure not in UNSURE_ACTIONS:
             raise ValueError("unsure_action must be one of " + ", ".join(UNSURE_ACTIONS))
+        ai_input = str(raw.get("ai_input") or "compact")
+        if ai_input not in AI_INPUTS:
+            raise ValueError("ai_input must be one of " + ", ".join(AI_INPUTS))
         date_from = _date_bound(raw.get("date_from"))
         date_to = _date_bound(raw.get("date_to"), end=True)
         if date_from and date_to and date_from > date_to:
@@ -152,7 +165,7 @@ class ThemeConfig:
             unsure_action=unsure, stop_after_misses=max(0, stop_after),
             ai_enabled=bool(raw.get("ai_enabled", True)), ai_policy=policy,
             ai_triage_links=bool(raw.get("ai_triage_links", True)),
-            examples=examples[:20])
+            ai_input=ai_input, examples=examples[:20])
         _compiled(theme.url_include, "url_include")
         _compiled(theme.url_exclude, "url_exclude")
         _compiled(theme.hub_patterns, "hub_patterns")
@@ -168,7 +181,7 @@ class ThemeConfig:
             "min_score": self.min_score, "unsure_action": self.unsure_action,
             "stop_after_misses": self.stop_after_misses, "ai_enabled": self.ai_enabled,
             "ai_policy": self.ai_policy, "ai_triage_links": self.ai_triage_links,
-            "examples": list(self.examples),
+            "ai_input": self.ai_input, "examples": list(self.examples),
         }
 
     @property
@@ -603,7 +616,15 @@ class AIJudgeError(Exception):
     is recorded."""
 
 
-_PAGE_SYSTEM = """You judge whether a web page belongs in an archival collection about one theme.
+_PAGE_SYSTEM_NOMINAL = """You judge whether a web page belongs in an archival collection about one
+theme. You are given the theme (a name, a brief written by a curator, their terms) and what is
+known of the page. Decide from that alone; do not assume anything about pages you cannot see.
+
+Answer with exactly one word and nothing else: yes, no, or unsure.
+"yes" means the page's own subject is the theme, not a passing mention. "no" means it is about
+something else. "unsure" is the honest answer when what you were given is too little to tell."""
+
+_PAGE_SYSTEM_FULL = """You judge whether a web page belongs in an archival collection about one theme.
 You are given the theme (a name, a brief written by a curator, and their terms) and the page's
 extracted content: URL, title, headline, section, tags, date and main text. Decide from the
 content alone; do not assume anything about pages you cannot see.
@@ -620,15 +641,13 @@ _LINKS_SYSTEM = """You help a web crawler decide which links on a page are worth
 archival collection about one theme. You are given the theme and a numbered list of links with
 the text of each link and the words around it on the page. You cannot open the links.
 
-For each link answer one of:
-- "skip": confidently not about the theme (a different subject, a login page, a legal notice).
-- "fetch": possibly about the theme, or too little to tell; the crawler will read the page.
-- "hub": a listing, section, tag, search or pagination page that may lead to theme pages.
+Name only the links you are confident about. "skip": confidently not about the theme (another
+subject, a log-in page, a legal notice). "hub": a listing, section, tag, search or pagination
+page that may lead to theme pages. Every other link will be fetched and read, so leave out
+anything you are unsure of: a page fetched needlessly costs one request, a page skipped
+wrongly is lost.
 
-Prefer "fetch" whenever in doubt: a page fetched needlessly costs one request, a page skipped
-wrongly is lost. Answer with one JSON object and nothing else:
-{"links": [{"i": <number>, "decision": "skip" | "fetch" | "hub", "confidence": 0.0-1.0,
- "reason": "a few words"}]}"""
+Answer with one JSON object and nothing else: {"skip": [numbers], "hub": [numbers]}"""
 
 
 def _theme_block(theme: ThemeConfig) -> str:
@@ -650,15 +669,38 @@ def _theme_block(theme: ThemeConfig) -> str:
     return "\n".join(parts)
 
 
-def page_prompt(theme: ThemeConfig, page: PageText, *, max_chars: int = 12000) -> str:
-    fields = [f"URL: {page.url}", f"Title: {page.title}", f"Headline: {page.headline}",
-              f"Section: {page.section}", f"Tags: {', '.join(page.tags)}",
-              f"Keywords: {page.keywords}", f"Description: {page.description}",
-              f"Published: {page.published or 'unknown'}", f"Language: {page.language}"]
-    body = page.body[:max_chars]
-    return (_theme_block(theme) + "\n\n" + "\n".join(fields)
-            + "\n\nMain text:\n" + body
-            + ("\n\n[text truncated]" if len(page.body) > max_chars else ""))
+_EXCERPT_CHARS = {"url": 0, "compact": 600, "full": 12000}
+
+
+def page_prompt(theme: ThemeConfig, page: PageText, mode: str = "compact") -> str:
+    """What the model is sent about a page. ``url``: the address and the
+    title. ``compact``: those plus the headline, section, date and the first
+    few hundred characters of the text, a few hundred tokens in all.
+    ``full``: the whole extracted content."""
+    fields = [f"URL: {page.url}", f"Title: {page.title}"]
+    if mode != "url":
+        fields += [f"Headline: {page.headline}", f"Section: {page.section}",
+                   f"Tags: {', '.join(page.tags)}", f"Published: {page.published or 'unknown'}"]
+    if mode == "full":
+        fields += [f"Keywords: {page.keywords}", f"Description: {page.description}",
+                   f"Language: {page.language}"]
+    limit = _EXCERPT_CHARS.get(mode, 600)
+    text = ""
+    if limit:
+        body = page.body[:limit]
+        text = ("\n\nMain text:\n" + body + ("\n\n[text truncated]" if len(page.body) > limit else ""))
+    return _theme_block(theme) + "\n\n" + "\n".join(fields) + text
+
+
+def _nominal(answer: str) -> str:
+    """One word into a decision: yes, no, or anything else is unsure."""
+    words = re.findall(r"[a-z]+", answer.lower())
+    first = words[0] if words else ""
+    if first in ("yes", "relevant", "keep", "true"):
+        return KEEP
+    if first in ("no", "irrelevant", "not", "reject", "false"):
+        return REJECT
+    return UNSURE
 
 
 def links_prompt(theme: ThemeConfig, links: list[dict]) -> str:
@@ -711,34 +753,84 @@ def _verify_quotes(quotes: object, page: PageText) -> tuple[list[str], list[str]
 
 class AIJudge:
     """Talks to a model. Subclasses supply ``_complete(system, user)`` and
-    ``describe()``; this class builds the prompts and reads the answers."""
+    ``describe()``; this class builds the prompts, paces the calls and
+    reads the answers."""
 
     provider = "abstract"
 
-    def __init__(self, model: str, *, timeout: float = 60.0):
+    def __init__(self, model: str, *, timeout: float = 60.0, tokens_per_minute: int = 0,
+                 sleep: Callable[[float], None] = time.sleep):
         self.model = model
         self.timeout = timeout
+        self.tokens_per_minute = max(0, int(tokens_per_minute or 0))
+        self.sleep = sleep
         self.calls = 0
         self.failures = 0
+        self.tokens_estimated = 0
+        self.waits = 0
+        self._recent: deque = deque()          # (monotonic time, estimated tokens)
 
     def describe(self) -> dict:
-        return {"provider": self.provider, "model": self.model, "prompt_version": PROMPT_VERSION}
+        return {"provider": self.provider, "model": self.model, "prompt_version": PROMPT_VERSION,
+                "tokens_per_minute": self.tokens_per_minute or None}
 
     def _complete(self, system: str, user: str, *, max_tokens: int) -> str:
         raise NotImplementedError
 
-    def judge_page(self, theme: ThemeConfig, page: PageText) -> dict:
-        prompt = page_prompt(theme, page)
+    # -- pacing -------------------------------------------------------------------
+    def _pace(self, system: str, user: str, max_tokens: int) -> None:
+        """Stay under the provider's tokens-per-minute allowance: an estimate
+        of this call's tokens (four characters each, plus the answer) against
+        what the last minute has already used; wait when it would not fit."""
+        estimate = (len(system) + len(user)) // 4 + max_tokens
+        self.tokens_estimated += estimate
+        if not self.tokens_per_minute:
+            return
+        now = time.monotonic()
+        while self._recent and now - self._recent[0][0] > 60.0:
+            self._recent.popleft()
+        used = sum(t for _, t in self._recent)
+        if self._recent and used + estimate > self.tokens_per_minute:
+            wait = max(0.5, 60.0 - (now - self._recent[0][0]) + 0.1)
+            self.waits += 1
+            log.info("AI judge: %d of %d tokens used this minute; waiting %.0fs",
+                     used, self.tokens_per_minute, wait)
+            self.sleep(wait)
+            now = time.monotonic()
+            while self._recent and now - self._recent[0][0] > 60.0:
+                self._recent.popleft()
+        self._recent.append((now, estimate))
+
+    def _ask(self, system: str, user: str, *, max_tokens: int) -> str:
+        self._pace(system, user, max_tokens)
         self.calls += 1
         try:
-            answer = self._complete(_PAGE_SYSTEM, prompt, max_tokens=600)
-            parsed = _json_object(answer)
+            return self._complete(system, user, max_tokens=max_tokens)
         except AIJudgeError:
             self.failures += 1
             raise
         except Exception as exc:
             self.failures += 1
             raise AIJudgeError(f"{type(exc).__name__}: {str(exc)[:300]}") from exc
+
+    # -- pages -------------------------------------------------------------------
+    def judge_page(self, theme: ThemeConfig, page: PageText) -> dict:
+        mode = theme.ai_input if theme.ai_input in AI_INPUTS else "compact"
+        prompt = page_prompt(theme, page, mode)
+        system = _PAGE_SYSTEM_FULL if mode == "full" else _PAGE_SYSTEM_NOMINAL
+        answer = self._ask(system, prompt, max_tokens=600 if mode == "full" else 8)
+        record = {"model": self.model, "provider": self.provider, "input": mode,
+                  "prompt_hash": hashlib.sha256((PROMPT_VERSION + system + prompt)
+                                                .encode("utf-8")).hexdigest()[:16]}
+        if mode != "full":
+            decision = _nominal(answer)
+            return {**record, "decision": decision, "answer": answer.strip()[:40],
+                    "confidence": None, "reasons": "", "quotes": [], "quotes_not_in_page": []}
+        try:
+            parsed = _json_object(answer)
+        except AIJudgeError:
+            self.failures += 1
+            raise
         relevant = str(parsed.get("relevant") or "unsure").lower()
         decision = {"yes": KEEP, "no": REJECT}.get(relevant, UNSURE)
         try:
@@ -746,41 +838,35 @@ class AIJudge:
         except (TypeError, ValueError):
             confidence = 0.5
         verified, unverified = _verify_quotes(parsed.get("quotes"), page)
-        return {"decision": decision, "confidence": confidence,
+        return {**record, "decision": decision, "confidence": confidence,
                 "reasons": str(parsed.get("reasons") or "")[:600],
-                "quotes": verified, "quotes_not_in_page": unverified,
-                "model": self.model, "provider": self.provider,
-                "prompt_hash": hashlib.sha256((PROMPT_VERSION + _PAGE_SYSTEM + prompt)
-                                              .encode("utf-8")).hexdigest()[:16]}
+                "quotes": verified, "quotes_not_in_page": unverified}
 
+    # -- links -------------------------------------------------------------------
     def triage_links(self, theme: ThemeConfig, links: list[dict]) -> list[dict]:
+        """The links the model is confident about, as ``{"i", "decision"}``
+        with decision skip or hub; every other link is fetched."""
         if not links:
             return []
         prompt = links_prompt(theme, links)
-        self.calls += 1
+        answer = self._ask(_LINKS_SYSTEM, prompt, max_tokens=6 * len(links) + 40)
         try:
-            answer = self._complete(_LINKS_SYSTEM, prompt, max_tokens=60 * len(links) + 200)
             parsed = _json_object(answer)
         except AIJudgeError:
             self.failures += 1
             raise
-        except Exception as exc:
-            self.failures += 1
-            raise AIJudgeError(f"{type(exc).__name__}: {str(exc)[:300]}") from exc
         out: list[dict] = []
-        for item in parsed.get("links") if isinstance(parsed.get("links"), list) else []:
-            if not isinstance(item, dict):
-                continue
-            try:
-                index = int(item.get("i"))
-                confidence = max(0.0, min(1.0, float(item.get("confidence", 0.5))))
-            except (TypeError, ValueError):
-                continue
-            decision = str(item.get("decision") or FETCH).lower()
-            if decision not in (SKIP, FETCH, HUB) or not 0 <= index < len(links):
-                continue
-            out.append({"i": index, "decision": decision, "confidence": confidence,
-                        "reason": str(item.get("reason") or "")[:200]})
+        seen: set[int] = set()
+        for decision in (SKIP, HUB):
+            values = parsed.get(decision)
+            for value in values if isinstance(values, list) else []:
+                try:
+                    index = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < len(links) and index not in seen:
+                    seen.add(index)
+                    out.append({"i": index, "decision": decision})
         return out
 
 
@@ -791,8 +877,9 @@ class AnthropicJudge(AIJudge):
     provider = "anthropic"
 
     def __init__(self, model: str = DEFAULT_ANTHROPIC_MODEL, api_key: Optional[str] = None,
-                 *, timeout: float = 60.0):
-        super().__init__(model or DEFAULT_ANTHROPIC_MODEL, timeout=timeout)
+                 *, timeout: float = 60.0, tokens_per_minute: int = 0):
+        super().__init__(model or DEFAULT_ANTHROPIC_MODEL, timeout=timeout,
+                         tokens_per_minute=tokens_per_minute)
         self.api_key = api_key or None
         self._client = None
 
@@ -844,69 +931,142 @@ class OpenAICompatibleJudge(AIJudge):
     provider = "openai_compatible"
 
     def __init__(self, endpoint: str, model: str, api_key: Optional[str] = None,
-                 *, timeout: float = 120.0):
-        super().__init__(model, timeout=timeout)
+                 *, timeout: float = 120.0, tokens_per_minute: int = 0):
+        super().__init__(model, timeout=timeout, tokens_per_minute=tokens_per_minute)
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key or None
 
     def describe(self) -> dict:
         return {**super().describe(), "endpoint": self.endpoint}
 
-    def _complete(self, system: str, user: str, *, max_tokens: int) -> str:
-        import httpx
+    def _url(self) -> str:
         url = self.endpoint
-        if not url.endswith("/chat/completions"):
-            url = url + "/chat/completions"
+        return url if url.endswith("/chat/completions") else url + "/chat/completions"
+
+    def _headers(self) -> dict:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
-        body = {"model": self.model, "temperature": 0,
+        return headers
+
+    def _body(self, system: str, user: str, max_tokens: int) -> dict:
+        return {"model": self.model, "temperature": 0,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "max_tokens": max(256, max_tokens)}
-        try:
-            response = httpx.post(url, json=body, headers=headers, timeout=self.timeout)
-        except httpx.HTTPError as exc:
-            raise AIJudgeError(f"could not reach {url}: {exc}") from exc
-        if response.status_code >= 400:
-            raise AIJudgeError(f"HTTP {response.status_code} from {url}: {response.text[:200]}")
-        try:
-            payload = response.json()
-            return str(payload["choices"][0]["message"]["content"])
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise AIJudgeError("the endpoint's answer was not a chat completion") from exc
+                "max_tokens": max(16, max_tokens)}
+
+    def _complete(self, system: str, user: str, *, max_tokens: int) -> str:
+        import httpx
+        url = self._url()
+        for attempt in range(4):
+            try:
+                response = httpx.post(url, json=self._body(system, user, max_tokens),
+                                      headers=self._headers(), timeout=self.timeout)
+            except httpx.HTTPError as exc:
+                raise AIJudgeError(f"could not reach {url}: {exc}") from exc
+            if response.status_code == 429 and attempt < 3:
+                # the provider's own minute allowance: wait what it asks, then again
+                retry_after = response.headers.get("retry-after", "")
+                try:
+                    wait = min(120.0, max(1.0, float(retry_after)))
+                except ValueError:
+                    wait = 10.0 * (attempt + 1)
+                self.waits += 1
+                log.info("AI judge: %s answered 429; waiting %.0fs", url, wait)
+                self.sleep(wait)
+                continue
+            if response.status_code >= 400:
+                raise AIJudgeError(f"HTTP {response.status_code} from {url}: {response.text[:200]}")
+            try:
+                payload = response.json()
+                return str(payload["choices"][0]["message"]["content"])
+            except (ValueError, KeyError, IndexError, TypeError) as exc:
+                raise AIJudgeError("the endpoint's answer was not a chat completion") from exc
+        raise AIJudgeError(f"{url} kept answering 429 Too Many Requests")
+
+
+class AzureOpenAIJudge(OpenAICompatibleJudge):
+    """Azure OpenAI: the resource's address, a deployment name in place of
+    a model, the key in an api-key header, and an API version on the
+    query string. Azure's tokens-per-minute allowance per deployment is
+    what the pacing above is for."""
+
+    provider = "azure_openai"
+
+    def __init__(self, endpoint: str, deployment: str, api_key: Optional[str] = None,
+                 *, api_version: str = DEFAULT_AZURE_API_VERSION, timeout: float = 120.0,
+                 tokens_per_minute: int = 0):
+        super().__init__(endpoint, deployment, api_key, timeout=timeout,
+                         tokens_per_minute=tokens_per_minute)
+        self.api_version = api_version or DEFAULT_AZURE_API_VERSION
+
+    def describe(self) -> dict:
+        return {**super().describe(), "api_version": self.api_version, "deployment": self.model}
+
+    def _url(self) -> str:
+        base = self.endpoint
+        if "/openai/deployments/" not in base:
+            base = f"{base}/openai/deployments/{self.model}"
+        if not base.endswith("/chat/completions"):
+            base = base + "/chat/completions"
+        return f"{base}?api-version={self.api_version}"
+
+    def _headers(self) -> dict:
+        headers = {"content-type": "application/json"}
+        if self.api_key:
+            headers["api-key"] = self.api_key
+        return headers
+
+    def _body(self, system: str, user: str, max_tokens: int) -> dict:
+        body = super()._body(system, user, max_tokens)
+        body.pop("model", None)        # the deployment is in the address
+        return body
+
+
+def _whole(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def ai_settings(get_setting: Callable[[str], Optional[str]]) -> dict:
     """The AI judge's settings as stored, the key replaced by whether one exists."""
     values = {key: (get_setting(SETTING_PREFIX + key) or "").strip() for key in SETTING_KEYS}
-    key = values.pop("api_key", "") or os.environ.get("ANTHROPIC_API_KEY", "")
     provider = values.get("provider") or "none"
     if provider not in PROVIDERS:
         provider = "none"
-    try:
-        max_calls = int(values.get("max_calls") or 2000)
-    except ValueError:
-        max_calls = 2000
+    env_key = os.environ.get("ANTHROPIC_API_KEY", "") if provider == "anthropic" else ""
+    key = values.pop("api_key", "") or env_key
     return {"provider": provider, "endpoint": values.get("endpoint", ""),
             "model": values.get("model") or (DEFAULT_ANTHROPIC_MODEL if provider == "anthropic" else ""),
-            "has_key": bool(key), "key_from_environment": not values.get("api_key") and bool(
-                os.environ.get("ANTHROPIC_API_KEY")), "max_calls": max_calls}
+            "api_version": values.get("api_version") or DEFAULT_AZURE_API_VERSION,
+            "has_key": bool(key), "key_from_environment": bool(env_key) and not values.get("api_key"),
+            "max_calls": _whole(values.get("max_calls") or 2000, 2000),
+            "tokens_per_minute": _whole(values.get("tokens_per_minute") or 0, 0)}
 
 
 def make_ai_judge(get_setting: Callable[[str], Optional[str]]) -> Optional[AIJudge]:
     """The configured AI judge, or None when none is configured or usable."""
-    provider = (get_setting(SETTING_PREFIX + "provider") or "none").strip()
-    model = (get_setting(SETTING_PREFIX + "model") or "").strip()
-    key = (get_setting(SETTING_PREFIX + "api_key") or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+    settings = ai_settings(get_setting)
+    provider = settings["provider"]
+    model = settings["model"]
+    key = ((get_setting(SETTING_PREFIX + "api_key") or "").strip()
+           or (os.environ.get("ANTHROPIC_API_KEY", "") if provider == "anthropic" else ""))
+    tpm = settings["tokens_per_minute"]
     if provider == "anthropic":
         if not key:
             return None
-        return AnthropicJudge(model or DEFAULT_ANTHROPIC_MODEL, key)
+        return AnthropicJudge(model or DEFAULT_ANTHROPIC_MODEL, key, tokens_per_minute=tpm)
+    endpoint = settings["endpoint"]
     if provider == "openai_compatible":
-        endpoint = (get_setting(SETTING_PREFIX + "endpoint") or "").strip()
         if not endpoint or not model:
             return None
-        return OpenAICompatibleJudge(endpoint, model, key or None)
+        return OpenAICompatibleJudge(endpoint, model, key or None, tokens_per_minute=tpm)
+    if provider == "azure_openai":
+        if not endpoint or not model or not key:
+            return None
+        return AzureOpenAIJudge(endpoint, model, key, api_version=settings["api_version"],
+                                tokens_per_minute=tpm)
     return None
 
 
@@ -926,6 +1086,12 @@ def ai_capability(get_setting: Callable[[str], Optional[str]]) -> dict:
         if not settings["has_key"]:
             return {"available": False, "provider": provider, "model": settings["model"],
                     "reason": "No API key is set for the Anthropic judge."}
+        return {"available": True, "provider": provider, "model": settings["model"], "reason": None}
+    if provider == "azure_openai":
+        if not settings["endpoint"] or not settings["model"] or not settings["has_key"]:
+            return {"available": False, "provider": provider, "model": settings["model"],
+                    "reason": "The Azure OpenAI judge needs the resource address, a deployment "
+                              "name and an API key."}
         return {"available": True, "provider": provider, "model": settings["model"], "reason": None}
     if not settings["endpoint"] or not settings["model"]:
         return {"available": False, "provider": provider, "model": settings["model"],
@@ -1016,14 +1182,12 @@ class ThemeJudge:
     """Rules first, the AI when configured, the policy in between."""
 
     def __init__(self, theme: ThemeConfig, ai: Optional[AIJudge] = None,
-                 log_dir: Optional[Path] = None, *, max_ai_calls: int = 2000,
-                 ai_skip_confidence: float = 0.8):
+                 log_dir: Optional[Path] = None, *, max_ai_calls: int = 2000):
         self.theme = theme
         self.rules = RulesJudge(theme)
         self.ai = ai if (ai is not None and theme.ai_enabled) else None
         self.log = SelectionLog(log_dir) if log_dir is not None else None
         self.max_ai_calls = max_ai_calls
-        self.ai_skip_confidence = ai_skip_confidence
         self._triaged: dict[str, LinkDecision] = {}
         self._ai_exhausted_logged = False
         self.started_at = _iso_now()
@@ -1081,7 +1245,9 @@ class ThemeJudge:
     @staticmethod
     def _combine(rules: Verdict, ai: dict, policy: str) -> tuple[str, str]:
         ai_decision = ai["decision"]
-        ai_reason = f"AI: {ai_decision} ({ai['confidence']:.2f}) {ai.get('reasons', '')}".strip()
+        confidence = ai.get("confidence")
+        ai_reason = (f"AI: {ai_decision}" + (f" ({confidence:.2f})" if isinstance(confidence, float) else "")
+                     + (f" {ai['reasons']}" if ai.get("reasons") else "")).strip()
         rules_reason = "rules: " + "; ".join(rules.reasons)
         if policy == "decide":
             return ai_decision, f"{ai_reason} | {rules_reason}"
@@ -1120,16 +1286,9 @@ class ThemeJudge:
                 for answer in answers:
                     target = results[open_indexes[answer["i"]]]
                     target["judge"] = "ai"
-                    target["confidence"] = answer["confidence"]
-                    if answer["decision"] == SKIP and answer["confidence"] >= self.ai_skip_confidence:
-                        target["decision"] = SKIP
-                        target["reasons"] = [f"AI: {answer['reason']}"]
-                    elif answer["decision"] == HUB:
-                        target["decision"] = HUB
-                        target["reasons"] = [f"AI: {answer['reason']}"]
-                    else:
-                        target["reasons"] = [f"AI: {answer['decision']} ({answer['confidence']:.2f}) "
-                                             f"{answer['reason']}"]
+                    target["decision"] = answer["decision"]
+                    target["reasons"] = ["AI: confidently not the theme's" if answer["decision"] == SKIP
+                                         else "AI: a listing page"]
             except AIJudgeError as exc:
                 if self.log:
                     self.log.counts["ai_failures"] += 1
@@ -1151,6 +1310,8 @@ class ThemeJudge:
                 "counts": dict(self.log.counts) if self.log else {},
                 "ai_calls": self.ai.calls if self.ai else 0,
                 "ai_failures": self.ai.failures if self.ai else 0,
+                "ai_tokens_estimated": self.ai.tokens_estimated if self.ai else 0,
+                "ai_rate_waits": self.ai.waits if self.ai else 0,
                 "finished_at": _iso_now(), **(extra or {})}
 
     def write_summary(self, out_dir: Path, extra: Optional[dict] = None) -> Path:
@@ -1244,8 +1405,12 @@ def render_selection_page(out_dir: Path) -> Optional[Path]:
             ai_text = f"AI unavailable: {esc(str(ai['error']))}"
         elif ai:
             quotes = "".join(f"<li>{esc(q)}</li>" for q in ai.get("quotes") or [])
-            ai_text = (f"AI {esc(str(ai.get('decision')))} ({float(ai.get('confidence') or 0):.2f}): "
-                       f"{esc(str(ai.get('reasons') or ''))}" + (f"<ul>{quotes}</ul>" if quotes else ""))
+            confidence = ai.get("confidence")
+            ai_text = (f"AI {esc(str(ai.get('decision')))}"
+                       + (f" ({float(confidence):.2f})" if isinstance(confidence, (int, float)) else "")
+                       + (f" [{esc(str(ai.get('input')))}]" if ai.get("input") else "")
+                       + f": {esc(str(ai.get('reasons') or ai.get('answer') or ''))}"
+                       + (f"<ul>{quotes}</ul>" if quotes else ""))
         matched = "".join(f"<li>{esc(str(m.get('term')))} in {esc(str(m.get('where')))}: "
                           f"<span class=snip>{esc(str(m.get('snippet') or ''))}</span></li>"
                           for m in (record.get("rules") or {}).get("matched") or [])

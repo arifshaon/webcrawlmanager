@@ -63,6 +63,7 @@ defaults:
 #   ai_enabled: true
 #   ai_policy: decide         # decide | tie_break | agree
 #   ai_triage_links: true
+#   ai_input: compact         # url | compact | full: what the model is sent
 
 seeds:
   - url: https://example.org/

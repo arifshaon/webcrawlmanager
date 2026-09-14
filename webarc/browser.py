@@ -389,7 +389,7 @@ class BrowserDriver:
         """Every link with its text and the words around it on the page,
         which is what a theme's link triage judges from."""
         try:
-            found = page.evaluate("""
+            found = page.evaluate(r"""
               () => Array.from(document.querySelectorAll('a[href]')).map(a => {
                 const block = a.closest('li, article, p, td, h1, h2, h3, h4, figure, section, div');
                 const around = block && block !== document.body ? (block.innerText || '') : '';
