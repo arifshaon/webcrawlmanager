@@ -234,6 +234,8 @@ tai-model: >-
   The model name the provider expects, such as claude-opus-5, the name of the local model you pulled, or, for Azure, the deployment name.
 tai-api-version: >-
   Azure OpenAI only: the API version on the request, such as 2024-10-21. Leave empty for the default.
+tai-max-prompt: >-
+  The most tokens one question to the model may take, counting the theme's text and the page's excerpt. Left at 0, it is sized from the tokens-per-minute allowance, a twentieth of it, so a paced crawl fits. A page's excerpt is trimmed to fit first; long link lists are asked about in several smaller questions.
 tai-tpm: >-
   The tokens-per-minute allowance your provider gives this deployment, so SWM paces its questions to stay under it and waits when the minute is full; an answer of 429 is waited out too. 0 means no pacing.
 tai-key: >-

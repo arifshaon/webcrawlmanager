@@ -234,8 +234,13 @@ def _write_theme_ai_settings(wanted: object) -> None:
     try:
         max_calls = int(wanted.get("max_calls") or 2000)
         tokens_per_minute = int(wanted.get("tokens_per_minute") or 0)
+        max_prompt_tokens = int(wanted.get("max_prompt_tokens") or 0)
     except (TypeError, ValueError) as exc:
-        raise HTTPException(400, "theme_ai.max_calls and tokens_per_minute must be whole numbers") from exc
+        raise HTTPException(400, "theme_ai.max_calls, tokens_per_minute and max_prompt_tokens "
+                                 "must be whole numbers") from exc
+    if not 0 <= max_prompt_tokens <= 1_000_000:
+        raise HTTPException(400, "theme_ai.max_prompt_tokens must be 0 (sized from the allowance) "
+                                 "or a positive number")
     if not 1 <= max_calls <= 1_000_000:
         raise HTTPException(400, "theme_ai.max_calls must be between 1 and 1,000,000")
     if not 0 <= tokens_per_minute <= 100_000_000:
@@ -247,6 +252,7 @@ def _write_theme_ai_settings(wanted: object) -> None:
     store.set_setting(SETTING_PREFIX + "model", model)
     store.set_setting(SETTING_PREFIX + "max_calls", str(max_calls))
     store.set_setting(SETTING_PREFIX + "tokens_per_minute", str(tokens_per_minute))
+    store.set_setting(SETTING_PREFIX + "max_prompt_tokens", str(max_prompt_tokens))
     store.set_setting(SETTING_PREFIX + "api_version", api_version)
     if "api_key" in wanted:
         store.set_setting(SETTING_PREFIX + "api_key", str(wanted.get("api_key") or "").strip()[:500])

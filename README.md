@@ -736,8 +736,12 @@ deployment name, the key and an API version), or any model behind an
 OpenAI-compatible endpoint, which for a local Ollama or LM Studio means
 nothing leaves the machine. A tokens-per-minute figure makes SWM pace its
 questions to stay under the provider's allowance and wait when the minute
-is full; an answer of 429 is waited out for the time the provider asks. A
-ceiling on calls per job guards the bill; past it the rules decide. A
+is full; an answer of 429 is waited out for the time the provider asks.
+The size of each question follows the allowance too: a most-tokens-per-
+question setting, or a twentieth of the minute's allowance when it is
+left empty, trims the page's excerpt to fit and splits long link lists
+into several smaller questions. A ceiling on calls per job guards the
+bill; past it the rules decide. A
 theme chooses how the two judges combine: the AI decides with the rules
 as pre-filter and explanation (the default), the AI breaks ties only, or
 both must agree.

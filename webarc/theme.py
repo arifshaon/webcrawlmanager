@@ -50,7 +50,9 @@ DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
 DEFAULT_AZURE_API_VERSION = "2024-10-21"
 SETTING_PREFIX = "theme.ai."
 SETTING_KEYS = ("provider", "endpoint", "model", "api_key", "max_calls", "api_version",
-                "tokens_per_minute")
+                "tokens_per_minute", "max_prompt_tokens")
+MIN_PROMPT_TOKENS = 200          # the address, the title and the theme's name always fit
+QUESTIONS_PER_MINUTE = 20        # what a paced crawl asks, at most, when sizing questions
 SELECTION_FILE = "selection.jsonl"
 SUMMARY_FILE = "theme-summary.json"
 PROMPT_VERSION = "swm-theme-prompt-1"
@@ -672,11 +674,13 @@ def _theme_block(theme: ThemeConfig) -> str:
 _EXCERPT_CHARS = {"url": 0, "compact": 600, "full": 12000}
 
 
-def page_prompt(theme: ThemeConfig, page: PageText, mode: str = "compact") -> str:
+def page_prompt(theme: ThemeConfig, page: PageText, mode: str = "compact",
+                max_chars: int = 0) -> str:
     """What the model is sent about a page. ``url``: the address and the
     title. ``compact``: those plus the headline, section, date and the first
     few hundred characters of the text, a few hundred tokens in all.
-    ``full``: the whole extracted content."""
+    ``full``: the whole extracted content. ``max_chars`` caps the whole
+    prompt: the excerpt gives way first, then the theme's own text."""
     fields = [f"URL: {page.url}", f"Title: {page.title}"]
     if mode != "url":
         fields += [f"Headline: {page.headline}", f"Section: {page.section}",
@@ -684,12 +688,17 @@ def page_prompt(theme: ThemeConfig, page: PageText, mode: str = "compact") -> st
     if mode == "full":
         fields += [f"Keywords: {page.keywords}", f"Description: {page.description}",
                    f"Language: {page.language}"]
+    head = _theme_block(theme) + "\n\n" + "\n".join(fields)
     limit = _EXCERPT_CHARS.get(mode, 600)
+    if max_chars:
+        if len(head) > max_chars:
+            head = head[:max_chars]                    # the theme's text, trimmed last
+        limit = min(limit, max(0, max_chars - len(head) - 40))
     text = ""
     if limit:
         body = page.body[:limit]
         text = ("\n\nMain text:\n" + body + ("\n\n[text truncated]" if len(page.body) > limit else ""))
-    return _theme_block(theme) + "\n\n" + "\n".join(fields) + text
+    return head + text
 
 
 def _nominal(answer: str) -> str:
@@ -759,10 +768,11 @@ class AIJudge:
     provider = "abstract"
 
     def __init__(self, model: str, *, timeout: float = 60.0, tokens_per_minute: int = 0,
-                 sleep: Callable[[float], None] = time.sleep):
+                 max_prompt_tokens: int = 0, sleep: Callable[[float], None] = time.sleep):
         self.model = model
         self.timeout = timeout
         self.tokens_per_minute = max(0, int(tokens_per_minute or 0))
+        self.max_prompt_tokens = max(0, int(max_prompt_tokens or 0))
         self.sleep = sleep
         self.calls = 0
         self.failures = 0
@@ -772,7 +782,22 @@ class AIJudge:
 
     def describe(self) -> dict:
         return {"provider": self.provider, "model": self.model, "prompt_version": PROMPT_VERSION,
-                "tokens_per_minute": self.tokens_per_minute or None}
+                "tokens_per_minute": self.tokens_per_minute or None,
+                "max_prompt_tokens": self.prompt_budget or None}
+
+    @property
+    def prompt_budget(self) -> int:
+        """Tokens one question may take: the setting, or a share of the
+        minute's allowance sized for a paced crawl, or no cap."""
+        if self.max_prompt_tokens:
+            return max(MIN_PROMPT_TOKENS, self.max_prompt_tokens)
+        if self.tokens_per_minute:
+            return max(MIN_PROMPT_TOKENS, self.tokens_per_minute // QUESTIONS_PER_MINUTE)
+        return 0
+
+    @property
+    def budget_chars(self) -> int:
+        return self.prompt_budget * 4 if self.prompt_budget else 0
 
     def _complete(self, system: str, user: str, *, max_tokens: int) -> str:
         raise NotImplementedError
@@ -816,7 +841,7 @@ class AIJudge:
     # -- pages -------------------------------------------------------------------
     def judge_page(self, theme: ThemeConfig, page: PageText) -> dict:
         mode = theme.ai_input if theme.ai_input in AI_INPUTS else "compact"
-        prompt = page_prompt(theme, page, mode)
+        prompt = page_prompt(theme, page, mode, self.budget_chars)
         system = _PAGE_SYSTEM_FULL if mode == "full" else _PAGE_SYSTEM_NOMINAL
         answer = self._ask(system, prompt, max_tokens=600 if mode == "full" else 8)
         record = {"model": self.model, "provider": self.provider, "input": mode,
@@ -848,26 +873,44 @@ class AIJudge:
         with decision skip or hub; every other link is fetched."""
         if not links:
             return []
-        prompt = links_prompt(theme, links)
-        answer = self._ask(_LINKS_SYSTEM, prompt, max_tokens=6 * len(links) + 40)
-        try:
-            parsed = _json_object(answer)
-        except AIJudgeError:
-            self.failures += 1
-            raise
         out: list[dict] = []
-        seen: set[int] = set()
-        for decision in (SKIP, HUB):
-            values = parsed.get(decision)
-            for value in values if isinstance(values, list) else []:
-                try:
-                    index = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if 0 <= index < len(links) and index not in seen:
-                    seen.add(index)
-                    out.append({"i": index, "decision": decision})
+        for start, chunk in self._link_chunks(theme, links):
+            prompt = links_prompt(theme, chunk)
+            answer = self._ask(_LINKS_SYSTEM, prompt, max_tokens=6 * len(chunk) + 40)
+            try:
+                parsed = _json_object(answer)
+            except AIJudgeError:
+                self.failures += 1
+                raise
+            seen: set[int] = set()
+            for decision in (SKIP, HUB):
+                values = parsed.get(decision)
+                for value in values if isinstance(values, list) else []:
+                    try:
+                        index = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if 0 <= index < len(chunk) and index not in seen:
+                        seen.add(index)
+                        out.append({"i": start + index, "decision": decision})
         return out
+
+    def _link_chunks(self, theme: ThemeConfig, links: list[dict]) -> list[tuple[int, list[dict]]]:
+        """Batches of links whose prompt fits the question budget; one
+        batch when there is no budget."""
+        budget = self.budget_chars
+        if not budget:
+            return [(0, links)]
+        chunks: list[tuple[int, list[dict]]] = []
+        start = 0
+        while start < len(links):
+            size = 1
+            while (start + size < len(links)
+                   and len(links_prompt(theme, links[start:start + size + 1])) <= budget):
+                size += 1
+            chunks.append((start, links[start:start + size]))
+            start += size
+        return chunks
 
 
 class AnthropicJudge(AIJudge):
@@ -877,9 +920,9 @@ class AnthropicJudge(AIJudge):
     provider = "anthropic"
 
     def __init__(self, model: str = DEFAULT_ANTHROPIC_MODEL, api_key: Optional[str] = None,
-                 *, timeout: float = 60.0, tokens_per_minute: int = 0):
+                 *, timeout: float = 60.0, tokens_per_minute: int = 0, max_prompt_tokens: int = 0):
         super().__init__(model or DEFAULT_ANTHROPIC_MODEL, timeout=timeout,
-                         tokens_per_minute=tokens_per_minute)
+                         tokens_per_minute=tokens_per_minute, max_prompt_tokens=max_prompt_tokens)
         self.api_key = api_key or None
         self._client = None
 
@@ -931,8 +974,9 @@ class OpenAICompatibleJudge(AIJudge):
     provider = "openai_compatible"
 
     def __init__(self, endpoint: str, model: str, api_key: Optional[str] = None,
-                 *, timeout: float = 120.0, tokens_per_minute: int = 0):
-        super().__init__(model, timeout=timeout, tokens_per_minute=tokens_per_minute)
+                 *, timeout: float = 120.0, tokens_per_minute: int = 0, max_prompt_tokens: int = 0):
+        super().__init__(model, timeout=timeout, tokens_per_minute=tokens_per_minute,
+                         max_prompt_tokens=max_prompt_tokens)
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key or None
 
@@ -994,9 +1038,9 @@ class AzureOpenAIJudge(OpenAICompatibleJudge):
 
     def __init__(self, endpoint: str, deployment: str, api_key: Optional[str] = None,
                  *, api_version: str = DEFAULT_AZURE_API_VERSION, timeout: float = 120.0,
-                 tokens_per_minute: int = 0):
+                 tokens_per_minute: int = 0, max_prompt_tokens: int = 0):
         super().__init__(endpoint, deployment, api_key, timeout=timeout,
-                         tokens_per_minute=tokens_per_minute)
+                         tokens_per_minute=tokens_per_minute, max_prompt_tokens=max_prompt_tokens)
         self.api_version = api_version or DEFAULT_AZURE_API_VERSION
 
     def describe(self) -> dict:
@@ -1042,7 +1086,8 @@ def ai_settings(get_setting: Callable[[str], Optional[str]]) -> dict:
             "api_version": values.get("api_version") or DEFAULT_AZURE_API_VERSION,
             "has_key": bool(key), "key_from_environment": bool(env_key) and not values.get("api_key"),
             "max_calls": _whole(values.get("max_calls") or 2000, 2000),
-            "tokens_per_minute": _whole(values.get("tokens_per_minute") or 0, 0)}
+            "tokens_per_minute": _whole(values.get("tokens_per_minute") or 0, 0),
+            "max_prompt_tokens": _whole(values.get("max_prompt_tokens") or 0, 0)}
 
 
 def make_ai_judge(get_setting: Callable[[str], Optional[str]]) -> Optional[AIJudge]:
@@ -1052,21 +1097,21 @@ def make_ai_judge(get_setting: Callable[[str], Optional[str]]) -> Optional[AIJud
     model = settings["model"]
     key = ((get_setting(SETTING_PREFIX + "api_key") or "").strip()
            or (os.environ.get("ANTHROPIC_API_KEY", "") if provider == "anthropic" else ""))
-    tpm = settings["tokens_per_minute"]
+    sizing = {"tokens_per_minute": settings["tokens_per_minute"],
+              "max_prompt_tokens": settings["max_prompt_tokens"]}
     if provider == "anthropic":
         if not key:
             return None
-        return AnthropicJudge(model or DEFAULT_ANTHROPIC_MODEL, key, tokens_per_minute=tpm)
+        return AnthropicJudge(model or DEFAULT_ANTHROPIC_MODEL, key, **sizing)
     endpoint = settings["endpoint"]
     if provider == "openai_compatible":
         if not endpoint or not model:
             return None
-        return OpenAICompatibleJudge(endpoint, model, key or None, tokens_per_minute=tpm)
+        return OpenAICompatibleJudge(endpoint, model, key or None, **sizing)
     if provider == "azure_openai":
         if not endpoint or not model or not key:
             return None
-        return AzureOpenAIJudge(endpoint, model, key, api_version=settings["api_version"],
-                                tokens_per_minute=tpm)
+        return AzureOpenAIJudge(endpoint, model, key, api_version=settings["api_version"], **sizing)
     return None
 
 

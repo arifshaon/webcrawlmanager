@@ -502,6 +502,8 @@
           <input type="text" id="tai-api-version" placeholder="2024-10-21"></label>
         <label for="tai-tpm">Tokens per minute allowed <button type="button" class="tip" aria-label="What is this for?" data-help="tai-tpm">?</button>
           <input type="number" id="tai-tpm" min="0" step="1000" placeholder="0 = no pacing"></label>
+        <label for="tai-max-prompt">Most tokens per question <button type="button" class="tip" aria-label="What is this for?" data-help="tai-max-prompt">?</button>
+          <input type="number" id="tai-max-prompt" min="0" step="100" placeholder="0 = sized from the allowance"></label>
         <label for="tai-max-calls">Most AI calls per job <button type="button" class="tip" aria-label="What is this for?" data-help="tai-max-calls">?</button>
           <input type="number" id="tai-max-calls" min="1" step="1"></label>
         <button type="button" class="secondary" id="tai-save">Save</button>
@@ -2957,6 +2959,7 @@ function renderThemeAiSettings(settings) {
     $("#tai-max-calls").value = ai.max_calls || 2000;
     $("#tai-api-version").value = ai.api_version || "";
     $("#tai-tpm").value = ai.tokens_per_minute || 0;
+    $("#tai-max-prompt").value = ai.max_prompt_tokens || 0;
     $("#tai-key").value = "";
   }
   const cap = ai.capability || {};
@@ -2972,7 +2975,8 @@ async function saveThemeAiSettings() {
   const theme_ai = {provider: $("#tai-provider").value, endpoint: $("#tai-endpoint").value.trim(),
                     model: $("#tai-model").value.trim(), max_calls: Number($("#tai-max-calls").value) || 2000,
                     api_version: $("#tai-api-version").value.trim(),
-                    tokens_per_minute: Number($("#tai-tpm").value) || 0};
+                    tokens_per_minute: Number($("#tai-tpm").value) || 0,
+                    max_prompt_tokens: Number($("#tai-max-prompt").value) || 0};
   if ($("#tai-key").value) theme_ai.api_key = $("#tai-key").value;
   try {
     const settings = await api("/api/settings", {method: "PUT", headers: {"Content-Type": "application/json"},
@@ -2992,7 +2996,7 @@ async function testThemeAi() {
     msg.className = "msg ok";
   } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
 }
-["tai-provider", "tai-endpoint", "tai-model", "tai-key", "tai-max-calls", "tai-api-version", "tai-tpm"].forEach(id => $(`#${id}`).addEventListener("input", () => themeAiEdited = true));
+["tai-provider", "tai-endpoint", "tai-model", "tai-key", "tai-max-calls", "tai-api-version", "tai-tpm", "tai-max-prompt"].forEach(id => $(`#${id}`).addEventListener("input", () => themeAiEdited = true));
 $("#tai-save").addEventListener("click", saveThemeAiSettings);
 $("#tai-test").addEventListener("click", testThemeAi);
 

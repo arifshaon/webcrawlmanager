@@ -235,6 +235,39 @@ class AIJudgeTests(unittest.TestCase):
         self.assertEqual(ai.calls, 3)
         self.assertEqual(ai.describe()["tokens_per_minute"], 400)
 
+    def test_each_question_is_sized_to_the_allowance(self):
+        theme = ThemeConfig.from_dict(LIBRARIES)
+        long_page = PageText(url="http://x/long", title="Long", headline="Long story",
+                             body="library " * 3000, main_found=True)
+        free = FakeAI({"long": "yes"})
+        self.assertEqual(free.prompt_budget, 0)
+        free.judge_page(theme, long_page)
+        self.assertGreater(len(free.prompts[0][1]), 600)          # the compact excerpt, uncapped
+        paced = FakeAI({"long": "yes"})
+        paced.tokens_per_minute = 6000                              # 300 tokens a question
+        self.assertEqual(paced.prompt_budget, 300)
+        paced.judge_page(theme, long_page)
+        self.assertLessEqual(len(paced.prompts[0][1]), 1200)
+        self.assertIn("URL: http://x/long", paced.prompts[0][1])
+        explicit = FakeAI({"long": "yes"})
+        explicit.tokens_per_minute = 6000
+        explicit.max_prompt_tokens = 1000
+        self.assertEqual(explicit.prompt_budget, 1000)
+        tiny = FakeAI({"long": "yes"})
+        tiny.max_prompt_tokens = 50
+        self.assertEqual(tiny.prompt_budget, T.MIN_PROMPT_TOKENS)  # the address and title always fit
+        tiny.judge_page(theme, long_page)
+        self.assertLessEqual(len(tiny.prompts[0][1]), T.MIN_PROMPT_TOKENS * 4)
+        # long link lists are asked about in several questions that fit
+        links = [{"url": f"http://x/story-{i}", "text": f"Story number {i} about something",
+                  "context": "in the listing"} for i in range(40)]
+        batched = FakeAI(link_answer={"skip": [0], "hub": []})
+        batched.max_prompt_tokens = 300
+        answers = batched.triage_links(theme, links)
+        self.assertGreater(batched.calls, 1)
+        self.assertEqual([a["i"] for a in answers][:2], [0, [c for _, c in batched._link_chunks(theme, links)][0].__len__()])
+        self.assertEqual(batched.describe()["max_prompt_tokens"], 300)
+
     def test_the_openai_compatible_judge_speaks_the_chat_shape(self):
         import httpx
         seen = {}
@@ -578,8 +611,8 @@ class ApiTests(unittest.TestCase):
             "api_key": "s3cret", "max_calls": 40, "tokens_per_minute": 30000}})
         self.assertEqual(saved.status_code, 200, saved.text)
         ai = saved.json()["theme_ai"]
-        self.assertEqual((ai["provider"], ai["model"], ai["max_calls"], ai["has_key"], ai["tokens_per_minute"]),
-                         ("openai_compatible", "llama3", 40, True, 30000))
+        self.assertEqual((ai["provider"], ai["model"], ai["max_calls"], ai["has_key"], ai["tokens_per_minute"],
+                          ai["max_prompt_tokens"]), ("openai_compatible", "llama3", 40, True, 30000, 0))
         azure = self.client.put("/api/settings", json={"theme_ai": {
             "provider": "azure_openai", "endpoint": "https://qnl.openai.azure.com", "model": "gpt-judge",
             "api_version": "2024-10-21"}})
