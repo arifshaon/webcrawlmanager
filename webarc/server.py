@@ -660,6 +660,17 @@ def _launch_waiting(snapshot: dict) -> None:
     _launch(job["id"])
 
 
+def _theme_name_of(row: dict) -> str | None:
+    """The name of a crawl's theme, or None; a row whose configuration
+    cannot be read is still listed."""
+    try:
+        config = json.loads(row.get("config_json") or "{}")
+        theme = config.get("theme") if isinstance(config, dict) else None
+        return (theme.get("name") or "theme") if isinstance(theme, dict) and theme.get("enabled", True) else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _crawl_view(row: dict) -> dict:
     row = _reconcile(row)
     progress = _store().get_progress(row["id"])
@@ -685,8 +696,7 @@ def _crawl_view(row: dict) -> dict:
         # kept somewhere other than the default without guessing.
         "output_dir": str(crawl_dir),
         "has_selection": (crawl_dir / "pages" / "selection.html").is_file(),
-        "theme": ((json.loads(row["config_json"]).get("theme") or {}).get("name")
-                  if row.get("config_json") else None),
+        "theme": _theme_name_of(row),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
