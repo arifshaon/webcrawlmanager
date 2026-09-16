@@ -2344,5 +2344,84 @@ class ReadProgressReachesTheDashboardTests(SessionTestCase):
         self.assertEqual(len(seen), 1)
 
 
+class ProfileInUseTests(SessionTestCase):
+    """A launch on a profile another Chrome holds does not fail as itself.
+
+    Chrome hands the Page to the running instance and exits, so the new
+    capture's job fails with "target closed" while the old window -- whose
+    capture ended long ago -- shows the SWM panel with a Start button that
+    does nothing. The launch failure has to name the window to close, and
+    the panel has to say when nothing is behind it.
+    """
+
+    def driver(self, error):
+        from webarc.facebook import FacebookBrowserDriver
+
+        driver = FacebookBrowserDriver.__new__(FacebookBrowserDriver)
+        driver.cfg = BrowserConfig(mode="headed", user_data_dir=str(self.tmp))
+
+        class _Chromium:
+            def launch_persistent_context(self, *_a, **_k):
+                raise error
+
+        driver._pw = type("pw", (), {"chromium": _Chromium()})()
+        return driver
+
+    def test_the_failure_names_the_window_to_close(self):
+        driver = self.driver(RuntimeError(
+            "BrowserType.launch_persistent_context: Opening in existing "
+            "browser session. This usually means that the profile is "
+            "already in use by another instance of Chromium."))
+
+        with self.assertRaises(RuntimeError) as caught:
+            driver._start()
+
+        message = str(caught.exception)
+        self.assertIn("already open in another Chrome window", message)
+        self.assertIn("buttons do nothing", message)
+        self.assertIn(str(self.tmp), message)
+
+    def test_other_launch_failures_are_left_as_they_are(self):
+        driver = self.driver(RuntimeError("Executable doesn't exist"))
+
+        with self.assertRaises(RuntimeError) as caught:
+            driver._start()
+
+        self.assertEqual(str(caught.exception), "Executable doesn't exist")
+
+    def test_the_panel_offers_no_start_until_the_capture_has_spoken(self):
+        from webarc.facebook import _FACEBOOK_WIDGET_JS as widget
+
+        self.assertIn("let connected = false", widget)
+        self.assertIn("if (!connected) return [];", widget)
+        self.assertIn("not connected to an SWM capture", widget)
+        self.assertIn("connected = true; lastWord = Date.now();", widget)
+
+
+class _FakeWidgetPage:
+    """A page whose widget script the session evaluates."""
+
+    def __init__(self):
+        self.evaluated = []
+
+    def evaluate(self, script, *args):
+        self.evaluated.append((script, args))
+
+
+class WidgetPushTests(SessionTestCase):
+    def test_every_page_of_the_context_is_told_the_state(self):
+        session = make_session(self.tmp)
+        pages = [_FakeWidgetPage(), _FakeWidgetPage()]
+        session._context = type("ctx", (), {"pages": pages})()
+        session._state_dirty = True
+
+        session._ensure_facebook_widgets()
+
+        for page in pages:
+            self.assertEqual(len(page.evaluated), 2)
+            self.assertEqual(page.evaluated[1][1][0]["state"], PAUSED)
+        self.assertFalse(session._state_dirty)
+
+
 if __name__ == "__main__":
     unittest.main()

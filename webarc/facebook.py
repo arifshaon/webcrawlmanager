@@ -1447,6 +1447,17 @@ _FACEBOOK_WIDGET_JS = r"""
   let state = "paused";
   let detail = "Log in if needed, open the Page, then start scrolling.";
   let root = null;
+  // Nothing is known until the capture behind this window has spoken. A
+  // window left open by a capture that has ended still shows the panel;
+  // offering "Start" there, with nothing to receive it, misleads.
+  let connected = false;
+  let lastWord = Date.now();
+  const ORPHAN = "This window is not connected to an SWM capture. The " +
+    "capture that opened it has ended, or the capture you started could " +
+    "not open its own browser because this profile was already open here. " +
+    "Check the job on the dashboard; close this window before starting again.";
+  const SILENT = "SWM has not updated this window for a while. It may be " +
+    "busy reading a thread or fetching media; check the dashboard if this persists.";
   const LABELS = {
     recording: "● Scrolling and capturing",
     paused: "⏸ Scrolling paused — capture remains on",
@@ -1454,6 +1465,7 @@ _FACEBOOK_WIDGET_JS = r"""
     stopped: "Stopped"
   };
   function controls() {
+    if (!connected) return [];
     if (state === "recording") return [["pause", "Pause scrolling"], ["stop", "Stop and save"]];
     if (state === "paused") return [["resume", "Start / resume scrolling"], ["stop", "Stop and save"]];
     if (state === "blocked") return [["resume", "Verification resolved — resume"], ["stop", "Stop and save"]];
@@ -1462,19 +1474,20 @@ _FACEBOOK_WIDGET_JS = r"""
   function render() {
     if (!root) return;
     const status = root.querySelector(".swm-facebook-state");
-    status.textContent = LABELS[state] || state;
-    status.className = "swm-facebook-state " + state;
-    root.querySelector(".swm-facebook-detail").textContent = detail || "";
+    status.textContent = connected ? (LABELS[state] || state) : "Not connected";
+    status.className = "swm-facebook-state " + (connected ? state : "blocked");
+    root.querySelector(".swm-facebook-detail").textContent = connected ? (detail || "") : ORPHAN;
     const bar = root.querySelector(".swm-facebook-buttons");
     while (bar.firstChild) bar.removeChild(bar.firstChild);
     for (const [command, label] of controls()) {
       const button = document.createElement("button");
       button.textContent = label;
       button.addEventListener("click", () => {
-        if (window.swmFacebookControl)
-          window.swmFacebookControl(command).then(result => {
-            state = result.state; detail = result.detail || detail; render();
-          });
+        if (!window.swmFacebookControl) { connected = false; render(); return; }
+        window.swmFacebookControl(command).then(result => {
+          connected = true; lastWord = Date.now();
+          state = result.state; detail = result.detail || detail; render();
+        }).catch(() => { connected = false; render(); });
       });
       bar.appendChild(button);
     }
@@ -1483,9 +1496,20 @@ _FACEBOOK_WIDGET_JS = r"""
     if (value && typeof value === "object") {
       state = value.state || state; detail = value.detail || "";
     }
+    connected = true; lastWord = Date.now();
     if (!root) install();
     render();
   };
+  // The capture pushes its state every second or so. A long silence is
+  // said as such, without pretending the window is dead: a thread read or
+  // a media fetch can hold the capture for longer than a second.
+  setInterval(() => {
+    if (!root || !connected) return;
+    const silent = Date.now() - lastWord;
+    const el = root.querySelector(".swm-facebook-detail");
+    if (silent > 45000 && el && el.textContent !== SILENT + " " + detail)
+      el.textContent = SILENT + " " + detail;
+  }, 5000);
   function install() {
     if (!document.documentElement || root) return;
     try {
@@ -1517,7 +1541,8 @@ _FACEBOOK_WIDGET_JS = r"""
       shadow.appendChild(style); shadow.appendChild(box); root = shadow;
       document.documentElement.appendChild(host); render();
       if (window.swmFacebookControl)
-        window.swmFacebookControl("state").then(window.__swmSetFacebookState);
+        window.swmFacebookControl("state").then(window.__swmSetFacebookState)
+          .catch(() => { connected = false; render(); });
     } catch (_) { root = null; }
   }
   if (document.readyState === "loading")
@@ -1549,10 +1574,41 @@ class FacebookBrowserDriver(RecordingBrowserDriver):
             launch_kwargs["proxy"] = {"server": self.cfg.proxy}
         if self.cfg.user_agent:
             launch_kwargs["user_agent"] = self.cfg.user_agent
-        self._context = self._pw.chromium.launch_persistent_context(
-            profile, **launch_kwargs)
+        try:
+            self._context = self._pw.chromium.launch_persistent_context(
+                profile, **launch_kwargs)
+        except Exception as exc:
+            if _profile_held_by_another_chrome(exc):
+                raise RuntimeError(_PROFILE_IN_USE_MESSAGE.format(
+                    profile=profile)) from exc
+            raise
         self._browser = self._context.browser
         log.info("Facebook capture uses persistent Chrome profile %s", profile)
+
+
+_PROFILE_IN_USE_MESSAGE = (
+    "The SWM Facebook browser profile at {profile} is already open in "
+    "another Chrome window, so this capture could not start its own "
+    "browser: Chrome handed the Page to that window instead, where no "
+    "capture is running and the SWM panel's buttons do nothing. That window "
+    "is usually left from an earlier capture whose worker ended without "
+    "closing it. Close every Chrome window using the SWM Facebook profile, "
+    "then start the capture again."
+)
+
+
+def _profile_held_by_another_chrome(exc: Exception) -> bool:
+    """Whether a launch failed because the profile is in use elsewhere.
+
+    Chrome hands a launch on a profile it already has open to the running
+    instance and exits, so Playwright reports the browser as gone rather
+    than the profile as busy. That message, verbatim, sends the curator
+    looking for a crash; the cause is a window they can close.
+    """
+    text = str(exc).lower()
+    return ("opening in existing browser session" in text
+            or "profile is already in use" in text
+            or "already in use by another instance" in text)
 
 
 class FacebookCaptureSession(RecordingSession):
