@@ -16,6 +16,12 @@ from __future__ import annotations
 import re
 
 REDACTED = "[REDACTED BY SWM]"
+# The capturing account's numeric ids get a numeric stand-in: Meta's client
+# reads USER_ID as a number-shaped string at start-up and never starts when
+# it finds anything else, so a replay that had the post for a moment ends on
+# the logo. The stand-in is fixed and obviously synthetic; the real id is gone.
+REDACTED_ID = "100000000000000"
+_ID_SHAPED = {"capturing_user_id", "capturing_account_id"}
 
 # (name, pattern): group 1 is kept, group 2 is the secret, group 3 the suffix
 _BODY_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
@@ -84,9 +90,9 @@ def redact_body(body: bytes, content_type: str = "") -> tuple[bytes, list[str]]:
         return body, []
     changed: list[str] = []
     for name, pattern in _BODY_PATTERNS:
-        def repl(match: re.Match) -> str:
+        def repl(match: re.Match, name: str = name) -> str:
             suffix = match.group(3) if match.lastindex and match.lastindex >= 3 else ""
-            return match.group(1) + REDACTED + suffix
+            return match.group(1) + (REDACTED_ID if name in _ID_SHAPED else REDACTED) + suffix
         text, count = pattern.subn(repl, text)
         if count:
             changed.append(name)

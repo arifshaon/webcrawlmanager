@@ -372,6 +372,15 @@ the state directory. This lets a curator remain signed in between authorised
 captures without SWM asking for or storing the password itself. Protect that
 profile as sensitive local data.
 
+The session material the page's bootstrap carries (the capturing account's
+ids, the request-signing tokens, the nonces) is removed from the WARC. The
+account's ids are replaced by a fixed synthetic number rather than a text
+marker: Facebook's client reads `USER_ID` as a number when it starts, and a
+capture whose bootstrap said otherwise showed the post for a moment and
+then only the logo. Facebook and Instagram captures made between 2 and 16
+September 2026 carry the text marker and replay that way; capture them
+again.
+
 ## Instagram capture
 
 The dashboard's **Instagram** tab captures a profile's posts and reels, or a

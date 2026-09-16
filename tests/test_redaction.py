@@ -81,6 +81,22 @@ class RedactBodyTests(unittest.TestCase):
         self.assertNotIn(b'"USER_ID":"424242"', safe)
         self.assertEqual(fields, ["capturing_user_id"])
 
+    def test_the_capturing_accounts_ids_are_replaced_by_a_number_the_client_can_start_with(self):
+        """Facebook's client reads USER_ID as a number-shaped string when it
+        starts; a capture whose bootstrap said "[REDACTED BY SWM]" showed the
+        post for a moment and then nothing but the logo. The real ids still
+        go; a fixed synthetic number stands in."""
+        body = (b'{"CurrentUserInitialData":{"ACCOUNT_ID":"100009806041765","USER_ID":"100009806041765",'
+                b'"NAME":"A Curator"},"DTSGInitialData":{"token":"NAfSECRET"}}')
+
+        safe, fields = redact_body(body, "text/html")
+
+        self.assertNotIn(b"100009806041765", safe)
+        self.assertIn(b'"USER_ID":"100000000000000"', safe)
+        self.assertIn(b'"ACCOUNT_ID":"100000000000000"', safe)
+        self.assertIn(b'"token":"[REDACTED BY SWM]"', safe)
+        self.assertEqual(fields, ["capturing_account_id", "capturing_user_id", "dtsg"])
+
     def test_xs_session_object_loses_the_capturing_accounts_id(self):
         body = (b'{"session":{"isRestrictedSession":false,"language":"en","ssoInitTokens":{},'
                 b'"superFollowersCount":0,"user_id":"424242","userFeatures":{"a":true}},'
