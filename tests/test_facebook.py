@@ -2100,7 +2100,12 @@ class PhotoViewerTests(SessionTestCase):
         self.assertIn("From another post in the same album", page)
         self.assertIn('src="../../media/own.jpg"', page)
         self.assertIn("Not captured", page)
-        self.assertIn("Album photos viewed", (site / "index.html").read_text())
+        index = (site / "index.html").read_text()
+        self.assertIn("Album photos viewed", index)
+        # The index is the page a reader opens; the photos are not to be
+        # found only behind the comments link.
+        self.assertIn("Photos opened in the viewer", index)
+        self.assertIn('src="../media/own.jpg"', index)
 
 
 class _WheelPage:

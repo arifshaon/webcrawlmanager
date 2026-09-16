@@ -324,7 +324,13 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
             f'<div class="body">{body}</div>'
             f'{_media_markup(post, media_index, "../media/")}'
             f'{_counts_markup(post)}'
-            f'<div class="counts"><div>'
+            # The album around the post is shown here as well as on the
+            # post's own page: for a capture of one post the index is the
+            # page a reader opens, and the post page sits behind a link
+            # labelled with the comment count, where photos are not sought.
+            + _viewer_photo_markup(viewer_by_post.get(post_id, []),
+                                   media_index, "../media/", post_id)
+            + f'<div class="counts"><div>'
             f'<a href="posts/{html.escape(post_id)}.html">'
             f'{len(thread)} captured comment(s) &rarr;</a></div></div></div>'
         )
