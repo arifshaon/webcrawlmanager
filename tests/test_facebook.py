@@ -1907,5 +1907,442 @@ class ConfigValidationTests(unittest.TestCase):
         self.assertEqual(config.scroll_pause_min, 1.5)
 
 
+def viewer_document(photo_id="1596470645181373", post_id="1596471388514632",
+                    album="229529241875527", uri="https://scontent/full.jpg",
+                    text="I am very happy to visit", created=1784624095):
+    """A CometPhotoRootContentQuery response, as Facebook shapes it."""
+    story = {
+        "__typename": "Story",
+        "id": "UzpfSTEwMDA0NDU1MzU3NDM0NToxNTk2NDcxMzg4NTE0NjMyOjE1OTY0NzEzODg1MTQ2MzI=",
+        "post_id": post_id,
+        "url": f"https://www.facebook.com/Yusuffali.MA/posts/pfbid0{post_id}",
+        "message": {"text": text},
+        "actors": [{"__typename": "User", "name": "Yusuff Ali M.A",
+                    "id": "100044553574345"}],
+    }
+    return {"data": {
+        "currMedia": {
+            "__typename": "Photo", "id": photo_id,
+            "created_time": created,
+            "accessibility_caption": "May be an image of text",
+            "image": {"uri": uri, "width": 1051, "height": 701},
+            "owner": {"__typename": "User", "id": "100044553574345"},
+            "container_story": story,
+            "creation_story": dict(story),
+            "feedback": {"id": "ZmVlZGJhY2s6MTU5NjQ3MDY0NTE4MTM3Mw=="},
+            "default_mediaset": {"id": album, "__typename": "Album"},
+        },
+        "mediaset": {"__typename": "Album", "nextMedia": {"edges": [
+            {"node": {"__typename": "Photo", "id": "1593563378805433"}}]}},
+    }}
+
+
+class PhotoViewerTests(SessionTestCase):
+    """The photo viewer walks the album, not the post.
+
+    Opening a post's photo and pressing the arrow shows the next photo in
+    the album, which belongs to another post. Each viewer response carried
+    that other post's id, permalink and first line, and the capture minted
+    a post from every one -- twelve posts with no date and no media, for a
+    capture of one post -- while the full-size images the viewer served
+    were never kept at all.
+    """
+
+    def test_a_viewer_response_is_recognised(self):
+        from webarc.facebook import is_viewer_document
+        self.assertTrue(is_viewer_document(viewer_document()))
+        self.assertFalse(is_viewer_document({"data": {"node": {"id": "1"}}}))
+        self.assertFalse(is_viewer_document({"data": {"currMedia": None}}))
+
+    def test_the_photo_is_read_with_its_post_album_and_date(self):
+        from webarc.facebook import extract_viewer_photos
+        [photo] = extract_viewer_photos([viewer_document()])
+
+        self.assertEqual(photo.photo_id, "1596470645181373")
+        self.assertEqual(photo.image_url, "https://scontent/full.jpg")
+        self.assertEqual((photo.width, photo.height), (1051, 701))
+        self.assertEqual(photo.post_id, "1596471388514632")
+        self.assertIn("/posts/pfbid0", photo.post_url)
+        self.assertEqual(photo.post_text, "I am very happy to visit")
+        self.assertEqual(photo.album_id, "229529241875527")
+        self.assertEqual(photo.created_time, "2026-07-21T08:54:55Z")
+        self.assertEqual(photo.caption, "May be an image of text")
+        self.assertEqual(photo.owner_id, "100044553574345")
+        self.assertEqual(
+            photo.photo_url,
+            "https://www.facebook.com/photo/?fbid=1596470645181373"
+            "&set=a.229529241875527")
+
+    def test_no_post_is_minted_from_a_viewer_response(self):
+        session = make_session(self.tmp, page_url=POST_URL)
+        session._consider_post(post("1593564465471991",
+                                    date="2026-05-01T09:00:00Z"))
+
+        session._ingest_records([viewer_document(),
+                                 viewer_document(photo_id="2", post_id="3")])
+
+        self.assertEqual(list(session.seen_this_run), ["1593564465471991"])
+        self.assertEqual(session.counters["viewer_posts_suppressed"], 2)
+        self.assertEqual(session.exclusions["not_the_requested_post"], 0)
+
+    def test_the_photo_is_kept_as_album_context(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               capture_media=True)
+        session._consider_post(post("1593564465471991",
+                                    date="2026-05-01T09:00:00Z"))
+
+        session._ingest_records([viewer_document()])
+
+        [photo] = session.archive.viewer_photos.values()
+        self.assertEqual(photo.opened_from_post_id, "1593564465471991")
+        self.assertFalse(photo.belongs_to_captured_post)
+        self.assertEqual(session.counters["viewer_photos_observed"], 1)
+        self.assertEqual(session.counters["album_photos_from_other_posts"], 1)
+        self.assertEqual(list(session._media_queue),
+                         [("photo-1596470645181373", "https://scontent/full.jpg")])
+        self.assertIn("viewer_photo_observed",
+                      session.archive.events_path.read_text())
+
+    def test_the_captured_posts_own_photo_is_marked_as_its(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               capture_media=True)
+        session._consider_post(post("1593564465471991",
+                                    date="2026-05-01T09:00:00Z"))
+
+        session._ingest_records([viewer_document(
+            photo_id="1593563378805433", post_id="1593564465471991")])
+
+        [photo] = session.archive.viewer_photos.values()
+        self.assertTrue(photo.belongs_to_captured_post)
+        self.assertEqual(session.counters["album_photos_from_other_posts"], 0)
+
+    def test_a_photo_seen_twice_is_kept_once(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               capture_media=True)
+        session._ingest_records([viewer_document()])
+        session._ingest_records([viewer_document()])
+
+        self.assertEqual(len(session.archive.viewer_photos), 1)
+        self.assertEqual(len(session._media_queue), 1)
+        self.assertEqual(session.counters["viewer_photos_repeated"], 1)
+
+    def test_no_image_is_fetched_when_media_was_not_requested(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               capture_media=False)
+        session._ingest_records([viewer_document()])
+
+        self.assertEqual(len(session.archive.viewer_photos), 1)
+        self.assertEqual(list(session._media_queue), [])
+
+    def test_the_photos_comments_are_still_read(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True)
+        document = viewer_document()
+        document["data"]["currMedia"]["feedback"]["comments"] = {"edges": [{
+            "node": {"__typename": "Comment", "id": "77",
+                     "body": {"text": "lovely"},
+                     "feedback_target_id": "ZmVlZGJhY2s6MTU5MzU2NDQ2NTQ3MTk5MQ=="}}]}
+
+        session._ingest_records([document])
+
+        self.assertIn("77", session.archive.comments)
+
+    def test_the_context_is_exported_and_described(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               capture_media=True)
+        session._consider_post(post("1593564465471991",
+                                    date="2026-05-01T09:00:00Z"))
+        session._ingest_records([viewer_document()])
+        session.archive.media_index["https://scontent/full.jpg"] = "full.jpg"
+        session.archive.write_exports()
+
+        rows = [json.loads(line) for line in
+                (self.tmp / "facebook-album-context.jsonl").read_text()
+                .splitlines() if line.strip()]
+        self.assertEqual([row["photo_id"] for row in rows],
+                         ["1596470645181373"])
+        self.assertTrue((self.tmp / "facebook-album-context.csv").exists())
+        manifest = session._manifest_document(final=True)
+        section = manifest["requested_work"]["album_context"]
+        self.assertEqual(section["photos_viewed"], 1)
+        self.assertEqual(section["of_other_posts"], 1)
+        self.assertEqual(section["images_downloaded"], 1)
+        self.assertEqual(section["albums"], ["229529241875527"])
+        self.assertEqual(section["opened_from_posts"], ["1593564465471991"])
+        self.assertIn("not posts of this capture", section["note"])
+        self.assertEqual(manifest["layers"]["normalised"]["album_context"],
+                         ["facebook-album-context.jsonl",
+                          "facebook-album-context.csv"])
+        self.assertEqual(
+            session._progress_details()["album_photos_viewed"], 1)
+
+    def test_the_reader_page_shows_the_album_around_the_post(self):
+        from webarc.facebook_render import build_site
+        session = make_session(self.tmp, page_url=POST_URL,
+                               capture_media=True)
+        session._consider_post(post("1593564465471991",
+                                    date="2026-05-01T09:00:00Z"))
+        session._ingest_records([
+            viewer_document(photo_id="1593563378805433",
+                            post_id="1593564465471991",
+                            uri="https://scontent/own.jpg"),
+            viewer_document()])
+        session.archive.media_index["https://scontent/own.jpg"] = "own.jpg"
+        session.archive.write_exports()
+        session.archive.checkpoint(session._checkpoint_document(),
+                                   session._manifest_document(final=True))
+
+        site = build_site(self.tmp)
+        page = (site / "posts" / "1593564465471991.html").read_text()
+
+        self.assertIn("Photos opened in the viewer", page)
+        self.assertIn("This post's photo", page)
+        self.assertIn("From another post in the same album", page)
+        self.assertIn('src="../../media/own.jpg"', page)
+        self.assertIn("Not captured", page)
+        self.assertIn("Album photos viewed", (site / "index.html").read_text())
+
+
+class _WheelPage:
+    """A page with a mouse, as a real Playwright page has."""
+
+    def __init__(self, target=None, fail_wheel=False):
+        self.target = target if target is not None else {"x": 300.0, "y": 500.0}
+        self.scripts = []
+        self.moves = []
+        self.wheels = []
+        page = self
+
+        class _Mouse:
+            def move(self, x, y):
+                page.moves.append((x, y))
+
+            def wheel(self, dx, dy):
+                if fail_wheel:
+                    raise RuntimeError("no page")
+                page.wheels.append((dx, dy))
+        self.mouse = _Mouse()
+
+    def evaluate(self, script, *args):
+        self.scripts.append(script)
+        if "getBoundingClientRect" in script:
+            return self.target
+        return 1
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+class ThreadStallTests(SessionTestCase):
+    """Auto-scrolling gave up on threads a hand could still scroll.
+
+    The read stalled after eight quiet rounds, under ten seconds, while
+    Facebook was merely slow or a comment page was still on its way; it
+    scrolled only from script, which Facebook does not always answer; and
+    it clicked each "View more comments" control once, though Facebook
+    keeps the same element for the next page. The curator then scrolled
+    by hand and the thread carried on where the capture had said it ended.
+    """
+
+    def reading(self, session, expand=lambda _p: 0):
+        session._expand_comments = expand
+        session._show_all_comments = lambda _p: None
+        session._process_media_queue = lambda budget=0: None
+        session._scroll_comment_thread = lambda _p: None
+        session._ensure_facebook_widgets = lambda: None
+
+    def test_the_thread_is_given_thirty_quiet_seconds_not_ten(self):
+        session = make_session(self.tmp, include_comments=True,
+                               max_comments_per_post=400)
+        rounds = {"n": 0}
+        self.reading(session, expand=lambda _p: rounds.__setitem__(
+            "n", rounds["n"] + 1) or 0)
+
+        session._read_comment_thread(_WheelPage(), "post")
+
+        # 1.2 s of nominal waiting per quiet round.
+        self.assertEqual(rounds["n"], 25)
+        self.assertGreaterEqual(session._thread_quiet_seconds, 30.0)
+
+    def test_a_comment_page_still_in_flight_is_not_a_stall(self):
+        session = make_session(self.tmp, include_comments=True,
+                               max_comments_per_post=400)
+        rounds = {"n": 0}
+        pending = object()
+
+        def expand(_p):
+            rounds["n"] += 1
+            if rounds["n"] == 3:
+                session._comment_requests_in_flight.add(pending)
+            if rounds["n"] == 30:
+                session._comment_requests_in_flight.discard(pending)
+            return 0
+        self.reading(session, expand=expand)
+
+        session._read_comment_thread(_WheelPage(), "post")
+
+        self.assertGreater(rounds["n"], 50)
+
+    def test_a_comment_page_request_is_noticed_and_released(self):
+        session = make_session(self.tmp, include_comments=True)
+
+        class _Request:
+            url = "https://www.facebook.com/api/graphql/"
+            resource_type = "xhr"
+            post_data = ("fb_api_req_friendly_name=CommentsListComponents"
+                         "PaginationQuery&variables=%7B%22cursor%22%3A%22abc%22%7D")
+        request = _Request()
+
+        session._on_request(request)
+        self.assertTrue(session._comment_page_pending())
+        self.assertEqual(session.counters["comment_pages_requested"], 1)
+        self.assertEqual(session._last_cursor, "abc")
+
+        session._on_request_finished(request)
+        self.assertFalse(session._comment_page_pending())
+
+    def test_a_failed_comment_page_request_is_released_too(self):
+        session = make_session(self.tmp, include_comments=True)
+
+        class _Request:
+            url = "https://www.facebook.com/api/graphql/"
+            resource_type = "xhr"
+            post_data = "fb_api_req_friendly_name=CommentListComponentsRootQuery"
+        request = _Request()
+        session._on_request(request)
+        session._on_request_failed(request)
+
+        self.assertFalse(session._comment_page_pending())
+
+    def test_other_requests_are_not_mistaken_for_comment_pages(self):
+        session = make_session(self.tmp, include_comments=True)
+
+        class _Request:
+            url = "https://www.facebook.com/api/graphql/"
+            resource_type = "xhr"
+            post_data = "fb_api_req_friendly_name=CometPhotoRootContentQuery"
+        session._on_request(_Request())
+
+        self.assertFalse(session._comment_page_pending())
+
+    def test_the_thread_is_scrolled_with_the_wheel_first(self):
+        session = make_session(self.tmp, include_comments=True)
+        page = _WheelPage()
+
+        session._scroll_comment_thread(page)
+
+        self.assertEqual(page.moves, [(300.0, 500.0)])
+        self.assertEqual(len(page.wheels), 3)
+        self.assertTrue(all(dy > 0 for _dx, dy in page.wheels))
+        self.assertIn("getBoundingClientRect", page.scripts[0])
+        self.assertIn('[role="article"] [role="article"]', page.scripts[0])
+        self.assertIn("scrollTop", page.scripts[1])
+        self.assertEqual(session.counters["comment_wheel_scrolls"], 1)
+
+    def test_a_page_without_a_mouse_is_still_scrolled_from_script(self):
+        session = make_session(self.tmp, include_comments=True)
+        page = CommentThreadScrollTests._Page()
+
+        session._scroll_comment_thread(page)
+
+        self.assertEqual(session.counters["comment_containers_scrolled"], 2)
+
+    def test_a_thread_with_nothing_on_screen_is_not_wheeled(self):
+        session = make_session(self.tmp, include_comments=True)
+        page = _WheelPage(target=None)
+        page.target = None
+
+        session._scroll_comment_thread(page)
+
+        self.assertEqual(page.wheels, [])
+        self.assertEqual(session.counters["comment_wheel_scrolls"], 0)
+
+    def test_a_failing_wheel_does_not_end_the_scroll(self):
+        session = make_session(self.tmp, include_comments=True)
+        page = _WheelPage(fail_wheel=True)
+
+        session._scroll_comment_thread(page)
+
+        self.assertEqual(session.counters["comment_wheel_scrolls"], 0)
+        self.assertIn("scrollTop", page.scripts[-1])
+
+    def test_a_more_comments_control_is_clicked_again_after_a_while(self):
+        import inspect
+        source = inspect.getsource(FacebookCaptureSession._expand_comments)
+
+        self.assertNotIn("swmClicked === '1'", source)
+        self.assertIn("swmClickedAt", source)
+        self.assertIn("cooldown", source)
+
+    def test_the_hold_says_how_long_the_thread_was_given(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        item = post("1593564465471991", date="2026-05-01T09:00:00Z")
+        item.comments_count = 433
+        session._consider_post(item)
+        session._read_comment_thread = lambda *a: None
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("30 seconds", session.phase_detail)
+        self.assertIn("Resume scrolling", session.phase_detail)
+
+
+class ReadProgressReachesTheDashboardTests(SessionTestCase):
+    """Resuming from a hold left the dashboard saying "paused".
+
+    The read holds the session's only thread for as long as it runs and the
+    main loop reports once a second between its own turns, so nothing said
+    "scrolling" until the read ended -- by which time it had held again.
+    """
+
+    def reports_of(self, session):
+        seen = []
+        session.on_progress = lambda **kw: seen.append(kw["state"])
+        session._ensure_facebook_widgets = lambda: None
+        session._checkpoint = lambda force=False: None
+        return seen
+
+    def test_the_read_reports_the_running_state_while_it_runs(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True)
+        seen = self.reports_of(session)
+        session._expand_comments = lambda _p: 0
+        session._show_all_comments = lambda _p: None
+        session._process_media_queue = lambda budget=0: None
+        session._scroll_comment_thread = lambda _p: None
+        session.state = RECORDING
+
+        session._read_comment_thread(_WheelPage(), "1593564465471991")
+
+        self.assertIn(RECORDING, seen)
+
+    def test_a_resume_from_the_widget_is_reported_at_once(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True)
+        seen = self.reports_of(session)
+        session.state = PAUSED
+        session.started_scrolling = True
+
+        session._on_widget_command({}, "resume")
+        command, page, actor = session._commands.popleft()
+        session.apply(command, page, actor=actor)
+        session._pulse(force=True)
+
+        self.assertEqual(seen[-1], RECORDING)
+
+    def test_the_pulse_is_throttled_to_once_a_second(self):
+        session = make_session(self.tmp, page_url=POST_URL)
+        seen = self.reports_of(session)
+
+        session._pulse(force=True)
+        session._pulse()
+        session._pulse()
+
+        self.assertEqual(len(seen), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -125,6 +125,14 @@ a { color: var(--accent); }
 .comment .what { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .92rem; }
 .reply { margin-left: 1.6rem; border-left-color: var(--accent); }
 .empty { color: var(--soft); font-style: italic; font-size: .88rem; margin-top: .8rem; }
+.album { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: .8rem; margin-top: .8rem; }
+.album .photo { border: 1px solid var(--line); border-radius: 8px; padding: .5rem;
+  background: var(--ground); font-size: .8rem; }
+.album .photo img { width: 100%; height: auto; border-radius: 6px; display: block; }
+.album .photo .missing { width: auto; }
+.album .photo .from { color: var(--soft); margin-top: .4rem; overflow-wrap: anywhere; }
+.album .photo .own { color: var(--accent); font-weight: 600; }
 .back { display: inline-block; margin-bottom: 1rem; font-size: .9rem; }
 table.meta-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
 table.meta-table td { padding: .3rem .5rem .3rem 0; border-bottom: 1px solid var(--line);
@@ -185,6 +193,58 @@ def _media_markup(post: dict, media_index: dict, prefix: str) -> str:
     return f'<div class="media">{"".join(items)}</div>'
 
 
+def _viewer_photo_markup(photos: list[dict], media_index: dict, prefix: str,
+                         this_post: Optional[str]) -> str:
+    """Photos the curator stepped through in Facebook's photo viewer.
+
+    The viewer walks the album a photo belongs to, not the post, so most of
+    these are other posts' photos. Each is shown with whose it is, so a
+    reader does not take an album neighbour for part of the post.
+    """
+    if not photos:
+        return ""
+    cards = []
+    for photo in photos:
+        url = str(photo.get("image_url") or "")
+        name = media_index.get(url) if url else None
+        if name:
+            safe = html.escape(name)
+            image = (f'<a href="{prefix}{safe}"><img src="{prefix}{safe}" '
+                     f'loading="lazy" alt="{_text(photo.get("caption"))}"></a>')
+        else:
+            image = ('<div class="missing">Not captured. Facebook never served '
+                     'this file during the session.</div>')
+        post_id = str(photo.get("post_id") or "")
+        post_url = photo.get("post_url")
+        if this_post and post_id == this_post:
+            whose = '<span class="own">This post\'s photo</span>'
+        elif post_url:
+            whose = (f'From another post in the same album: '
+                     f'<a href="{html.escape(str(post_url))}">'
+                     f'{_text(post_id) or "open on Facebook"}</a>')
+        elif post_id:
+            whose = f"From another post in the same album: {_text(post_id)}"
+        else:
+            whose = "From the same album"
+        facts = [_readable_date(photo.get("created_time"))]
+        if photo.get("album_id"):
+            facts.append(f"album {_text(photo.get('album_id'))}")
+        caption = _text(photo.get("caption"))
+        cards.append(
+            f'<div class="photo">{image}'
+            f'<div class="from">{whose}</div>'
+            f'<div class="from">{" &middot; ".join(facts)}</div>'
+            + (f'<div class="from">{caption}</div>' if caption else "")
+            + '</div>')
+    return (
+        '<h2>Photos opened in the viewer</h2>'
+        '<div class="empty">Facebook\'s photo viewer steps through the album a '
+        'photo belongs to, not the post. These are the photos reached that '
+        'way; the ones from other posts are context, not part of this '
+        'post.</div>'
+        f'<div class="album">{"".join(cards)}</div>')
+
+
 def _comment_markup(comment: dict) -> str:
     depth = int(comment.get("depth") or 0)
     css = "comment reply" if depth > 0 else "comment"
@@ -219,6 +279,7 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
 
     posts = _read_jsonl(capture_dir / "facebook-posts.jsonl")
     comments = _read_jsonl(capture_dir / "facebook-comments.jsonl")
+    viewer_photos = _read_jsonl(capture_dir / "facebook-album-context.jsonl")
     manifest = _read_json(capture_dir / "facebook-manifest.json")
     media_index = _read_json(capture_dir / "facebook-media.json")
     has_warc = any(capture_dir.glob("*.warc.gz")) or any(
@@ -232,6 +293,17 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
                                    str(c.get("created_time") or "")))
 
     posts.sort(key=_sort_key, reverse=True)
+    post_ids = {str(post.get("post_id") or "") for post in posts}
+    viewer_by_post: dict[str, list[dict]] = defaultdict(list)
+    viewer_unplaced: list[dict] = []
+    for photo in viewer_photos:
+        home = str(photo.get("post_id") or "")
+        opened_from = str(photo.get("opened_from_post_id") or "")
+        anchor = home if home in post_ids else opened_from
+        if anchor in post_ids:
+            viewer_by_post[anchor].append(photo)
+        else:
+            viewer_unplaced.append(photo)
     capture = manifest.get("capture", {})
     coverage = manifest.get("coverage", {})
     page_name = capture.get("page_name") or capture.get("page_url") or "Facebook Page"
@@ -268,6 +340,8 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
             f'{" &middot; " + link if link else ""}</div>'
             f'<div class="body">{body}</div>'
             f'{_media_markup(post, media_index, "../../media/")}{_counts_markup(post)}</div>'
+            + _viewer_photo_markup(viewer_by_post.get(post_id, []), media_index,
+                                   "../../media/", post_id)
             + f"<h2>Comments ({len(thread)} captured)</h2>{thread_markup}"))
 
     facts = [
@@ -275,6 +349,8 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
         ("Comments", len(comments)),
         ("Media files", len(media_index)),
     ]
+    if viewer_photos:
+        facts.append(("Album photos viewed", len(viewer_photos)))
     fact_markup = "".join(
         f"<div><span>{label}</span>{value}</div>" for label, value in facts)
     rows = [
@@ -303,7 +379,10 @@ def build_site(capture_dir: Path, site_dir: Optional[Path] = None) -> Path:
         f'<div class="facts">{fact_markup}</div></div>'
         + described
         + f'<div class="post"><table class="meta-table">{table}</table></div>'
-        + ("".join(cards) or '<div class="empty">No posts were captured.</div>')))
+        + ("".join(cards) or '<div class="empty">No posts were captured.</div>')
+        + (f'<div class="post">'
+           f'{_viewer_photo_markup(viewer_unplaced, media_index, "../media/", None)}'
+           '</div>' if viewer_unplaced else "")))
 
     log.info("Built Facebook pages for %d post(s) at %s", len(posts), site_dir)
     return site_dir

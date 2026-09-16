@@ -351,9 +351,29 @@ Every run writes WARC plus:
 
 - `facebook-posts.jsonl` and `facebook-posts.csv`;
 - comment JSONL/CSV when comments are requested;
+- `facebook-album-context.jsonl` and `.csv` when the curator stepped through
+  Facebook's photo viewer during the capture (see below);
 - `facebook-manifest.json`, recording selection, exclusions, stopping rule,
   failures, detected gaps and continuation provenance;
 - `facebook-checkpoint.json` and `facebook-events.jsonl`.
+
+A Facebook photo belongs to an album as well as to the post it was published
+in, and the photo viewer's arrows walk the album, not the post. Opening a
+post's photo and stepping onwards therefore shows photos of other posts. SWM
+keeps each photo seen in the viewer as *album context*: its own post id and
+permalink, album, date and caption, with the full-size image fetched into
+`media/`. The manifest's `album_context` section says which post the album
+was walked from and how many of the photos were that post's own; the reader
+page for the post shows them under "Photos opened in the viewer", each marked
+as this post's or another's. No post record is made from a viewer response.
+
+When a single post's comments are read, the thread is scrolled with wheel
+events over the comments, as a reader scrolls it, and expanded through
+Facebook's own "View more comments" controls. Facebook is given thirty
+seconds without a new comment -- not counting time a comment page is still
+on its way -- before the capture holds and hands the thread back to the
+curator, who can scroll further by hand (everything that loads is kept) and
+then resume or stop.
 
 Posts newer than an optional `To` date are necessarily traversed to reach older
 posts. Their exchanges remain in the raw WARC but they are excluded from the

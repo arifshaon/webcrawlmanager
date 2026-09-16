@@ -106,6 +106,9 @@ _PERMALINK_KEYS = (
     "permalink_url", "permalink", "www_url", "story_url", "url",
 )
 _GRAPHQL_PATH_PARTS = ("/api/graphql", "/graphql")
+# GraphQL operations that page a comment thread, by Facebook's own name for
+# them (CommentsListComponentsPaginationQuery and its relatives).
+_COMMENT_REQUEST_RE = re.compile(r"comment", re.IGNORECASE)
 _PRIVATE_REQUEST_HEADERS = {
     "authorization", "cookie", "proxy-authorization", "x-csrf-token",
     "x-fb-lsd",
@@ -812,6 +815,127 @@ _COMMENT_SUBSTANCE_KEYS = ("comment_depth", "body", "attachments",
                            "author", "actor", "preferred_body")
 
 
+@dataclass
+class FacebookViewerPhoto:
+    """One photo the curator opened in Facebook's photo viewer.
+
+    A photo belongs to an album as well as to the post it was published in,
+    and the viewer's arrows walk the album, not the post. Stepping through
+    it from a captured post therefore reaches photos of other posts. Those
+    are kept as context for the captured post -- each with its own post,
+    album and date -- rather than as posts of this capture.
+    """
+    photo_id: str
+    image_url: Optional[str] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    created_time: Optional[str] = None
+    caption: Optional[str] = None
+    post_id: Optional[str] = None
+    post_url: Optional[str] = None
+    post_text: Optional[str] = None
+    album_id: Optional[str] = None
+    owner_id: Optional[str] = None
+    owner_name: Optional[str] = None
+    photo_url: Optional[str] = None
+    opened_from_post_id: Optional[str] = None
+    belongs_to_captured_post: bool = False
+    observed_at: Optional[str] = None
+
+
+def _viewer_media(document: object) -> Optional[dict]:
+    """The photo a viewer response is about, or None for any other response."""
+    if not isinstance(document, dict):
+        return None
+    data = document.get("data")
+    if not isinstance(data, dict):
+        return None
+    media = data.get("currMedia")
+    if isinstance(media, dict) and str(media.get("id") or "").strip():
+        return media
+    return None
+
+
+def is_viewer_document(document: object) -> bool:
+    """Whether a GraphQL document is the photo viewer describing one photo.
+
+    Such a document carries the photo's own post and, through the album,
+    the posts of its neighbours -- each with an id, a permalink and a line
+    of text, but no date and no media of its own. Read as a feed it mints a
+    post per neighbour, every one of them empty.
+    """
+    return _viewer_media(document) is not None
+
+
+def _dimension(value: object) -> Optional[int]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if value > 0 else None
+
+
+def extract_viewer_photos(documents: Iterable[object]) -> list[FacebookViewerPhoto]:
+    """Read the photos described by photo viewer responses."""
+    photos: dict[str, FacebookViewerPhoto] = {}
+    for document in documents:
+        media = _viewer_media(document)
+        if media is None:
+            continue
+        typename = str(media.get("__typename") or "")
+        image = media.get("image") if isinstance(media.get("image"), dict) else {}
+        uri = image.get("uri") if isinstance(image.get("uri"), str) else None
+        if typename and typename != "Photo" and not uri:
+            continue
+        photo_id = str(media.get("id")).strip()
+        story: dict = {}
+        for key in ("container_story", "creation_story"):
+            candidate = media.get(key)
+            if isinstance(candidate, dict) and candidate:
+                story = candidate
+                break
+        post_id = _identifier(story, ("post_id", "legacy_story_hideable_id"))
+        if not post_id:
+            decoded = _relay_global_id(story.get("id"))
+            if decoded is not None and decoded[0] == "story":
+                post_id = decoded[1]
+        album = media.get("default_mediaset")
+        album_id = (str(album.get("id")).strip()
+                    if isinstance(album, dict) and album.get("id") else None)
+        owner_id, owner_name = _actor(media)
+        if owner_id is None and isinstance(media.get("owner"), dict):
+            owner_id = _identifier(media["owner"], ("id",))
+            owner_name = _scalar_text(media["owner"].get("name"))
+        photo_url = f"https://www.facebook.com/photo/?fbid={photo_id}"
+        if album_id:
+            photo_url += f"&set=a.{album_id}"
+        photo = FacebookViewerPhoto(
+            photo_id=photo_id,
+            image_url=uri if uri and uri.startswith("http") else None,
+            width=_dimension(image.get("width")),
+            height=_dimension(image.get("height")),
+            created_time=_normalise_datetime(media.get("created_time")),
+            caption=_scalar_text(media.get("accessibility_caption")),
+            post_id=post_id,
+            post_url=(story.get("url") if isinstance(story.get("url"), str)
+                      else None),
+            post_text=_message_text(story) if story else None,
+            album_id=album_id,
+            owner_id=owner_id,
+            owner_name=owner_name,
+            photo_url=photo_url,
+        )
+        held = photos.get(photo_id)
+        if held is None:
+            photos[photo_id] = photo
+            continue
+        for name in ("image_url", "width", "height", "created_time",
+                     "caption", "post_id", "post_url", "post_text",
+                     "album_id", "owner_id", "owner_name"):
+            if getattr(held, name) in (None, "") and \
+                    getattr(photo, name) not in (None, ""):
+                setattr(held, name, getattr(photo, name))
+    return list(photos.values())
+
+
 def _looks_like_comment(obj: dict, path: tuple[str, ...]) -> bool:
     """Recognise a comment record by its own substance, not only its text.
 
@@ -1179,6 +1303,12 @@ class FacebookArchive:
         "author_id", "author_name", "text", "depth", "media_urls",
         "source_path",
     ]
+    VIEWER_PHOTO_FIELDS = [
+        "photo_id", "created_time", "caption", "post_id", "post_url",
+        "post_text", "album_id", "owner_id", "owner_name", "photo_url",
+        "image_url", "width", "height", "opened_from_post_id",
+        "belongs_to_captured_post", "observed_at",
+    ]
 
     def __init__(self, out_dir: Path):
         self.out_dir = out_dir
@@ -1190,6 +1320,10 @@ class FacebookArchive:
         self.checkpoint_path = out_dir / "facebook-checkpoint.json"
         self.posts: dict[str, FacebookPost] = {}
         self.comments: dict[str, FacebookComment] = {}
+        # Photos stepped through in the viewer: context around a captured
+        # post, kept apart from the posts because they mostly are not its.
+        self.album_context_path = out_dir / "facebook-album-context.jsonl"
+        self.viewer_photos: dict[str, FacebookViewerPhoto] = {}
         # Media is kept as files as well as in WARC, so the capture can be
         # read without a replay browser.
         self.media_dir = out_dir / "media"
@@ -1241,6 +1375,13 @@ class FacebookArchive:
         _append_jsonl(self.comments_path, asdict(comment))
         return True
 
+    def add_viewer_photo(self, photo: FacebookViewerPhoto) -> bool:
+        if photo.photo_id in self.viewer_photos:
+            return False
+        self.viewer_photos[photo.photo_id] = photo
+        _append_jsonl(self.album_context_path, asdict(photo))
+        return True
+
     @staticmethod
     def _write_csv(path: Path, fields: list[str], rows: Iterable[dict]) -> None:
         temporary = path.with_name(path.name + ".tmp")
@@ -1282,6 +1423,16 @@ class FacebookArchive:
             self._write_csv(
                 self.out_dir / "facebook-comments.csv", self.COMMENT_FIELDS,
                 (asdict(comment) for comment in self.comments.values()),
+            )
+        if self.viewer_photos:
+            write_jsonl(
+                self.album_context_path,
+                (asdict(photo) for photo in self.viewer_photos.values()),
+            )
+            self._write_csv(
+                self.out_dir / "facebook-album-context.csv",
+                self.VIEWER_PHOTO_FIELDS,
+                (asdict(photo) for photo in self.viewer_photos.values()),
             )
 
     def checkpoint(self, checkpoint: dict, manifest: dict) -> None:
@@ -1499,6 +1650,11 @@ class FacebookCaptureSession(RecordingSession):
         # comment budget separate from other posts' budgets.
         self._permalink_post_id: Optional[str] = None
         self._harvest_done = False
+        # Comment pages Facebook has been asked for and not yet answered.
+        # While one is open the thread is not stalled, only slow.
+        self._comment_requests_in_flight: set = set()
+        self._last_pulse = 0.0
+        self._thread_quiet_seconds = 0.0
         self.archive.event(
             "capture_created", mode=config.mode, page_url=config.page_url,
             continuation_of=config.continuation_of,
@@ -1582,6 +1738,10 @@ class FacebookCaptureSession(RecordingSession):
         if self._is_graphql_url(request.url):
             self._remember_request_cursor(request)
 
+    def _on_request_finished(self, request) -> None:
+        self._comment_requests_in_flight.discard(request)
+        super()._on_request_finished(request)
+
     def _on_download(self, download) -> None:
         # RecordingSession's hardened runtime normally keys eligibility to its
         # recording state. Facebook capture is always on, even while scrolling
@@ -1589,6 +1749,7 @@ class FacebookCaptureSession(RecordingSession):
         self._download_queue.append((download, True))
 
     def _on_request_failed(self, request) -> None:
+        self._comment_requests_in_flight.discard(request)
         if self._is_graphql_url(request.url):
             self.counters["pagination_failures"] += 1
             self.archive.event("graphql_request_failed", url=request.url)
@@ -1598,13 +1759,28 @@ class FacebookCaptureSession(RecordingSession):
         try:
             raw = request.post_data or ""
             form = parse_qs(raw, keep_blank_values=True)
-            variables = json.loads((form.get("variables") or ["{}"]) [0])
+        except Exception:
+            return
+        name = (form.get("fb_api_req_friendly_name") or [""])[0]
+        if _COMMENT_REQUEST_RE.search(name):
+            self._comment_requests_in_flight.add(request)
+            self.counters["comment_pages_requested"] += 1
+        try:
+            variables = json.loads((form.get("variables") or ["{}"])[0])
         except Exception:
             return
         if isinstance(variables, dict):
             cursor = variables.get("cursor") or variables.get("after")
             if isinstance(cursor, str) and cursor:
                 self._last_cursor = cursor
+
+    def _comment_page_pending(self) -> bool:
+        """Whether Facebook still owes an answer to a comment page request.
+
+        A request the browser abandoned never reports back, so an entry
+        older than the page timeout is not evidence of anything.
+        """
+        return bool(self._comment_requests_in_flight)
 
     def _write_exchange(self, response, body: bytes) -> None:
         try:
@@ -1698,8 +1874,23 @@ class FacebookCaptureSession(RecordingSession):
         self._ingest_records(documents)
 
     def _ingest_records(self, documents: list[object]) -> None:
+        viewer_documents = [d for d in documents if is_viewer_document(d)]
+        if viewer_documents:
+            documents = [d for d in documents if not is_viewer_document(d)]
+            self._ingest_viewer_photos(viewer_documents)
         posts, comments, target_type, page_name = extract_graphql_records(
             documents, self._page_segment)
+        if viewer_documents:
+            # The stories a viewer response carries are the photo's home
+            # post and its neighbours in the album: an id, a permalink and
+            # a line of text each, no date, no media. Read as a feed they
+            # became a post per neighbour, every one of them empty. The
+            # photo's comments, when the response carries any, are still
+            # comments and are read as such.
+            phantoms, viewer_comments, _type, _name = extract_graphql_records(
+                viewer_documents, self._page_segment)
+            self.counters["viewer_posts_suppressed"] += len(phantoms)
+            comments.extend(viewer_comments)
         if target_type:
             self.target_type = target_type
             if target_type == "User" and not self._profile_rejected:
@@ -1725,6 +1916,40 @@ class FacebookCaptureSession(RecordingSession):
         if self.config.include_comments:
             for comment in comments:
                 self._consider_comment(comment)
+
+    def _ingest_viewer_photos(self, documents: list[object]) -> None:
+        """Keep the photos the curator stepped through in the viewer.
+
+        Each is recorded with its own post, album and date, and its
+        full-size image is fetched while the signed URL still resolves. A
+        photo that belongs to a post of this capture is that post's; the
+        rest are context, reached because the viewer walks the album.
+        """
+        opened_from = self._permalink_post_id or self.config.target_post_id
+        for photo in extract_viewer_photos(documents):
+            home = self._post_identity.get(photo.post_id or "", photo.post_id)
+            photo.opened_from_post_id = opened_from
+            photo.belongs_to_captured_post = bool(home) and (
+                home in self.archive.posts
+                or home == self.config.target_post_id)
+            photo.observed_at = _iso_now()
+            if not self.archive.add_viewer_photo(photo):
+                self.counters["viewer_photos_repeated"] += 1
+                continue
+            self.counters["viewer_photos_observed"] += 1
+            if not photo.belongs_to_captured_post:
+                self.counters["album_photos_from_other_posts"] += 1
+            self.archive.event(
+                "viewer_photo_observed", photo_id=photo.photo_id,
+                post_id=photo.post_id, album_id=photo.album_id,
+                opened_from_post_id=opened_from,
+                belongs_to_captured_post=photo.belongs_to_captured_post,
+            )
+            if photo.image_url and self.config.capture_media \
+                    and photo.image_url not in self._media_wanted:
+                self._media_wanted.add(photo.image_url)
+                self._media_queue.append(
+                    (f"photo-{photo.photo_id}", photo.image_url))
 
     def _consider_post(self, post: FacebookPost) -> None:
         """Record an observation of a post and (re)assess what to do with it.
@@ -2301,6 +2526,14 @@ class FacebookCaptureSession(RecordingSession):
         finally:
             self._permalink_post_id = None
 
+    # How long a thread may go without yielding a comment before the read
+    # concludes Facebook has stopped, counted only over rounds in which
+    # nothing was clicked and no comment page was still on its way. The
+    # earlier rule -- eight quiet rounds, under ten seconds -- gave up while
+    # Facebook was merely slow, and a curator scrolling by hand then found
+    # the thread carrying on where the capture had said it ended.
+    THREAD_PATIENCE_SECONDS = 30.0
+
     def _read_comment_thread(self, page, post_id: str) -> None:
         """Expand one post's thread on the page already showing it."""
         page.wait_for_timeout(1500)
@@ -2311,11 +2544,13 @@ class FacebookCaptureSession(RecordingSession):
         # hundreds needs proportionally more rounds than a thread of ten.
         # The stall rule, not this ceiling, is what normally ends a harvest.
         rounds = min(600, max(60, wanted // 2))
-        stalled = 0
+        quiet_ms = 0
+        self._thread_quiet_seconds = 0.0
         for _ in range(rounds):
             collected = len(self.archive.comments)
-            if (self._comment_counts.get(post_id, 0) >= wanted
-                    or stalled >= 8):
+            if self._comment_counts.get(post_id, 0) >= wanted:
+                break
+            if quiet_ms >= self.THREAD_PATIENCE_SECONDS * 1000:
                 break
             if self._closed or self._stop_requested_during_harvest():
                 break
@@ -2324,18 +2559,38 @@ class FacebookCaptureSession(RecordingSession):
             # Comments arrive on scroll as well as on click, and the thread
             # is usually below the fold on a permalink.
             self._scroll_comment_thread(page)
-            page.wait_for_timeout(1600 if clicked else 1200)
+            wait_ms = 1600 if clicked else 1200
+            page.wait_for_timeout(wait_ms)
             if len(self.archive.comments) > collected:
-                stalled = 0
-            elif not clicked:
-                stalled += 1
+                quiet_ms = 0
+            elif not clicked and not self._comment_page_pending():
+                quiet_ms += wait_ms
+            self._thread_quiet_seconds = quiet_ms / 1000.0
+        self._report_thread_progress()
 
     def _report_thread_progress(self) -> None:
-        """Say how far through the thread the harvest is, while it runs."""
+        """Say how far through the thread the harvest is, while it runs.
+
+        The read holds the session's only thread for as long as it runs, so
+        the report has to go out from here: left to the main loop, the
+        dashboard kept showing the state the read started from -- paused,
+        after a hold the curator had just released.
+        """
         detail = f"Reading this post's comments. {self._comment_progress()}"
         if detail != self.phase_detail:
             self.phase_detail = detail
             self._state_dirty = True
+        self._pulse()
+
+    def _pulse(self, *, force: bool = False) -> None:
+        """Tell the dashboard and the in-page widget where things stand."""
+        now = time.monotonic()
+        if not force and now - self._last_pulse < 1.0:
+            return
+        self._last_pulse = now
+        self._report_facebook()
+        self._ensure_facebook_widgets()
+        self._checkpoint()
 
     def _capture_single_post(self, page) -> None:
         """Read the one post this capture was given, then decide what to do.
@@ -2408,9 +2663,14 @@ class FacebookCaptureSession(RecordingSession):
                 "capture again for the rest."
                 if self._viewer_signed_in is False else
                 "Facebook stopped returning comments before the thread ran "
-                "out. Scroll or expand the thread in the browser yourself if "
-                "you want more.",
-                collected=len(self.archive.comments), still_expected=missing)
+                f"out: the thread was scrolled and expanded for "
+                f"{int(self.THREAD_PATIENCE_SECONDS)} seconds without "
+                "another comment arriving. Scroll or expand the thread in "
+                "the browser yourself if you want more; whatever loads is "
+                "collected.",
+                collected=len(self.archive.comments), still_expected=missing,
+                comment_pages_requested=self.counters.get(
+                    "comment_pages_requested", 0))
             return
 
         self._request_stop("single_post_captured",
@@ -2500,6 +2760,12 @@ class FacebookCaptureSession(RecordingSession):
             ? [document.querySelector('[role="dialog"]') || document.body]
             : top.slice(-30);
           const budget = perPost ? 12 : 4;
+          // A control is left alone for a few seconds after a click, not
+          // for ever: Facebook keeps the same "View more comments" element
+          // and re-labels it for the next page, so a control clicked once
+          // and never again paged the thread exactly once.
+          const now = Date.now();
+          const cooldown = 4000;
           let clicked = 0, matched = 0;
           const labels = [];
           for (const root of roots) {
@@ -2514,12 +2780,13 @@ class FacebookCaptureSession(RecordingSession):
               if (label && labels.length < 40 && labels.indexOf(label) < 0) {
                 labels.push(label.slice(0, 60));
               }
-              if (control.dataset && control.dataset.swmClicked === '1') continue;
+              const last = control.dataset ? Number(control.dataset.swmClickedAt || 0) : 0;
+              if (last && now - last < cooldown) continue;
               if (!(commentMore.test(label) ||
                     (includeReplies && replyMore.test(label)))) continue;
               matched += 1;
               if (clicked >= budget) continue;
-              try { control.dataset.swmClicked = '1'; } catch (_) {}
+              try { control.dataset.swmClickedAt = String(now); } catch (_) {}
               control.click(); clicked += 1;
             }
           }
@@ -2568,7 +2835,15 @@ class FacebookCaptureSession(RecordingSession):
         A post permalink opens in a dialog, so the window does not scroll --
         its background is frozen behind the dialog -- and scrolling the window
         loaded no further comments however many times it was tried.
+
+        The thread is scrolled the way a hand does it first: wheel events
+        over the last comment on screen. Facebook pages a thread from what
+        it sees the reader doing, and setting a container's scroll position
+        from script -- the only scrolling the capture did before -- loaded
+        nothing that a curator's own wheel then loaded at once. The script
+        scroll follows as a fallback for a thread the wheel cannot reach.
         """
+        self._wheel_over_thread(page)
         script = r"""
         () => {
           // A comment is an article nested inside the post's article, so the
@@ -2604,6 +2879,45 @@ class FacebookCaptureSession(RecordingSession):
             return
         if containers:
             self.counters["comment_containers_scrolled"] += containers
+
+    _THREAD_TARGET_JS = r"""
+    () => {
+      const comments = Array.from(
+        document.querySelectorAll('[role="article"] [role="article"]'));
+      const last = comments[comments.length - 1]
+        || document.querySelector('[role="dialog"]')
+        || document.querySelector('[role="article"]');
+      if (!last) return null;
+      const box = last.getBoundingClientRect();
+      if (!box.width || !box.height) return null;
+      const x = Math.min(Math.max(box.left + box.width / 2, 8), window.innerWidth - 8);
+      const y = Math.min(Math.max(box.top + box.height / 2, 8), window.innerHeight - 8);
+      return {x, y};
+    }
+    """
+
+    def _wheel_over_thread(self, page, steps: int = 3,
+                           delta: int = 600) -> bool:
+        """Scroll the thread with wheel events, as a reader would."""
+        mouse = getattr(page, "mouse", None)
+        if mouse is None:
+            return False
+        try:
+            target = page.evaluate(self._THREAD_TARGET_JS)
+        except Exception:
+            return False
+        if not isinstance(target, dict):
+            return False
+        try:
+            mouse.move(float(target["x"]), float(target["y"]))
+            for _ in range(steps):
+                mouse.wheel(0, delta)
+                page.wait_for_timeout(120)
+        except Exception as exc:
+            log.debug("Wheel scroll over the thread failed: %s", exc)
+            return False
+        self.counters["comment_wheel_scrolls"] += 1
+        return True
 
     def _page_marker(self, page) -> dict:
         try:
@@ -2979,6 +3293,7 @@ class FacebookCaptureSession(RecordingSession):
             "graphql_errors": self.counters.get("graphql_errors", 0),
             "graphql_unparsed": self.counters.get("graphql_unparsed", 0),
             "media_captured": self.counters.get("media_captured", 0),
+            "album_photos_viewed": len(self.archive.viewer_photos),
             "pagination_failures": self.counters.get("pagination_failures", 0),
             "scroll_attempts": self._scrolls,
             "consecutive_older_posts": self._old_consecutive,
@@ -3078,6 +3393,11 @@ class FacebookCaptureSession(RecordingSession):
                         ["facebook-comments.jsonl", "facebook-comments.csv"]
                         if self.archive.comments else []
                     ),
+                    "album_context": (
+                        ["facebook-album-context.jsonl",
+                         "facebook-album-context.csv"]
+                        if self.archive.viewer_photos else []
+                    ),
                     "selection_exclusions": dict(self.exclusions),
                 },
             },
@@ -3085,6 +3405,7 @@ class FacebookCaptureSession(RecordingSession):
                 **dict(self.counters),
                 "normalised_posts": len(self.archive.posts),
                 "normalised_comments": len(self.archive.comments),
+                "album_photos_viewed": len(self.archive.viewer_photos),
                 "pagination_failures": self.counters.get(
                     "pagination_failures", 0),
             },
@@ -3133,6 +3454,7 @@ class FacebookCaptureSession(RecordingSession):
                         "by itself."
                     ),
                 },
+                "album_context": self._album_context_section(),
             },
             "completeness": {
                 "claim": "No claim of complete Facebook Page capture is made.",
@@ -3167,6 +3489,37 @@ class FacebookCaptureSession(RecordingSession):
                 "checkpoint": "facebook-checkpoint.json",
             },
             "updated_at": _iso_now(),
+        }
+
+    def _album_context_section(self) -> dict:
+        """What the photo viewer reached, and whose photos those were."""
+        photos = list(self.archive.viewer_photos.values())
+        albums = sorted({p.album_id for p in photos if p.album_id})
+        opened_from = sorted({p.opened_from_post_id for p in photos
+                              if p.opened_from_post_id})
+        downloaded = sum(1 for p in photos
+                         if p.image_url and p.image_url in
+                         self.archive.media_index)
+        return {
+            "photos_viewed": len(photos),
+            "of_captured_posts": sum(
+                1 for p in photos if p.belongs_to_captured_post),
+            "of_other_posts": sum(
+                1 for p in photos if not p.belongs_to_captured_post),
+            "images_downloaded": downloaded,
+            "albums": albums,
+            "opened_from_posts": opened_from,
+            "posts_not_minted_from_viewer": self.counters.get(
+                "viewer_posts_suppressed", 0),
+            "note": (
+                "A Facebook photo belongs to an album as well as to the "
+                "post it was published in, and the viewer's arrows walk the "
+                "album. Photos stepped through in the viewer are recorded "
+                "here with their own post, album and date, and their "
+                "full-size image is fetched into media/. Those of other "
+                "posts are context reached from the captured post, not "
+                "posts of this capture; no post record is made from them."
+            ) if photos else None,
         }
 
     def _flush_persist_batch(self) -> None:
@@ -3300,7 +3653,6 @@ class FacebookCaptureSession(RecordingSession):
             ),
         )
         self._checkpoint(force=True)
-        last_report = 0.0
         while self.state != STOPPED and not self._closed:
             try:
                 command = self.control_poll()
@@ -3347,12 +3699,12 @@ class FacebookCaptureSession(RecordingSession):
                         self._last_dom_check = now
 
                 if self._state_dirty:
-                    self._ensure_facebook_widgets()
-                if now - last_report >= 1.0:
-                    self._report_facebook()
-                    self._ensure_facebook_widgets()
-                    self._checkpoint()
-                    last_report = now
+                    # A command from the widget or the dashboard changed the
+                    # state; both should show it now rather than when the
+                    # next report happens to be due.
+                    self._pulse(force=True)
+                elif now - self._last_pulse >= 1.0:
+                    self._pulse(force=True)
                 if not context.pages:
                     self.stop_reason = "browser_closed"
                     self.stop_rule = "all_browser_tabs_closed"
