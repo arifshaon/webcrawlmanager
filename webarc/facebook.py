@@ -1087,6 +1087,23 @@ def extract_graphql_records(
     return list(posts.values()), list(comments.values()), target_type, page_name
 
 
+def _continuation_said(outcome: str) -> str:
+    """The reason a continuation stopped, in words."""
+    if outcome.startswith("http_"):
+        return f"Facebook answered HTTP {outcome[5:]}"
+    if outcome.startswith("fetch_failed"):
+        return "the page could not send the request"
+    return {
+        "page_added_nothing": "a page came back with no comment not "
+                              "already held",
+        "cursor_did_not_advance": "Facebook returned the same cursor again",
+        "response_not_read": "a response could not be read",
+        "page_limit_reached": "the page limit for one read was reached",
+        "no_cursor": "no cursor was known to continue from",
+        "stopped": "a stop was requested",
+    }.get(outcome, outcome)
+
+
 def extract_comment_page_info(documents: Iterable[object]) -> list[dict]:
     """What Facebook says about a thread's remaining pages.
 
@@ -1475,6 +1492,94 @@ class FacebookArchive:
         _atomic_json(self.manifest_path, manifest)
 
 
+# Installed in every page. The page keeps a note of the comment-page request
+# its own client last made and can make the same request again for the next
+# page. Only the cursor changes, and only the cursor ever crosses to SWM:
+# what the request carries stays in the page, as it does for the client.
+_FACEBOOK_THREAD_JS = r"""
+(() => {
+  if (window.__swmThreadHelperInstalled) return;
+  window.__swmThreadHelperInstalled = true;
+  const isCommentPage = (url, body) => {
+    if (typeof url !== "string" || url.indexOf("/api/graphql") < 0) return false;
+    if (typeof body !== "string") return false;
+    return /fb_api_req_friendly_name=[^&]*Comment/i.test(body) &&
+      /commentsAfterCursor|%22cursor%22|%22after%22/.test(body);
+  };
+  let remembered = null;
+  const remember = (url, body, headers) => {
+    remembered = {url, body, headers: headers || {}};
+  };
+  const nativeFetch = window.fetch;
+  if (typeof nativeFetch === "function") {
+    window.fetch = function (input, init) {
+      try {
+        const url = typeof input === "string" ? input : (input && input.url);
+        const body = init && typeof init.body === "string" ? init.body : null;
+        const headers = {};
+        if (init && init.headers) {
+          const source = init.headers;
+          if (typeof source.forEach === "function" && !(Array.isArray(source)))
+            source.forEach((value, key) => { headers[key] = value; });
+          else if (Array.isArray(source))
+            source.forEach(([key, value]) => { headers[key] = value; });
+          else Object.assign(headers, source);
+        }
+        if (body && isCommentPage(url, body)) remember(url, body, headers);
+      } catch (_) {}
+      return nativeFetch.apply(this, arguments);
+    };
+  }
+  const XHR = window.XMLHttpRequest;
+  if (XHR && XHR.prototype) {
+    const open = XHR.prototype.open, send = XHR.prototype.send,
+      setHeader = XHR.prototype.setRequestHeader;
+    XHR.prototype.open = function (method, url) {
+      this.__swmUrl = url; this.__swmHeaders = {};
+      return open.apply(this, arguments);
+    };
+    XHR.prototype.setRequestHeader = function (key, value) {
+      try { if (this.__swmHeaders) this.__swmHeaders[key] = value; } catch (_) {}
+      return setHeader.apply(this, arguments);
+    };
+    XHR.prototype.send = function (body) {
+      try {
+        if (typeof body === "string" && isCommentPage(this.__swmUrl, body))
+          remember(this.__swmUrl, body, this.__swmHeaders);
+      } catch (_) {}
+      return send.apply(this, arguments);
+    };
+  }
+  const nextReq = value => {
+    const n = parseInt(value, 36);
+    return isNaN(n) ? value : (n + 1).toString(36);
+  };
+  window.__swmCommentRequestSeen = () => remembered !== null;
+  window.__swmContinueComments = async cursor => {
+    if (!remembered) return {error: "no request remembered"};
+    try {
+      const params = new URLSearchParams(remembered.body);
+      const variables = JSON.parse(params.get("variables") || "{}");
+      const key = ["commentsAfterCursor", "cursor", "after"].find(k => k in variables);
+      if (!key) return {error: "no cursor variable"};
+      variables[key] = cursor;
+      params.set("variables", JSON.stringify(variables));
+      if (params.has("__req")) params.set("__req", nextReq(params.get("__req")));
+      const body = params.toString();
+      remembered = {url: remembered.url, body, headers: remembered.headers};
+      const headers = Object.assign(
+        {"content-type": "application/x-www-form-urlencoded"}, remembered.headers);
+      const response = await nativeFetch(remembered.url, {
+        method: "POST", credentials: "include", headers, body});
+      const text = await response.text();
+      return {status: response.status, length: text.length};
+    } catch (error) {
+      return {error: String(error)};
+    }
+  };
+})();
+"""
+
 _FACEBOOK_WIDGET_JS = r"""
 (() => {
   if (window.__swmFacebookWidgetInstalled) return;
@@ -1750,6 +1855,7 @@ class FacebookCaptureSession(RecordingSession):
         # Per post: what Facebook last said about the thread's remaining
         # pages, from the page_info every comment page carries.
         self._thread_pages: dict[str, dict] = {}
+        self._continuation_outcome: Optional[str] = None
         self.archive.event(
             "capture_created", mode=config.mode, page_url=config.page_url,
             continuation_of=config.continuation_of,
@@ -2663,18 +2769,35 @@ class FacebookCaptureSession(RecordingSession):
         quiet_ms = 0
         self._thread_quiet_seconds = 0.0
         self._thread_rounds = 0
+        self._continuation_outcome = None
+        # A read resumed after a hold may already have seen the page ask
+        # for a comment page, and have Facebook's word that more exist.
+        # Continuing from the cursor is then the surer lever, and the one
+        # the curator was waiting on; scrolling follows only if it ends
+        # short.
+        if self._can_continue_thread(page, post_id):
+            self._continuation_outcome = self._continue_comment_thread(
+                page, post_id)
+            if self._thread_read_done(post_id):
+                self._report_thread_progress()
+                return
+        ended_by = "ceiling"
         for index in range(rounds):
             collected = len(self.archive.comments)
             if self._comment_counts.get(post_id, 0) >= wanted:
+                ended_by = "wanted"
                 break
             if quiet_ms >= self.THREAD_PATIENCE_SECONDS * 1000:
+                ended_by = "patience"
                 break
             if (self._thread_exhausted(post_id) is True
                     and not self._comment_page_pending()):
                 # Facebook has said there is no further page. Scrolling on
                 # would only be waiting for something it has ruled out.
+                ended_by = "exhausted"
                 break
             if self._closed or self._stop_requested_during_harvest():
+                ended_by = "stopped"
                 break
             self._report_thread_progress()
             requested = self.counters.get("comment_pages_requested", 0)
@@ -2711,7 +2834,136 @@ class FacebookCaptureSession(RecordingSession):
             self._note_thread_round(
                 index, post_id, clicked=clicked, after_click=after_click,
                 after_scroll=after_scroll, added=added, quiet_ms=quiet_ms)
+        if (ended_by == "patience" and not self._thread_read_done(post_id)
+                and self._continuation_outcome is None):
+            # Scrolling and clicking no longer make the page ask, and
+            # Facebook has not said the thread is over. Have the page
+            # continue its own request from the last cursor before
+            # troubling the curator. A continuation that already failed
+            # in this read is not repeated: its reason stands, and the
+            # curator's resume is the retry.
+            if not self._comment_request_seen(page):
+                self._continuation_outcome = "no_request_observed"
+                self.archive.event("comment_continuation_impossible",
+                                   post_id=post_id,
+                                   reason="no_request_observed")
+            else:
+                self._continuation_outcome = self._continue_comment_thread(
+                    page, post_id)
         self._report_thread_progress()
+
+    def _thread_read_done(self, post_id: str) -> bool:
+        """Enough comments, or Facebook's word that there are no more."""
+        return (self._comment_counts.get(post_id, 0)
+                >= self.config.max_comments_per_post
+                or self._thread_exhausted(post_id) is True)
+
+    def _comment_request_seen(self, page) -> bool:
+        """Whether the page has made a comment-page request it can repeat."""
+        try:
+            return bool(page.evaluate(
+                "() => !!(window.__swmCommentRequestSeen && "
+                "window.__swmCommentRequestSeen())"))
+        except Exception:
+            return False
+
+    def _can_continue_thread(self, page, post_id: str) -> bool:
+        return (self._thread_exhausted(post_id) is False
+                and not self._thread_read_done(post_id)
+                and self._comment_request_seen(page))
+
+    # Between continued pages: the cadence the client itself keeps when a
+    # reader scrolls, with some variation. A faster pace from a curator's
+    # own signed-in account is what draws a checkpoint.
+    CONTINUATION_PAUSE_SECONDS = (1.5, 2.5)
+
+    def _continue_comment_thread(self, page, post_id: str) -> Optional[str]:
+        """Read the thread's remaining pages by having the page repeat its
+        own comment request from the cursor Facebook last returned.
+
+        Nothing is invented and nothing leaves the page: the request is
+        the one the page's client last made, with only the cursor changed,
+        sent by the page itself. The response arrives through the same
+        path as the client's own -- written to the WARC, its comments and
+        its page_info read -- so continuing changes when the page asks,
+        not what is kept. Returns None when the thread is read to its end
+        or to the requested count, otherwise the reason it stopped short.
+        """
+        wanted = self.config.max_comments_per_post
+        # Ten comments a page, so twice the pages the count needs is ample.
+        limit = min(200, max(5, wanted // 5))
+        fetched = 0
+        self.archive.event("comment_continuation_started", post_id=post_id,
+                           pages_so_far=self.counters.get(
+                               "comment_pages_requested", 0))
+        while fetched < limit:
+            if self._thread_read_done(post_id):
+                return None
+            if self._closed or self._stop_requested_during_harvest():
+                return "stopped"
+            held = self._thread_pages.get(post_id) or {}
+            cursor = held.get("end_cursor")
+            if not cursor:
+                return self._continuation_stopped(post_id, "no_cursor", fetched)
+            before = len(self.archive.comments)
+            pages_before = held.get("pages", 0)
+            fetched += 1
+            self.counters["comment_pages_continued"] += 1
+            failure = self._fetch_comment_page(page, cursor)
+            if failure:
+                return self._continuation_stopped(post_id, failure, fetched)
+            # The response is read by the same hooks as the client's own;
+            # give the event loop a moment to deliver it.
+            page.wait_for_timeout(300)
+            held = self._thread_pages.get(post_id) or {}
+            added = len(self.archive.comments) - before
+            if held.get("pages", 0) <= pages_before:
+                return self._continuation_stopped(
+                    post_id, "response_not_read", fetched)
+            self.archive.event(
+                "comment_page_continued", post_id=post_id, page=fetched,
+                comments_added=added,
+                facebook_reports_more=bool(held.get("has_next_page")))
+            if held.get("end_cursor") == cursor and held.get("has_next_page"):
+                return self._continuation_stopped(
+                    post_id, "cursor_did_not_advance", fetched)
+            if added == 0 and held.get("has_next_page"):
+                return self._continuation_stopped(
+                    post_id, "page_added_nothing", fetched)
+            self._report_thread_progress()
+            self._process_media_queue(budget=2)
+            page.wait_for_timeout(int(random.uniform(
+                *self.CONTINUATION_PAUSE_SECONDS) * 1000))
+        if self._thread_read_done(post_id):
+            return None
+        return self._continuation_stopped(post_id, "page_limit_reached", fetched)
+
+    def _continuation_stopped(self, post_id: str, reason: str,
+                              fetched: int) -> str:
+        self.counters["comment_continuation_failures"] += 1
+        self.archive.event("comment_continuation_stopped", post_id=post_id,
+                           reason=reason, pages_fetched=fetched)
+        return reason
+
+    def _fetch_comment_page(self, page, cursor: str) -> Optional[str]:
+        """Have the page ask for the comment page a cursor names.
+
+        Returns None on an HTTP 200, otherwise what went wrong.
+        """
+        try:
+            result = page.evaluate(
+                "cursor => window.__swmContinueComments ? "
+                "window.__swmContinueComments(cursor) : "
+                "{error: 'helper not installed'}", cursor)
+        except Exception as exc:
+            return f"fetch_failed: {exc}"
+        result = result if isinstance(result, dict) else {}
+        if result.get("error"):
+            return f"fetch_failed: {result['error']}"
+        status = result.get("status")
+        if status != 200:
+            return f"http_{status}"
+        return None
 
     def _note_thread_round(self, index: int, post_id: str, *, clicked: int,
                            after_click: int, after_scroll: int, added: int,
@@ -2864,8 +3116,35 @@ class FacebookCaptureSession(RecordingSession):
         pages = self.counters.get("comment_pages_requested", 0)
         by_click = self.counters.get("comment_pages_after_click", 0)
         by_scroll = self.counters.get("comment_pages_after_scroll", 0)
+        continued = self.counters.get("comment_pages_continued", 0)
         loaded = (f"{pages} comment page(s) were loaded during the read, "
-                  f"{by_click} after a click and {by_scroll} after a scroll.")
+                  f"{by_click} after a click and {by_scroll} after a scroll"
+                  + (f", {continued} by the page repeating its own request "
+                     "from the last cursor at SWM's asking." if continued
+                     else "."))
+        outcome = self._continuation_outcome
+        if outcome == "no_request_observed":
+            return (
+                "Facebook still reports further comment pages for this "
+                "thread, but the page did not ask for them when the thread "
+                f"was scrolled and expanded for "
+                f"{int(self.THREAD_PATIENCE_SECONDS)} seconds, and SWM "
+                "cannot have the page continue the thread until the page "
+                "has made one such request itself. Load one more page of "
+                "comments by hand (scroll to the end of the comments, or "
+                "select \u201cView more comments\u201d), then select "
+                "\u201cResume scrolling\u201d: SWM will carry on from "
+                "there by itself.")
+        if outcome:
+            return (
+                "Facebook still reports further comment pages for this "
+                "thread. Scrolling and expanding it no longer made the page "
+                "ask for them, and SWM then had the page continue its own "
+                f"request from the last cursor until "
+                f"{_continuation_said(outcome)}. {loaded} Scroll or expand "
+                "the thread in the browser yourself if you want more, or "
+                "select \u201cResume scrolling\u201d to try again; "
+                "whatever loads is collected.")
         if self._thread_exhausted(self.config.target_post_id) is False:
             return (
                 "Facebook still reports further comment pages for this "
@@ -3652,6 +3931,18 @@ class FacebookCaptureSession(RecordingSession):
                         (self._thread_pages.get(
                             self.config.target_post_id or "") or {}
                          ).get("end_cursor")),
+                    "thread_pages_continued_by_swm": self.counters.get(
+                        "comment_pages_continued", 0),
+                    "continuation_outcome": self._continuation_outcome,
+                    "continuation_note": (
+                        "When scrolling and expanding the thread no longer "
+                        "made the page ask for the next comment page while "
+                        "Facebook still reported one, SWM had the page "
+                        "repeat its own last comment request with the "
+                        "cursor Facebook had returned. Pages read that way "
+                        "are in the WARC and in the comment records like "
+                        "any other; they were not rendered on the page."
+                    ) if self.counters.get("comment_pages_continued") else None,
                     "viewer": {True: "signed_in", False: "signed_out"}.get(
                         self._viewer_signed_in, "unknown"),
                     "note": (
@@ -3788,6 +4079,7 @@ class FacebookCaptureSession(RecordingSession):
         payload = self._widget_state()
         for page in list(self._context.pages):
             try:
+                page.evaluate(_FACEBOOK_THREAD_JS)
                 page.evaluate(_FACEBOOK_WIDGET_JS)
                 page.evaluate(
                     "value => window.__swmSetFacebookState && "
@@ -3856,6 +4148,7 @@ class FacebookCaptureSession(RecordingSession):
             context.expose_binding(
                 "swmFacebookControl", self._on_widget_command)
             context.add_init_script(_FACEBOOK_WIDGET_JS)
+            context.add_init_script(_FACEBOOK_THREAD_JS)
         except Exception as exc:
             log.warning("Facebook in-browser controls unavailable: %s", exc)
         for existing in context.pages:

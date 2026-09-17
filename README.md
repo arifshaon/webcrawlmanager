@@ -367,13 +367,25 @@ was walked from and how many of the photos were that post's own; the reader
 page for the post shows them under "Photos opened in the viewer", each marked
 as this post's or another's. No post record is made from a viewer response.
 
-When a single post's comments are read, the thread is scrolled with wheel
-events over the comments, as a reader scrolls it, and expanded through
-Facebook's own "View more comments" controls. Facebook is given thirty
-seconds without a new comment -- not counting time a comment page is still
-on its way -- before the capture holds and hands the thread back to the
-curator, who can scroll further by hand (everything that loads is kept) and
-then resume or stop.
+When a single post's comments are read, the thread is read automatically in
+two stages before the curator is asked for anything. First the thread is
+scrolled with wheel events over the comments, as a reader scrolls it, and
+expanded through Facebook's own "View more comments" controls; Facebook is
+given thirty seconds without a new comment, not counting time a comment page
+is still on its way. Every comment page Facebook serves says whether another
+follows, and the capture reads that: a thread Facebook has ended is finished,
+whatever count the post states. If Facebook still reports a further page but
+scrolling no longer makes the page ask for it, the page is asked to repeat
+its own last comment request with the cursor Facebook returned, one page
+every one and a half to two and a half seconds, until the thread ends or the
+requested number is reached. Nothing is invented and nothing leaves the page:
+the request is the client's own with only the cursor changed, and the
+response is written to the WARC and read like any other. Only when that too
+fails (the page never made such a request, or Facebook refuses it) does the
+capture hold and say why, and the curator can load a page by hand and resume,
+or stop and save. The manifest records how many pages loaded after a click,
+after a scroll, and by continuation, and what Facebook last said about the
+thread; `facebook-events.jsonl` records every round.
 
 Posts newer than an optional `To` date are necessarily traversed to reach older
 posts. Their exchanges remain in the raw WARC but they are excluded from the

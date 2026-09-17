@@ -2423,8 +2423,9 @@ class WidgetPushTests(SessionTestCase):
         session._ensure_facebook_widgets()
 
         for page in pages:
-            self.assertEqual(len(page.evaluated), 2)
-            self.assertEqual(page.evaluated[1][1][0]["state"], PAUSED)
+            # The thread helper, the panel, then the state.
+            self.assertEqual(len(page.evaluated), 3)
+            self.assertEqual(page.evaluated[2][1][0]["state"], PAUSED)
         self.assertFalse(session._state_dirty)
 
 
@@ -2634,6 +2635,194 @@ class ThreadPageInfoTests(SessionTestCase):
         rounds = [e for e in events if e["event"] == "comment_round"]
         self.assertEqual(counted["n"], 200)
         self.assertEqual(len(rounds), 40 + 16)
+
+
+class _ContinuingPage:
+    """A page whose client has made a comment request, standing in for
+    Facebook as well: each continued page is answered by ingesting the
+    next comment page into the session."""
+
+    def __init__(self, session, pages, seen=True, status=200):
+        self.session = session
+        self.pages = list(pages)      # (has_next, cursor, comment ids)
+        self.seen = seen
+        self.status = status
+        self.cursors_asked = []
+        self.mouse = _WheelPage().mouse
+
+    def evaluate(self, script, *args):
+        if "__swmCommentRequestSeen" in script:
+            return self.seen
+        if "__swmContinueComments" in script:
+            self.cursors_asked.append(args[0])
+            if self.status != 200:
+                return {"status": self.status, "length": 0}
+            if self.pages:
+                has_next, cursor, ids = self.pages.pop(0)
+                self.session._ingest_records([comment_page(
+                    has_next=has_next, cursor=cursor, comments=ids)])
+            return {"status": 200, "length": 1000}
+        if "getBoundingClientRect" in script:
+            return None
+        return 1
+
+    def wait_for_timeout(self, _ms):
+        pass
+
+
+class ThreadContinuationTests(SessionTestCase):
+    """When scrolling no longer makes the page ask, the page asks anyway.
+
+    Facebook's own client pages a thread with one request per page, the
+    cursor from the last response naming the next. When scrolling and
+    clicking stop producing that request while Facebook still reports a
+    further page, the page is asked to repeat its own last request with
+    the new cursor. The curator is troubled only when that fails too.
+    """
+
+    POST = "1593564465471991"
+
+    def session(self, wanted=400, stated=433):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=wanted)
+        session.CONTINUATION_PAUSE_SECONDS = (0, 0)
+        item = post(self.POST, date="2026-05-01T09:00:00Z")
+        item.comments_count = stated
+        session._consider_post(item)
+        session._show_all_comments = lambda _p: None
+        session._process_media_queue = lambda budget=0: None
+        session._scroll_comment_thread = lambda _p: None
+        session._expand_comments = lambda _p: 0
+        session._ensure_facebook_widgets = lambda: None
+        return session
+
+    def first_page(self, session, has_next=True):
+        session._ingest_records([comment_page(
+            has_next=has_next, cursor="C1", comments=("1", "2"))])
+
+    def test_the_thread_is_continued_from_the_last_cursor_until_it_ends(self):
+        session = self.session()
+        self.first_page(session)
+        page = _ContinuingPage(session, [
+            (True, "C2", ("3", "4")), (True, "C3", ("5",)),
+            (False, "C4", ("6",))])
+
+        session._read_comment_thread(page, self.POST)
+
+        self.assertEqual(page.cursors_asked, ["C1", "C2", "C3"])
+        self.assertEqual(sorted(session.archive.comments), ["1", "2", "3", "4", "5", "6"])
+        self.assertIsNone(session._continuation_outcome)
+        self.assertEqual(session.counters["comment_pages_continued"], 3)
+        self.assertTrue(session._thread_exhausted(self.POST))
+
+    def test_continuation_stops_at_the_requested_count(self):
+        session = self.session(wanted=4)
+        self.first_page(session)
+        page = _ContinuingPage(session, [
+            (True, "C2", ("3", "4")), (True, "C3", ("5", "6"))])
+
+        session._read_comment_thread(page, self.POST)
+
+        self.assertEqual(page.cursors_asked, ["C1"])
+        self.assertEqual(len(session.archive.comments), 4)
+
+    def test_a_thread_read_to_its_end_is_not_held(self):
+        session = self.session()
+        self.first_page(session)
+        page = _ContinuingPage(session, [(False, "C2", ("3",))])
+        session._read_comment_thread(page, self.POST)
+
+        session._capture_single_post(page)
+
+        self.assertEqual(session._pending_stop[1],
+                         "facebook_reported_no_further_comment_page")
+
+    def test_a_page_that_never_asked_leaves_the_curator_a_way(self):
+        session = self.session()
+        self.first_page(session)
+        page = _ContinuingPage(session, [], seen=False)
+
+        session._capture_single_post(page)
+
+        self.assertEqual(session._continuation_outcome, "no_request_observed")
+        self.assertEqual(page.cursors_asked, [])
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("Load one more page of comments by hand",
+                      session.phase_detail)
+        self.assertIn("comment_continuation_impossible",
+                      session.archive.events_path.read_text())
+
+    def test_a_refused_continuation_is_held_and_said(self):
+        session = self.session()
+        self.first_page(session)
+        page = _ContinuingPage(session, [], status=403)
+
+        session._capture_single_post(page)
+
+        self.assertEqual(session._continuation_outcome, "http_403")
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("Facebook answered HTTP 403", session.phase_detail)
+        self.assertIn("1 by the page repeating its own request",
+                      session.phase_detail)
+        manifest = session._manifest_document()["requested_work"]["comments"]
+        self.assertEqual(manifest["continuation_outcome"], "http_403")
+        self.assertEqual(manifest["thread_pages_continued_by_swm"], 1)
+        self.assertIn("not rendered on the page", manifest["continuation_note"])
+
+    def test_a_page_that_adds_nothing_ends_the_continuation(self):
+        session = self.session()
+        self.first_page(session)
+        page = _ContinuingPage(session, [
+            (True, "C2", ("3",)), (True, "C3", ("3",)), (True, "C4", ("9",))])
+
+        session._read_comment_thread(page, self.POST)
+
+        self.assertEqual(session._continuation_outcome, "page_added_nothing")
+        self.assertEqual(page.cursors_asked, ["C1", "C2"])
+
+    def test_a_cursor_that_does_not_advance_ends_the_continuation(self):
+        session = self.session()
+        self.first_page(session)
+        page = _ContinuingPage(session, [(True, "C1", ("3",))])
+
+        session._read_comment_thread(page, self.POST)
+
+        self.assertEqual(session._continuation_outcome, "cursor_did_not_advance")
+
+    def test_a_resumed_read_continues_before_scrolling_again(self):
+        session = self.session()
+        self.first_page(session)
+        rounds = {"n": 0}
+        session._expand_comments = lambda _p: rounds.__setitem__(
+            "n", rounds["n"] + 1) or 0
+        page = _ContinuingPage(session, [(False, "C2", ("3",))])
+
+        session._read_comment_thread(page, self.POST)
+
+        self.assertEqual(page.cursors_asked, ["C1"])
+        self.assertEqual(rounds["n"], 0)
+
+    def test_nothing_is_continued_when_facebook_has_not_spoken(self):
+        session = self.session()
+        page = _ContinuingPage(session, [(False, "C2", ("3",))])
+
+        session._read_comment_thread(page, self.POST)
+
+        self.assertEqual(page.cursors_asked, [])
+        self.assertEqual(session._continuation_outcome, "no_cursor")
+
+    def test_the_pace_is_the_clients(self):
+        self.assertEqual(FacebookCaptureSession.CONTINUATION_PAUSE_SECONDS,
+                         (1.5, 2.5))
+
+    def test_the_helper_is_installed_alongside_the_panel(self):
+        from webarc.facebook import _FACEBOOK_THREAD_JS as helper
+
+        self.assertIn("__swmContinueComments", helper)
+        self.assertIn("__swmCommentRequestSeen", helper)
+        self.assertIn("commentsAfterCursor", helper)
+        self.assertIn('credentials: "include"', helper)
 
 
 if __name__ == "__main__":
