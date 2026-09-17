@@ -2402,9 +2402,20 @@ class ProfileInUseTests(SessionTestCase):
 
         self.assertIn("let connected = null", widget)
         self.assertIn("if (connected === false) return [];", widget)
-        self.assertIn("ANSWER_WAIT = 15000", widget)
+        self.assertIn("ANSWER_WAIT = 45000", widget)
         self.assertIn("not connected to an SWM capture", widget)
         self.assertIn("Date.now() - askedAt > ANSWER_WAIT", widget)
+
+    def test_the_navigation_does_not_wait_for_the_full_load_event(self):
+        """The loop that feeds the panel does not run until navigation
+        returns; waiting for Facebook's late "load" event kept the panel
+        unfed long enough to declare itself disconnected."""
+        import inspect
+        source = inspect.getsource(
+            FacebookCaptureSession.run_with_context)
+
+        self.assertIn('wait_until="domcontentloaded"', source)
+        self.assertNotIn('wait_until="load"', source)
 
 
 class _FakeWidgetPage:

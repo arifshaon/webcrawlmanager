@@ -1585,7 +1585,8 @@ _FACEBOOK_WIDGET_JS = r"""
   if (window.__swmFacebookWidgetInstalled) return;
   window.__swmFacebookWidgetInstalled = true;
   let state = "paused";
-  let detail = "Log in if needed, open the Page, then start scrolling.";
+  let detail = "Starting up \u2014 opening the Page. Log in if needed; the "
+    + "controls are ready to use.";
   let root = null;
   // The panel is shown as live from the start: at start-up the capture is
   // busy loading Facebook and may take a while to answer, and a panel that
@@ -1596,7 +1597,10 @@ _FACEBOOK_WIDGET_JS = r"""
   let connected = null;
   let lastWord = Date.now();
   let askedAt = 0;
-  const ANSWER_WAIT = 15000;
+  // A slow Facebook start-up can keep the capture from answering for a
+  // while; the "not connected" verdict is for a window a capture has truly
+  // left behind, so it waits long enough not to be tripped by a slow start.
+  const ANSWER_WAIT = 45000;
   const ORPHAN = "This window is not connected to an SWM capture. The " +
     "capture that opened it has ended, or the capture you started could " +
     "not open its own browser because this profile was already open here. " +
@@ -4171,7 +4175,13 @@ class FacebookCaptureSession(RecordingSession):
         page = context.pages[0] if context.pages else context.new_page()
         if navigate:
             try:
-                page.goto(self.config.page_url, wait_until="load",
+                # Wait for the DOM, not the full "load" event. Facebook holds
+                # connections open and can fire "load" tens of seconds late,
+                # and until this returns the loop below never runs -- so the
+                # in-page panel, which the loop keeps fed, would sit unanswered
+                # long enough to declare itself "not connected" before the
+                # capture had even reached its first tick.
+                page.goto(self.config.page_url, wait_until="domcontentloaded",
                           timeout=int(self.page_timeout * 1000))
             except Exception as exc:
                 log.warning("Initial Facebook navigation failed: %s", exc)
@@ -4184,6 +4194,9 @@ class FacebookCaptureSession(RecordingSession):
                 "select Start / resume scrolling."
             ),
         )
+        # Feed the panel at once, so it shows the capture's own words from the
+        # first moment rather than waiting for the first scheduled report.
+        self._pulse(force=True)
         self._checkpoint(force=True)
         while self.state != STOPPED and not self._closed:
             try:

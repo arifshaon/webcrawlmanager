@@ -409,9 +409,9 @@ still open when a capture starts (typically left from an earlier capture
 whose worker ended without closing it), Chrome hands the Page to that window
 and the new capture cannot open a browser: the job fails with a message naming
 the window to close, and the SWM panel in the old window, once a question to
-the capture has gone unanswered for fifteen seconds, shows **Not connected**
-with no buttons rather than a Start button that does nothing. Close every
-window using the profile, then start the capture again.
+the capture has gone unanswered for forty-five seconds, shows **Not
+connected** with no buttons rather than a Start button that does nothing.
+Close every window using the profile, then start the capture again.
 
 The session material the page's bootstrap carries (the capturing account's
 ids, the request-signing tokens, the nonces) is removed from the WARC. The
