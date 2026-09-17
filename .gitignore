@@ -30,3 +30,6 @@ Thumbs.db
 
 # Chrome profile used by native/headed crawl mode
 chrome-profile*/
+
+# Local-only project rules; not for GitHub
+CLAUDE.md
