@@ -1587,11 +1587,16 @@ _FACEBOOK_WIDGET_JS = r"""
   let state = "paused";
   let detail = "Log in if needed, open the Page, then start scrolling.";
   let root = null;
-  // Nothing is known until the capture behind this window has spoken. A
-  // window left open by a capture that has ended still shows the panel;
-  // offering "Start" there, with nothing to receive it, misleads.
-  let connected = false;
+  // The panel is shown as live from the start: at start-up the capture is
+  // busy loading Facebook and may take a while to answer, and a panel that
+  // says "not connected" then is wrong. The verdict that nothing is behind
+  // this window is reached only when a question to the capture -- the
+  // opening state request or a button press -- goes unanswered for long.
+  // null: not yet answered; true: answered; false: given up on.
+  let connected = null;
   let lastWord = Date.now();
+  let askedAt = 0;
+  const ANSWER_WAIT = 15000;
   const ORPHAN = "This window is not connected to an SWM capture. The " +
     "capture that opened it has ended, or the capture you started could " +
     "not open its own browser because this profile was already open here. " +
@@ -1605,7 +1610,7 @@ _FACEBOOK_WIDGET_JS = r"""
     stopped: "Stopped"
   };
   function controls() {
-    if (!connected) return [];
+    if (connected === false) return [];
     if (state === "recording") return [["pause", "Pause scrolling"], ["stop", "Stop and save"]];
     if (state === "paused") return [["resume", "Start / resume scrolling"], ["stop", "Stop and save"]];
     if (state === "blocked") return [["resume", "Verification resolved — resume"], ["stop", "Stop and save"]];
@@ -1614,9 +1619,10 @@ _FACEBOOK_WIDGET_JS = r"""
   function render() {
     if (!root) return;
     const status = root.querySelector(".swm-facebook-state");
-    status.textContent = connected ? (LABELS[state] || state) : "Not connected";
-    status.className = "swm-facebook-state " + (connected ? state : "blocked");
-    root.querySelector(".swm-facebook-detail").textContent = connected ? (detail || "") : ORPHAN;
+    const orphan = connected === false;
+    status.textContent = orphan ? "Not connected" : (LABELS[state] || state);
+    status.className = "swm-facebook-state " + (orphan ? "blocked" : state);
+    root.querySelector(".swm-facebook-detail").textContent = orphan ? ORPHAN : (detail || "");
     const bar = root.querySelector(".swm-facebook-buttons");
     while (bar.firstChild) bar.removeChild(bar.firstChild);
     for (const [command, label] of controls()) {
@@ -1624,8 +1630,9 @@ _FACEBOOK_WIDGET_JS = r"""
       button.textContent = label;
       button.addEventListener("click", () => {
         if (!window.swmFacebookControl) { connected = false; render(); return; }
+        if (!askedAt) askedAt = Date.now();
         window.swmFacebookControl(command).then(result => {
-          connected = true; lastWord = Date.now();
+          connected = true; askedAt = 0; lastWord = Date.now();
           state = result.state; detail = result.detail || detail; render();
         }).catch(() => { connected = false; render(); });
       });
@@ -1636,7 +1643,7 @@ _FACEBOOK_WIDGET_JS = r"""
     if (value && typeof value === "object") {
       state = value.state || state; detail = value.detail || "";
     }
-    connected = true; lastWord = Date.now();
+    connected = true; askedAt = 0; lastWord = Date.now();
     if (!root) install();
     render();
   };
@@ -1644,12 +1651,16 @@ _FACEBOOK_WIDGET_JS = r"""
   // said as such, without pretending the window is dead: a thread read or
   // a media fetch can hold the capture for longer than a second.
   setInterval(() => {
-    if (!root || !connected) return;
+    if (!root) return;
+    if (askedAt && connected !== true && Date.now() - askedAt > ANSWER_WAIT) {
+      connected = false; render(); return;
+    }
+    if (connected !== true) return;
     const silent = Date.now() - lastWord;
     const el = root.querySelector(".swm-facebook-detail");
     if (silent > 45000 && el && el.textContent !== SILENT + " " + detail)
       el.textContent = SILENT + " " + detail;
-  }, 5000);
+  }, 2000);
   function install() {
     if (!document.documentElement || root) return;
     try {
@@ -1680,9 +1691,13 @@ _FACEBOOK_WIDGET_JS = r"""
       box.appendChild(title); box.appendChild(status); box.appendChild(detailEl); box.appendChild(buttons);
       shadow.appendChild(style); shadow.appendChild(box); root = shadow;
       document.documentElement.appendChild(host); render();
-      if (window.swmFacebookControl)
+      if (window.swmFacebookControl) {
+        askedAt = Date.now();
         window.swmFacebookControl("state").then(window.__swmSetFacebookState)
           .catch(() => { connected = false; render(); });
+      } else {
+        connected = false; render();
+      }
     } catch (_) { root = null; }
   }
   if (document.readyState === "loading")

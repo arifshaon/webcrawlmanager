@@ -2394,13 +2394,17 @@ class ProfileInUseTests(SessionTestCase):
 
         self.assertEqual(str(caught.exception), "Executable doesn't exist")
 
-    def test_the_panel_offers_no_start_until_the_capture_has_spoken(self):
+    def test_the_panel_is_live_at_first_and_gives_up_only_on_silence(self):
+        """At start-up the capture is busy loading Facebook and answers
+        late; a panel that said "not connected" then was wrong, and hid
+        the Start button the curator was waiting for."""
         from webarc.facebook import _FACEBOOK_WIDGET_JS as widget
 
-        self.assertIn("let connected = false", widget)
-        self.assertIn("if (!connected) return [];", widget)
+        self.assertIn("let connected = null", widget)
+        self.assertIn("if (connected === false) return [];", widget)
+        self.assertIn("ANSWER_WAIT = 15000", widget)
         self.assertIn("not connected to an SWM capture", widget)
-        self.assertIn("connected = true; lastWord = Date.now();", widget)
+        self.assertIn("Date.now() - askedAt > ANSWER_WAIT", widget)
 
 
 class _FakeWidgetPage:
