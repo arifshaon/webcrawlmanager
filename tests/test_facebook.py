@@ -2428,5 +2428,213 @@ class WidgetPushTests(SessionTestCase):
         self.assertFalse(session._state_dirty)
 
 
+FEEDBACK_ID = "ZmVlZGJhY2s6MTU5MzU2NDQ2NTQ3MTk5MQ=="   # feedback:1593564465471991
+
+
+def comment_page(has_next=True, cursor="CURSOR", comments=("11", "12")):
+    """A CommentsListComponentsPaginationQuery response, as Facebook shapes it."""
+    return {"data": {"node": {
+        "__typename": "Feedback", "id": FEEDBACK_ID,
+        "comment_rendering_instance_for_feed_location": {"comments": {
+            "edges": [{"node": {
+                "__typename": "Comment", "id": cid, "body": {"text": "hi"},
+                "feedback": {"replies_connection": {
+                    "edges": [], "page_info": {
+                        "has_next_page": False, "end_cursor": None}}},
+            }} for cid in comments],
+            "page_info": {"has_next_page": has_next, "end_cursor": cursor,
+                          "has_previous_page": True},
+        }}}}}
+
+
+class ThreadPageInfoTests(SessionTestCase):
+    """Facebook says on every comment page whether another follows.
+
+    The read used to infer the end of a thread from silence: nothing new
+    for a while, so hold and ask the curator. Every page Facebook served
+    in the 1 September capture said has_next_page true, all 24 of them,
+    and the capture stopped asking anyway. The thread's own word is what
+    should decide between "Facebook ended it" and "the page stopped asking".
+    """
+
+    def test_the_threads_page_info_is_read_with_its_post(self):
+        from webarc.facebook import extract_comment_page_info
+        [info] = extract_comment_page_info([comment_page()])
+
+        self.assertEqual(info["post_id"], "1593564465471991")
+        self.assertTrue(info["has_next_page"])
+        self.assertEqual(info["end_cursor"], "CURSOR")
+        self.assertEqual(info["comments_on_page"], 2)
+
+    def test_reply_connections_are_not_the_thread(self):
+        from webarc.facebook import extract_comment_page_info
+        self.assertEqual(len(extract_comment_page_info([comment_page()])), 1)
+
+    def test_the_page_rendered_into_the_permalink_counts_too(self):
+        from webarc.facebook import extract_comment_page_info
+        document = {"require": [{"__bbox": {"result": {"data": {"node": {
+            "feedback": {"__typename": "Feedback", "id": FEEDBACK_ID,
+                         "comment_rendering_instance_for_feed_location": {
+                             "comments": {"edges": [], "page_info": {
+                                 "has_next_page": False, "end_cursor": "X"}}}}}}}}}]}
+
+        [info] = extract_comment_page_info([document])
+
+        self.assertEqual(info["post_id"], "1593564465471991")
+        self.assertFalse(info["has_next_page"])
+
+    def test_the_session_remembers_what_facebook_last_said(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True)
+        self.assertIsNone(session._thread_exhausted("1593564465471991"))
+
+        session._ingest_records([comment_page(has_next=True)])
+        self.assertFalse(session._thread_exhausted("1593564465471991"))
+
+        session._ingest_records([comment_page(has_next=False,
+                                              comments=("13",))])
+        self.assertTrue(session._thread_exhausted("1593564465471991"))
+        self.assertEqual(session._thread_pages["1593564465471991"]["pages"], 2)
+
+    def stated(self, session, count=433):
+        item = post("1593564465471991", date="2026-05-01T09:00:00Z")
+        item.comments_count = count
+        session._consider_post(item)
+
+    def test_a_thread_facebook_ended_is_not_held_for_the_curator(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        self.stated(session)
+        session._ingest_records([comment_page(has_next=False)])
+        session._read_comment_thread = lambda *a: None
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertEqual(session._pending_stop,
+                         ("single_post_captured",
+                          "facebook_reported_no_further_comment_page"))
+        self.assertIn("comment_thread_ended_by_facebook",
+                      session.archive.events_path.read_text())
+
+    def test_a_thread_facebook_still_offers_is_held_and_said_so(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        self.stated(session)
+        session._ingest_records([comment_page(has_next=True)])
+        session._read_comment_thread = lambda *a: None
+        session.counters["comment_pages_requested"] = 3
+        session.counters["comment_pages_after_click"] = 3
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertEqual(session.state, PAUSED)
+        self.assertIn("still reports further comment pages",
+                      session.phase_detail)
+        self.assertIn("3 after a click and 0 after a scroll",
+                      session.phase_detail)
+        manifest = session._manifest_document()["requested_work"]["comments"]
+        self.assertTrue(manifest["facebook_reports_more_comments"])
+        self.assertTrue(manifest["next_comment_cursor_known"])
+        self.assertEqual(manifest["thread_pages_after_click"], 3)
+
+    def test_an_unheard_thread_keeps_the_plain_message(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        self.stated(session)
+        session._read_comment_thread = lambda *a: None
+
+        session._capture_single_post(_FakePage(url=POST_URL))
+
+        self.assertIn("stopped returning comments", session.phase_detail)
+        manifest = session._manifest_document()["requested_work"]["comments"]
+        self.assertIsNone(manifest["facebook_reports_more_comments"])
+
+    def reading(self, session, expand=lambda _p: 0, scroll=lambda _p: None):
+        session._expand_comments = expand
+        session._show_all_comments = lambda _p: None
+        session._process_media_queue = lambda budget=0: None
+        session._scroll_comment_thread = scroll
+        session._ensure_facebook_widgets = lambda: None
+
+    def test_the_read_stops_once_facebook_has_ended_the_thread(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        rounds = {"n": 0}
+        self.reading(session, expand=lambda _p: rounds.__setitem__(
+            "n", rounds["n"] + 1) or 0)
+        session._ingest_records([comment_page(has_next=False)])
+
+        session._read_comment_thread(_WheelPage(), "1593564465471991")
+
+        self.assertEqual(rounds["n"], 0)
+
+    def test_a_click_that_fetches_nothing_is_not_progress(self):
+        """Clicking a dead control every round kept the read going to the
+        round ceiling: minutes of clicking with nothing to show."""
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        rounds = {"n": 0}
+        self.reading(session, expand=lambda _p: rounds.__setitem__(
+            "n", rounds["n"] + 1) or 1)
+
+        session._read_comment_thread(_WheelPage(), "1593564465471991")
+
+        # 1.6 s of nominal waiting per clicking round; 30 s of patience.
+        self.assertEqual(rounds["n"], 19)
+
+    def test_pages_are_laid_at_the_door_of_what_fetched_them(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        state = {"round": 0}
+
+        def expand(_p):
+            state["round"] += 1
+            if state["round"] == 1:
+                session.counters["comment_pages_requested"] += 1
+            return 1
+
+        def scroll(_p):
+            if state["round"] == 2:
+                session.counters["comment_pages_requested"] += 2
+        self.reading(session, expand=expand, scroll=scroll)
+
+        session._read_comment_thread(_WheelPage(), "1593564465471991")
+
+        self.assertEqual(session.counters["comment_pages_after_click"], 1)
+        self.assertEqual(session.counters["comment_pages_after_scroll"], 2)
+        events = [json.loads(line) for line in
+                  session.archive.events_path.read_text().splitlines()]
+        rounds = [e for e in events if e["event"] == "comment_round"]
+        self.assertEqual(rounds[0]["pages_after_click"], 1)
+        self.assertEqual(rounds[1]["pages_after_scroll"], 2)
+        self.assertIn("facebook_reports_more", rounds[0])
+
+    def test_round_records_are_bounded(self):
+        session = make_session(self.tmp, page_url=POST_URL,
+                               include_comments=True,
+                               max_comments_per_post=400)
+        counted = {"n": 0}
+
+        def expand(_p):
+            counted["n"] += 1
+            session.archive.comments[str(counted["n"])] = object()
+            return 1
+        self.reading(session, expand=expand)
+
+        session._read_comment_thread(_WheelPage(), "1593564465471991")
+
+        events = [json.loads(line) for line in
+                  session.archive.events_path.read_text().splitlines()]
+        rounds = [e for e in events if e["event"] == "comment_round"]
+        self.assertEqual(counted["n"], 200)
+        self.assertEqual(len(rounds), 40 + 16)
+
+
 if __name__ == "__main__":
     unittest.main()

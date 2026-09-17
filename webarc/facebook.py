@@ -1087,6 +1087,41 @@ def extract_graphql_records(
     return list(posts.values()), list(comments.values()), target_type, page_name
 
 
+def extract_comment_page_info(documents: Iterable[object]) -> list[dict]:
+    """What Facebook says about a thread's remaining pages.
+
+    Every page of comments, the one rendered into the permalink and each
+    fetched afterwards, carries the thread connection's ``page_info``:
+    whether a further page exists and the cursor that names it. Read
+    together with the comments, this turns "no more arrived" into a fact
+    about the thread rather than an inference from silence.
+    """
+    found: list[dict] = []
+    for obj, path, ancestors in _walk(documents):
+        if len(path) < 2 or path[-1] != "comments":
+            continue
+        if path[-2] != "comment_rendering_instance_for_feed_location":
+            continue
+        page_info = obj.get("page_info")
+        if not isinstance(page_info, dict) or "edges" not in obj:
+            continue
+        post_id = None
+        for ancestor in reversed(ancestors):
+            decoded = _relay_global_id(ancestor.get("id"))
+            if decoded is not None and decoded[0] == "post":
+                post_id = decoded[1]
+                break
+        cursor = page_info.get("end_cursor")
+        found.append({
+            "post_id": post_id,
+            "has_next_page": bool(page_info.get("has_next_page")),
+            "end_cursor": cursor if isinstance(cursor, str) and cursor else None,
+            "comments_on_page": len(obj.get("edges") or [])
+            if isinstance(obj.get("edges"), list) else 0,
+        })
+    return found
+
+
 def decode_graphql_documents(body: bytes) -> list[object]:
     """Decode Facebook's JSON, JSON-lines and anti-JSON-prefix responses."""
     try:
@@ -1711,6 +1746,10 @@ class FacebookCaptureSession(RecordingSession):
         self._comment_requests_in_flight: set = set()
         self._last_pulse = 0.0
         self._thread_quiet_seconds = 0.0
+        self._thread_rounds = 0
+        # Per post: what Facebook last said about the thread's remaining
+        # pages, from the page_info every comment page carries.
+        self._thread_pages: dict[str, dict] = {}
         self.archive.event(
             "capture_created", mode=config.mode, page_url=config.page_url,
             continuation_of=config.continuation_of,
@@ -1929,7 +1968,28 @@ class FacebookCaptureSession(RecordingSession):
             self.archive.event("graphql_payload_errors", count=error_count)
         self._ingest_records(documents)
 
+    def _note_thread_pages(self, documents: list[object]) -> None:
+        for info in extract_comment_page_info(documents):
+            post_id = (info["post_id"] or self._permalink_post_id
+                       or self.config.target_post_id or "")
+            held = self._thread_pages.setdefault(post_id, {"pages": 0})
+            held["pages"] += 1
+            held["has_next_page"] = info["has_next_page"]
+            held["end_cursor"] = info["end_cursor"]
+
+    def _thread_exhausted(self, post_id: Optional[str]) -> Optional[bool]:
+        """Whether Facebook has said this thread has no further page.
+
+        None until a page of the thread has been seen: silence is not an
+        answer.
+        """
+        held = self._thread_pages.get(post_id or "")
+        if not held or "has_next_page" not in held:
+            return None
+        return not held["has_next_page"]
+
     def _ingest_records(self, documents: list[object]) -> None:
+        self._note_thread_pages(documents)
         viewer_documents = [d for d in documents if is_viewer_document(d)]
         if viewer_documents:
             documents = [d for d in documents if not is_viewer_document(d)]
@@ -2602,27 +2662,80 @@ class FacebookCaptureSession(RecordingSession):
         rounds = min(600, max(60, wanted // 2))
         quiet_ms = 0
         self._thread_quiet_seconds = 0.0
-        for _ in range(rounds):
+        self._thread_rounds = 0
+        for index in range(rounds):
             collected = len(self.archive.comments)
             if self._comment_counts.get(post_id, 0) >= wanted:
                 break
             if quiet_ms >= self.THREAD_PATIENCE_SECONDS * 1000:
                 break
+            if (self._thread_exhausted(post_id) is True
+                    and not self._comment_page_pending()):
+                # Facebook has said there is no further page. Scrolling on
+                # would only be waiting for something it has ruled out.
+                break
             if self._closed or self._stop_requested_during_harvest():
                 break
             self._report_thread_progress()
+            requested = self.counters.get("comment_pages_requested", 0)
             clicked = self._expand_comments(page)
+            # A click and a scroll are given separate moments to act, so
+            # the pages Facebook fetches can be laid at the door of the one
+            # that caused them. Which of the two actually pages a thread is
+            # not knowable from outside a live session, and a read that
+            # stalls has to be able to say which of its levers did nothing.
+            page.wait_for_timeout(700)
+            after_click = self.counters.get(
+                "comment_pages_requested", 0) - requested
             # Comments arrive on scroll as well as on click, and the thread
             # is usually below the fold on a permalink.
             self._scroll_comment_thread(page)
-            wait_ms = 1600 if clicked else 1200
+            wait_ms = 900 if clicked else 500
             page.wait_for_timeout(wait_ms)
-            if len(self.archive.comments) > collected:
+            after_scroll = self.counters.get(
+                "comment_pages_requested", 0) - requested - after_click
+            if after_click:
+                self.counters["comment_pages_after_click"] += after_click
+            if after_scroll:
+                self.counters["comment_pages_after_scroll"] += after_scroll
+            added = len(self.archive.comments) - collected
+            if added > 0:
                 quiet_ms = 0
-            elif not clicked and not self._comment_page_pending():
-                quiet_ms += wait_ms
+            elif not self._comment_page_pending():
+                # A click that fetched nothing is not progress, however
+                # many controls it found; counting it as such kept a read
+                # clicking a dead control until the round ceiling.
+                quiet_ms += 700 + wait_ms
             self._thread_quiet_seconds = quiet_ms / 1000.0
+            self._thread_rounds += 1
+            self._note_thread_round(
+                index, post_id, clicked=clicked, after_click=after_click,
+                after_scroll=after_scroll, added=added, quiet_ms=quiet_ms)
         self._report_thread_progress()
+
+    def _note_thread_round(self, index: int, post_id: str, *, clicked: int,
+                           after_click: int, after_scroll: int, added: int,
+                           quiet_ms: int) -> None:
+        """Leave a record of what each round did and what came of it.
+
+        Bounded: the first forty rounds in full, then one in ten. A read
+        that ends short has to show which lever fetched pages and which
+        did nothing, or the next attempt starts from guesswork again.
+        """
+        if index >= 40 and index % 10:
+            return
+        exhausted = self._thread_exhausted(post_id)
+        self.archive.event(
+            "comment_round", round=index + 1, clicked=clicked,
+            pages_after_click=after_click, pages_after_scroll=after_scroll,
+            comments_added=added, page_pending=self._comment_page_pending(),
+            quiet_seconds=round(quiet_ms / 1000.0, 1),
+            facebook_reports_more=(None if exhausted is None
+                                   else not exhausted),
+            wheel_scrolls=self.counters.get("comment_wheel_scrolls", 0),
+            containers_scrolled=self.counters.get(
+                "comment_containers_scrolled", 0),
+        )
 
     def _report_thread_progress(self) -> None:
         """Say how far through the thread the harvest is, while it runs.
@@ -2707,30 +2820,67 @@ class FacebookCaptureSession(RecordingSession):
             return
 
         missing = self._comments_not_collected()
+        target = self.config.target_post_id
+        if missing and self._thread_exhausted(target) is True:
+            # Facebook has said the thread has no further page. The count
+            # it states on the post includes comments it does not serve --
+            # removed, hidden, filtered -- so a shortfall here is Facebook's
+            # to explain, not a page left unread. Holding would ask the
+            # curator to scroll for something Facebook has ruled out.
+            self.archive.event(
+                "comment_thread_ended_by_facebook",
+                collected=len(self.archive.comments),
+                stated=self._thread_length(), not_served=missing)
+            self._request_stop("single_post_captured",
+                               "facebook_reported_no_further_comment_page")
+            return
         if missing:
             # Facebook says the thread is longer than what arrived. Closing
             # here would file a manifest saying the post and its comments had
             # been read, which is the one thing this capture cannot claim.
             self._hold_for_curator(
-                "comment_thread_incomplete",
-                "This browser is not signed in to Facebook, which is what "
-                "limits the thread: signed out it serves ten comments at a "
-                "time and offers no control to load more. Sign in and run the "
-                "capture again for the rest."
-                if self._viewer_signed_in is False else
-                "Facebook stopped returning comments before the thread ran "
-                f"out: the thread was scrolled and expanded for "
-                f"{int(self.THREAD_PATIENCE_SECONDS)} seconds without "
-                "another comment arriving. Scroll or expand the thread in "
-                "the browser yourself if you want more; whatever loads is "
-                "collected.",
+                "comment_thread_incomplete", self._thread_shortfall_reason(),
                 collected=len(self.archive.comments), still_expected=missing,
                 comment_pages_requested=self.counters.get(
-                    "comment_pages_requested", 0))
+                    "comment_pages_requested", 0),
+                pages_after_click=self.counters.get(
+                    "comment_pages_after_click", 0),
+                pages_after_scroll=self.counters.get(
+                    "comment_pages_after_scroll", 0),
+                facebook_reports_more=self._thread_exhausted(target) is False)
             return
 
         self._request_stop("single_post_captured",
                            "requested_post_and_comments_read")
+
+    def _thread_shortfall_reason(self) -> str:
+        """Why the thread stopped short, as precisely as the evidence allows."""
+        if self._viewer_signed_in is False:
+            return (
+                "This browser is not signed in to Facebook, which is what "
+                "limits the thread: signed out it serves ten comments at a "
+                "time and offers no control to load more. Sign in and run "
+                "the capture again for the rest.")
+        pages = self.counters.get("comment_pages_requested", 0)
+        by_click = self.counters.get("comment_pages_after_click", 0)
+        by_scroll = self.counters.get("comment_pages_after_scroll", 0)
+        loaded = (f"{pages} comment page(s) were loaded during the read, "
+                  f"{by_click} after a click and {by_scroll} after a scroll.")
+        if self._thread_exhausted(self.config.target_post_id) is False:
+            return (
+                "Facebook still reports further comment pages for this "
+                "thread, but the page did not ask for them when the thread "
+                f"was scrolled and expanded for "
+                f"{int(self.THREAD_PATIENCE_SECONDS)} seconds. {loaded} "
+                "Scroll or expand the thread in the browser yourself if you "
+                "want more; whatever loads is collected.")
+        return (
+            "Facebook stopped returning comments before the thread ran "
+            f"out: the thread was scrolled and expanded for "
+            f"{int(self.THREAD_PATIENCE_SECONDS)} seconds without another "
+            f"comment arriving. {loaded} Scroll or expand the thread in the "
+            "browser yourself if you want more; whatever loads is "
+            "collected.")
 
     def _comments_not_collected(self) -> int:
         """How many of the post's own comments never arrived.
@@ -3484,6 +3634,24 @@ class FacebookCaptureSession(RecordingSession):
                         self.archive.posts.values()
                         if isinstance(post.comments_count, int)),
                     "comments_not_collected": self._comments_not_collected(),
+                    # What the thread's own pages said, so a shortfall can
+                    # be told apart: Facebook ended the thread, or the page
+                    # stopped asking while Facebook still offered more.
+                    "thread_pages_loaded": self.counters.get(
+                        "comment_pages_requested", 0),
+                    "thread_pages_after_click": self.counters.get(
+                        "comment_pages_after_click", 0),
+                    "thread_pages_after_scroll": self.counters.get(
+                        "comment_pages_after_scroll", 0),
+                    "facebook_reports_more_comments": (
+                        None if self._thread_exhausted(
+                            self.config.target_post_id) is None
+                        else not self._thread_exhausted(
+                            self.config.target_post_id)),
+                    "next_comment_cursor_known": bool(
+                        (self._thread_pages.get(
+                            self.config.target_post_id or "") or {}
+                         ).get("end_cursor")),
                     "viewer": {True: "signed_in", False: "signed_out"}.get(
                         self._viewer_signed_in, "unknown"),
                     "note": (
