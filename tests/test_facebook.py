@@ -1363,25 +1363,23 @@ class CommentThreadScrollTests(SessionTestCase):
 
         session._scroll_comment_thread(page)
 
-        script = page.scripts[0]
-        self.assertIn("scrollIntoView", script)
-        self.assertIn("scrollTop", script)
-        self.assertIn("overflowY", script)
+        # No mouse on this fake, so only the script scroll runs; it drives a
+        # container's own scroll position and lets its listeners know.
+        script = page.scripts[-1]
+        self.assertIn("scrollTop = el.scrollHeight", script)
+        self.assertIn("dispatchEvent", script)
         self.assertEqual(session.counters["comment_containers_scrolled"], 2)
 
-    def test_the_thread_is_scrolled_not_whatever_article_comes_last(self):
-        """A permalink is followed by suggested posts and by the post itself;
-        scrolling one of those into view scrolls away from the thread."""
-        session = make_session(self.tmp, include_comments=True)
-        page = self._Page()
+    def test_the_scroll_container_is_found_from_the_comments_not_the_page(self):
+        """The element Facebook pages from is the comments' own scroll
+        container; with only the first page loaded, the last comment can sit
+        near the top, so aiming the wheel at it moved nothing."""
+        finder = FacebookCaptureSession._THREAD_CONTAINER_JS
 
-        session._scroll_comment_thread(page)
-
-        script = page.scripts[0]
-        self.assertIn('[role="article"] [role="article"]', script)
-        target = script.index("const last =")
-        self.assertLess(script.index('[role="article"] [role="article"]'),
-                        target)
+        self.assertIn('[role="article"] [role="article"]', finder)
+        self.assertIn("overflowY", finder)
+        self.assertIn("scrollHeight > el.clientHeight", finder)
+        self.assertIn('[role="dialog"]', finder)
 
     def test_a_failing_scroll_does_not_end_the_harvest(self):
         session = make_session(self.tmp, include_comments=True)
@@ -2236,12 +2234,14 @@ class ThreadStallTests(SessionTestCase):
 
         session._scroll_comment_thread(page)
 
-        self.assertEqual(page.moves, [(300.0, 500.0)])
-        self.assertEqual(len(page.wheels), 3)
+        # The wheel is aimed at the found container and fired in bursts.
+        self.assertTrue(page.moves)
+        self.assertTrue(all(pos == (300.0, 500.0) for pos in page.moves))
+        self.assertGreaterEqual(len(page.wheels), 4)
         self.assertTrue(all(dy > 0 for _dx, dy in page.wheels))
         self.assertIn("getBoundingClientRect", page.scripts[0])
-        self.assertIn('[role="article"] [role="article"]', page.scripts[0])
-        self.assertIn("scrollTop", page.scripts[1])
+        self.assertIn("overflowY", page.scripts[0])
+        self.assertIn("scrollTop", page.scripts[-1])
         self.assertEqual(session.counters["comment_wheel_scrolls"], 1)
 
     def test_a_page_without_a_mouse_is_still_scrolled_from_script(self):

@@ -3347,81 +3347,143 @@ class FacebookCaptureSession(RecordingSession):
         nothing that a curator's own wheel then loaded at once. The script
         scroll follows as a fallback for a thread the wheel cannot reach.
         """
-        self._wheel_over_thread(page)
-        script = r"""
-        () => {
-          // A comment is an article nested inside the post's article, so the
-          // nested ones are the thread. The last article in the document is
-          // not: a permalink is followed by suggested posts and by the post's
-          // own article, and scrolling one of those into view scrolls away
-          // from the thread rather than down it.
-          const comments = Array.from(
-            document.querySelectorAll('[role="article"] [role="article"]'));
-          const articles = comments.length ? comments
-            : Array.from(document.querySelectorAll('[role="article"]'));
-          const last = articles[articles.length - 1];
-          let containers = 0;
-          if (last) {
-            try { last.scrollIntoView({block: 'end'}); } catch (_) {}
-            for (let el = last.parentElement;
-                 el && el !== document.body; el = el.parentElement) {
-              if (el.scrollHeight > el.clientHeight + 80 &&
-                  /auto|scroll/.test(getComputedStyle(el).overflowY)) {
-                el.scrollTop = el.scrollHeight;
-                containers += 1;
-              }
-            }
-          }
-          window.scrollBy({top: window.innerHeight * 0.8, left: 0,
-                           behavior: 'auto'});
-          return containers;
-        }
-        """
+        moved = self._wheel_over_thread(page)
         try:
-            containers = int(page.evaluate(script) or 0)
+            containers = int(page.evaluate(self._THREAD_SCROLL_JS) or 0)
         except Exception:
             return
         if containers:
             self.counters["comment_containers_scrolled"] += containers
+        if moved or containers:
+            self.counters["comment_scroll_effective"] += 1
 
-    _THREAD_TARGET_JS = r"""
+    # Find the element Facebook scrolls to page the thread. The comments sit
+    # in a scroll container -- in the single-post dialog, the dialog's own
+    # scrollable region; in the feed, an inner div -- and Facebook asks for
+    # the next page when that container nears its bottom. The last comment on
+    # screen is not the target: with only the first ten loaded it can sit near
+    # the top, and wheeling over it moves nothing.
+    _THREAD_CONTAINER_JS = r"""
     () => {
+      const scrollable = el => {
+        if (!el) return false;
+        const style = getComputedStyle(el);
+        return /(auto|scroll|overlay)/.test(style.overflowY) &&
+          el.scrollHeight > el.clientHeight + 40;
+      };
       const comments = Array.from(
         document.querySelectorAll('[role="article"] [role="article"]'));
-      const last = comments[comments.length - 1]
-        || document.querySelector('[role="dialog"]')
-        || document.querySelector('[role="article"]');
-      if (!last) return null;
-      const box = last.getBoundingClientRect();
+      const seed = comments[comments.length - 1] ||
+        document.querySelector('[role="dialog"] [role="article"]') ||
+        document.querySelector('[role="article"]');
+      let container = null;
+      for (let el = seed; el && el !== document.body; el = el.parentElement) {
+        if (scrollable(el)) { container = el; break; }
+      }
+      if (!container) {
+        // The dialog itself, or the tallest scrollable div on the page.
+        const dialog = document.querySelector('[role="dialog"]');
+        if (dialog) {
+          for (let el = dialog; el; el = el.parentElement) {
+            if (scrollable(el)) { container = el; break; }
+          }
+          if (!container)
+            container = Array.from(dialog.querySelectorAll('div'))
+              .filter(scrollable)
+              .sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || null;
+        }
+      }
+      if (!container)
+        container = Array.from(document.querySelectorAll('div'))
+          .filter(scrollable)
+          .sort((a, b) => b.scrollHeight - a.scrollHeight)[0] || null;
+      if (!container) {
+        // A permalink can render full page rather than in a dialog; the
+        // window is the scroller then, so aim the wheel at the viewport.
+        const doc = document.scrollingElement || document.documentElement;
+        if (doc && doc.scrollHeight > window.innerHeight + 40) {
+          window.__swmThreadContainer = null;
+          return {x: Math.floor(window.innerWidth / 2),
+                  y: Math.floor(window.innerHeight * 0.8), window: true};
+        }
+        return null;
+      }
+      const box = container.getBoundingClientRect();
       if (!box.width || !box.height) return null;
-      const x = Math.min(Math.max(box.left + box.width / 2, 8), window.innerWidth - 8);
-      const y = Math.min(Math.max(box.top + box.height / 2, 8), window.innerHeight - 8);
+      window.__swmThreadContainer = container;
+      // Aim the wheel at the lower third of the visible container, where the
+      // sentinel that loads the next page sits.
+      const x = Math.min(Math.max(box.left + box.width / 2, 8),
+                         window.innerWidth - 8);
+      const y = Math.min(Math.max(box.top + box.height * 0.8, 8),
+                         window.innerHeight - 8);
       return {x, y};
     }
     """
 
-    def _wheel_over_thread(self, page, steps: int = 3,
-                           delta: int = 600) -> bool:
-        """Scroll the thread with wheel events, as a reader would."""
+    # Drive the found container to its bottom and let its listeners know.
+    _THREAD_SCROLL_JS = r"""
+    () => {
+      const container = window.__swmThreadContainer || null;
+      let moved = 0;
+      const drive = el => {
+        if (!el) return;
+        const before = el.scrollTop;
+        el.scrollTop = el.scrollHeight;
+        try { el.dispatchEvent(new Event('scroll', {bubbles: true})); } catch (_) {}
+        if (el.scrollTop !== before) moved += 1;
+      };
+      drive(container);
+      // Also nudge the dialog and the page, harmlessly, in case the real
+      // scroller was not the one found.
+      const dialog = document.querySelector('[role="dialog"]');
+      if (dialog && dialog !== container) {
+        for (let el = dialog; el && el !== document.body; el = el.parentElement) {
+          if (el.scrollHeight > el.clientHeight + 40) { drive(el); break; }
+        }
+      }
+      const last = Array.from(document.querySelectorAll(
+        '[role="article"] [role="article"]')).pop();
+      if (last) { try { last.scrollIntoView({block: 'end'}); } catch (_) {} }
+      window.scrollBy({top: window.innerHeight, left: 0, behavior: 'auto'});
+      return moved;
+    }
+    """
+
+    def _wheel_over_thread(self, page, bursts: int = 4, steps: int = 4,
+                           delta: int = 700) -> bool:
+        """Scroll the thread with wheel events over its scroll container.
+
+        This is what a reader's hand does, and what the earlier scroll --
+        which aimed the wheel at the last comment, not the container it
+        scrolls in -- did not reliably do: with only the first page of
+        comments loaded, the last one sits near the top and wheeling over it
+        moves nothing, so Facebook never asked for the next page and the
+        read stalled at ten.
+        """
         mouse = getattr(page, "mouse", None)
         if mouse is None:
             return False
-        try:
-            target = page.evaluate(self._THREAD_TARGET_JS)
-        except Exception:
-            return False
-        if not isinstance(target, dict):
-            return False
-        try:
-            mouse.move(float(target["x"]), float(target["y"]))
-            for _ in range(steps):
-                mouse.wheel(0, delta)
-                page.wait_for_timeout(120)
-        except Exception as exc:
-            log.debug("Wheel scroll over the thread failed: %s", exc)
-            return False
-        self.counters["comment_wheel_scrolls"] += 1
-        return True
+        moved = False
+        for _ in range(bursts):
+            try:
+                target = page.evaluate(self._THREAD_CONTAINER_JS)
+            except Exception:
+                return moved
+            if not isinstance(target, dict):
+                break
+            try:
+                mouse.move(float(target["x"]), float(target["y"]))
+                for _ in range(steps):
+                    mouse.wheel(0, delta)
+                    page.wait_for_timeout(90)
+            except Exception as exc:
+                log.debug("Wheel scroll over the thread failed: %s", exc)
+                return moved
+            moved = True
+        if moved:
+            self.counters["comment_wheel_scrolls"] += 1
+        return moved
 
     def _page_marker(self, page) -> dict:
         try:

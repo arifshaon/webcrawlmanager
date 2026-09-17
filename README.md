@@ -369,8 +369,10 @@ as this post's or another's. No post record is made from a viewer response.
 
 When a single post's comments are read, the thread is read automatically in
 two stages before the curator is asked for anything. First the thread is
-scrolled with wheel events over the comments, as a reader scrolls it, and
-expanded through Facebook's own "View more comments" controls; Facebook is
+scrolled with wheel events aimed at the comments' own scroll container (in
+the single-post dialog, the dialog's scrollable region), as a reader scrolls
+it, and expanded through Facebook's own "View more comments" controls;
+Facebook is
 given thirty seconds without a new comment, not counting time a comment page
 is still on its way. Every comment page Facebook serves says whether another
 follows, and the capture reads that: a thread Facebook has ended is finished,
