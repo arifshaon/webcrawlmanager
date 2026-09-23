@@ -95,7 +95,7 @@ class HandlerTests(DashboardTestCase):
 
     def test_the_replay_and_pages_actions_are_wired(self):
         for name in ("replay", "toggle", "editMetadata", "startNow", "forceStop", "del", "ctl",
-                     "indexCapture"):
+                     "indexCapture", "indexWarc"):
             with self.subTest(handler=name):
                 self.assertIn(name, self.defined())
 

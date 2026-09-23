@@ -1766,6 +1766,7 @@ let instagramCapability = null;
 let xCapability = null;
 let youtubeCapability = null;
 let themeAiCapability = null;
+let warcIndexerCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
@@ -1775,6 +1776,7 @@ async function loadCapabilities() {
     xCapability = caps.x || {available: false, reason: "not reported by the server"};
     youtubeCapability = caps.youtube || {available: false, reason: "not reported by the server"};
     themeAiCapability = caps.theme_ai || {available: false, reason: "not reported by the server"};
+    warcIndexerCapability = caps.warc_indexer || {available: false, reason: "not reported by the server"};
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
     facebookCapability = {available: false, reason: "capability check failed"};
@@ -2684,6 +2686,15 @@ async function indexCapture(id) {
     done();
     alert("Indexing failed: " + e.message);
   }
+}
+async function indexWarc(id) {
+  // A crawl's or recording's WARC files go through the warc-indexer jar,
+  // which writes <name>.jsonl beside each. The server answers at once and
+  // the job card follows the run: Indexing…, then the document count.
+  try {
+    await api(`/api/crawls/${id}/warc-index`, {method:"POST"});
+    refresh();
+  } catch (e) { alert("Indexing failed: " + e.message); }
 }
 async function ctl(id, cmd) {
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }

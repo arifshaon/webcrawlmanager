@@ -372,6 +372,42 @@ def _cmd_index(args) -> int:
     return 0
 
 
+def _cmd_index_warc(args) -> int:
+    import json as _json
+    from pathlib import Path as _P
+
+    from . import warc_indexer
+
+    crawl_dir = _P(args.crawl_dir)
+    if not crawl_dir.is_dir():
+        print(f"Cannot index: {crawl_dir} is not a folder", file=sys.stderr)
+        return 1
+    cap = warc_indexer.capability()
+    if not cap["available"]:
+        print(f"Cannot index: {cap['reason']}", file=sys.stderr)
+        return 1
+    if cap.get("note") and not args.json:
+        print(f"note: {cap['note']}", file=sys.stderr)
+    try:
+        manifest = warc_indexer.index_warcs(
+            crawl_dir, warcs=[args.warc] if args.warc else None,
+            collection=args.collection or crawl_dir.name, memory=args.memory)
+    except warc_indexer.WarcIndexerUnavailable as exc:
+        print(f"Cannot index: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(_json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 0 if manifest["status"] == warc_indexer.STATUS_DONE else 1
+    if manifest["status"] != warc_indexer.STATUS_DONE:
+        print(f"Indexing failed: {manifest.get('error')} (log: {manifest.get('log')})",
+              file=sys.stderr)
+        return 1
+    print(f"Indexed {manifest['documents']} document(s) from {len(manifest['warcs'])} WARC file(s):")
+    for out in manifest["outputs"]:
+        print(f"  {out['documents']:7d}  {out['index']}")
+    return 0
+
+
 def _cmd_resources(args) -> int:
     import json as _json
 
@@ -552,6 +588,17 @@ def main(argv: list[str] | None = None) -> int:
                        "file is now)")
     p_idx.add_argument("--json", action="store_true",
                        help="print the summary as JSON")
+
+    p_iw = sub.add_parser(
+        "index-warc",
+        help="Run the warc-indexer jar over a crawl's or recording's WARC files, "
+        "writing <warc>.jsonl beside each")
+    p_iw.add_argument("crawl_dir", help="A job's folder holding the WARC files")
+    p_iw.add_argument("--warc", help="Index only this WARC file (by name) rather than all")
+    p_iw.add_argument("--collection", help="Collection name every document carries "
+                      "(default: the folder name)")
+    p_iw.add_argument("--memory", default="2g", help="Java heap for the jar (default 2g)")
+    p_iw.add_argument("--json", action="store_true", help="print the run's manifest as JSON")
 
     p_rec = sub.add_parser(
         "record",
@@ -875,6 +922,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "index":
         return _cmd_index(args)
+
+    if args.command == "index-warc":
+        return _cmd_index_warc(args)
 
     if args.command == "serve":
         try:

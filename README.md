@@ -981,12 +981,36 @@ load is left out and counted as invalid in the summary. Items whose page is
 not in a WARC (a YouTube video read through yt-dlp, a capture run without
 WARC writing) are still indexed, without the evidence fields.
 
-Automated crawls and interactive recordings are not covered: their content
-is ordinary web pages, which warc-indexer handles from the WARC directly.
-A patched copy of warc-indexer 3.5.1 lives in [`warc-indexer/`](warc-indexer/README-SWM.md)
-with two fixes SWM's captures exposed, the charset the server declared and
-the WARC path in JSON output; it is built and run on its own and is not
-yet wired into SWM.
+### Indexing crawls and recordings
+
+An automated crawl or an interactive recording holds ordinary web pages,
+which are indexed from the WARC itself by **warc-indexer**. A patched copy
+of warc-indexer 3.5.1 lives in [`warc-indexer/`](warc-indexer/README-SWM.md)
+with the fixes SWM's captures exposed: the charset the server declared is
+honoured, and the JSON output carries the WARC path and the record type.
+Build it once (`mvnw -DskipTests package` in that folder; only Java is
+needed) and SWM finds the jar there. Java 11 or newer must be installed.
+
+From the dashboard, every crawl and recording job with WARC files has an
+**Index WARC** button. It runs the jar over the job's WARC files and writes
+`<warc file name>.jsonl` beside each one, a document per record in
+warc-indexer's schema. The run happens in the background: the button reads
+*Indexing…* while it goes, then the document count; a failure says so and
+the jar's output is in `warc-index.log` in the job's folder, beside
+`warc-index-manifest.json`, which records the run. The button is greyed
+out, with the reason in its tooltip, when Java or the jar cannot be found.
+
+The same from the command line, all WARCs in a folder or one by name:
+
+```powershell
+python -m webarc.cli index-warc warcs/90
+python -m webarc.cli index-warc warcs/90 --warc rec-x.com-seed001-20260907141427-00001.warc.gz --collection "X profile"
+```
+
+SWM launches the jar as a separate program and reads what it writes, the
+same arrangement as with gallery-dl, so the jar's licence stays its own.
+`SWM_WARC_INDEXER_JAR`, `SWM_WARC_INDEXER_CONF` and `SWM_JAVA` point SWM at
+a jar, a configuration or a Java elsewhere.
 
 ## Replay (ReplayWeb.page)
 
