@@ -339,6 +339,8 @@ def _explain(exit_code: Optional[int], tail: str) -> str:
         return "The jar could not be opened: check its path under Settings › Indexer and rebuild it if needed."
     if "no such file or directory" in low and ".conf" in low or "config" in low and "not found" in low:
         return "The configuration file could not be read: check its path under Settings › Indexer."
+    if "filenotfoundexception" in low and (".warc" in low or ".arc" in low):
+        return "The indexer could not open a WARC file at the path it was given."
     if exit_code is not None:
         return f"The indexer exited with code {exit_code}."
     return "The indexer failed."
@@ -370,7 +372,11 @@ def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None
     ``<warc>.jsonl`` beside its WARC. Blocks until the jar exits, recording
     progress in the manifest every ``poll`` seconds (and to ``on_progress``);
     the dashboard calls this on a thread. Returns the manifest it wrote."""
-    crawl_dir = Path(crawl_dir)
+    # The jar runs with the job's folder as its working directory, so every
+    # path handed to it must be absolute: a job folder recorded relative to
+    # the dashboard's own directory ("warcs/108") would otherwise be
+    # resolved twice, and the jar would look for warcs/108/warcs/108/...
+    crawl_dir = Path(crawl_dir).resolve()
     poll = poll or POLL_SECONDS
     if warcs:
         chosen = []
@@ -378,11 +384,12 @@ def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None
             path = Path(item)
             if not path.is_absolute():
                 path = crawl_dir / path
+            path = path.resolve()
             if not path.is_file():
                 raise WarcIndexerUnavailable(f"{path.name} is not a WARC file in this job's folder")
             chosen.append(path)
     else:
-        chosen = warc_files(crawl_dir)
+        chosen = [w.resolve() for w in warc_files(crawl_dir)]
     if not chosen:
         raise WarcIndexerUnavailable("this job has no WARC files to index")
     command = build_command(crawl_dir, chosen, collection=collection, memory=memory,

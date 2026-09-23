@@ -65,7 +65,7 @@ class FakeJarTestCase(unittest.TestCase):
 
     def job_dir(self, name="job", warcs=("a-00001.warc.gz", "a-00002.warc.gz")) -> Path:
         d = self.tmp / name
-        d.mkdir(exist_ok=True)
+        d.mkdir(parents=True, exist_ok=True)
         for w in warcs:
             (d / w).write_bytes(b"\x1f\x8b" + b"x" * 10)
         return d
@@ -161,6 +161,25 @@ class RunTests(FakeJarTestCase):
         self.assertEqual(stored["status"], "done")
         self.assertNotIn("pid", stored)
         self.assertEqual(warc_indexer.summary(d)["documents"], 4)
+
+    def test_a_job_folder_given_relative_to_the_working_directory_still_works(self):
+        # The dashboard records job folders like "warcs/108"; the jar runs
+        # inside that folder, so the paths it gets must be absolute.
+        d = self.job_dir("warcs/108".replace("/", os.sep))
+        cwd = os.getcwd()
+        os.chdir(self.tmp)
+        try:
+            manifest = warc_indexer.index_warcs(Path("warcs") / "108")
+        finally:
+            os.chdir(cwd)
+        self.assertEqual(manifest["status"], "done", manifest.get("error"))
+        for arg in manifest["command"]:
+            if arg.endswith(".warc.gz"):
+                self.assertTrue(Path(arg).is_absolute(), arg)
+                self.assertEqual(Path(arg).parent, d.resolve())
+        out_flag = manifest["command"].index("-o")
+        self.assertEqual(Path(manifest["command"][out_flag + 1]), d.resolve())
+        self.assertTrue((d / "a-00001.warc.gz.jsonl").is_file())
 
     def test_one_named_warc_can_be_indexed_alone(self):
         d = self.job_dir()
