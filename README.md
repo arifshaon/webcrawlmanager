@@ -953,24 +953,24 @@ What a document carries:
   platform detail that has no schema field (reaction counts, parent ids,
   handles) as `key=value` entries in `content_metadata_ss`.
 
-WARC files move when they are ingested, so the index never bakes in where
-they happen to be at indexing time. By default `source_file_path` is the
-file name alone; the name plus `source_file_offset` is the stable key, the
-convention warc-indexer's consumers and SolrWayback's file resolvers already
-follow, and `warc_key_id` identifies the record wherever the file ends up.
-When the files' final home is known, give `--source-root` the path or URL
-prefix under which they will be kept, and every `source_file_path` becomes
-that prefix plus the file name. When it becomes known later, `--relocate`
-rewrites the pointers in the existing index without re-reading the records
-or the WARCs, which may by then be gone:
+By default `source_file_path` is the full path of where each WARC is when
+the index is made. WARC files move when they are ingested, so two things
+keep the pointer usable afterwards. `--source-root` sets the path or URL
+prefix under which the files will be kept, used as given, and every
+`source_file_path` becomes that prefix plus the file name. And
+`--relocate` rewrites the pointers in an existing index to a new root
+without re-reading the records or the WARCs, which need not exist any more;
+it takes the capture folder or the index file itself. The file name plus
+`source_file_offset` is the stable key throughout, the convention
+warc-indexer's consumers and SolrWayback's file resolvers already follow,
+and `warc_key_id` identifies the record wherever the file ends up.
 
 ```powershell
 python -m webarc.cli index warcs/12 --source-root https://repo.example/warcstore/
 python -m webarc.cli index warcs/12 --relocate --source-root /mnt/repository/warcs
-python -m webarc.cli index warcs/12/index/facebook-index.jsonl --relocate
+python -m webarc.cli index warcs/12/index/facebook-index.jsonl --relocate --source-root s3://archive/warcs
 ```
 
-The last form, with no root, returns the pointers to the file name alone.
 In the API the same options are `source_root` and `relocate` in the body of
 the index request. Without a WARC beside the records (a capture run with
 WARC writing off) the documents are still complete and searchable, only

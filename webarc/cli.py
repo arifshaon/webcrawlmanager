@@ -343,9 +343,8 @@ def _cmd_index(args) -> int:
         if args.json:
             print(_json.dumps(moved, ensure_ascii=False, indent=2))
         else:
-            where = moved["source_root"] or "the file name alone"
             print(f"Rewrote source_file_path in {moved['rewritten']} of {moved['documents']} "
-                  f"document(s) to {where} → {moved['output']}")
+                  f"document(s) to {moved['source_root']}/<file name> → {moved['output']}")
         return 0
     try:
         result = indexer.index_capture(
@@ -534,8 +533,8 @@ def main(argv: list[str] | None = None) -> int:
                        "or the index file itself")
     p_idx.add_argument("--relocate", action="store_true",
                        help="Do not re-index: rewrite source_file_path in the existing "
-                       "index for the --source-root given (or for the file name alone "
-                       "when none is given)")
+                       "index to the --source-root given plus each file name. Needs "
+                       "neither the records nor the WARCs")
     p_idx.add_argument("--output", "-o",
                        help="Where to write the documents (default: "
                        "<capture_dir>/index/<platform>-index.jsonl)")
@@ -548,8 +547,9 @@ def main(argv: list[str] | None = None) -> int:
     p_idx.add_argument("--source-root",
                        help="Path or URL prefix under which the WARC files will be "
                        "kept by whoever uses the index, e.g. a repository mount or "
-                       "download URL; source_file_path becomes <root>/<file name> "
-                       "(default: the file name alone)")
+                       "download URL, used as given; source_file_path becomes "
+                       "<root>/<file name> (default: the full path of where each "
+                       "file is now)")
     p_idx.add_argument("--json", action="store_true",
                        help="print the summary as JSON")
 

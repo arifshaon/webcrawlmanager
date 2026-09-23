@@ -153,8 +153,8 @@ class FacebookTests(CaptureTestCase):
         self.assertEqual(post["record_type"], "response")
         self.assertEqual(post["status_code"], 200)
         self.assertEqual(post["source_file"], "fb-demo-seed001-20260901120000-00001.warc.gz")
-        # no root given: the name alone, never where the file happens to be now
-        self.assertEqual(post["source_file_path"], post["source_file"])
+        # no root given: the full path of where the file is now
+        self.assertEqual(Path(post["source_file_path"]), (self.dir / post["source_file"]).resolve())
         self.assertIsInstance(post["source_file_offset"], int)
         self.assertTrue(post["hash"].startswith("sha1:"))
         self.assertEqual(post["links_images"], ["https://scontent.example/a.jpg"])
@@ -251,7 +251,7 @@ class FacebookTests(CaptureTestCase):
         self.assertEqual(indexer.validate_document(post), [])
 
         here = read_docs(indexer.index_capture(self.dir))[0]
-        self.assertEqual(here["source_file_path"], here["source_file"])
+        self.assertEqual(Path(here["source_file_path"]).parent, self.dir.resolve())
         self.assertEqual(here["warc_key_id"], post["warc_key_id"])
 
     def test_an_existing_index_can_be_relocated_without_reindexing(self):
@@ -275,16 +275,20 @@ class FacebookTests(CaptureTestCase):
         self.assertEqual(manifest["source_root"], "/mnt/repository/warcs")
         self.assertIn("relocated_at", manifest)
 
-        # the index file itself is accepted too, and no root means the name alone
-        back = indexer.relocate_index(Path(first.output), None)
+        # the index file itself is accepted too, and the root is used as given
+        back = indexer.relocate_index(Path(first.output), "s3://archive/warcs/")
         self.assertEqual(back["rewritten"], 2)
-        self.assertEqual(read_docs(first)[0]["source_file_path"], before[0]["source_file"])
-        self.assertIsNone(indexer.read_index_manifest(self.dir)["source_root"])
+        self.assertEqual(read_docs(first)[0]["source_file_path"],
+                         "s3://archive/warcs/" + before[0]["source_file"])
+        self.assertEqual(indexer.read_index_manifest(self.dir)["source_root"], "s3://archive/warcs")
 
-    def test_relocating_needs_an_index(self):
+    def test_relocating_needs_an_index_and_a_root(self):
         facebook_capture(self.dir)
         with self.assertRaises(indexer.IndexingError):
-            indexer.relocate_index(self.dir, "/x")
+            indexer.relocate_index(self.dir, "/x")          # not indexed yet
+        indexer.index_capture(self.dir)
+        with self.assertRaises(indexer.IndexingError):
+            indexer.relocate_index(self.dir, None)          # nowhere to point
 
     def test_html_200_is_preferred_over_other_records_of_the_same_url(self):
         facebook_capture(self.dir, warc=False)
@@ -513,11 +517,13 @@ class CliTests(CaptureTestCase):
         doc = json.loads((self.dir / "index" / "facebook-index.jsonl").read_text(encoding="utf-8").splitlines()[0])
         self.assertTrue(doc["source_file_path"].startswith("https://repo.example/warcs/"))
 
-        err = io.StringIO()
-        with redirect_stdout(io.StringIO()), redirect_stderr(err):
-            code = cli.main(["index", str(self.dir / "nothing-here"), "--relocate"])
-        self.assertEqual(code, 1)
-        self.assertIn("Cannot relocate", err.getvalue())
+        for argv in (["index", str(self.dir / "nothing-here"), "--relocate", "--source-root", "/x"],
+                     ["index", str(self.dir), "--relocate"]):
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                code = cli.main(argv)
+            self.assertEqual(code, 1)
+            self.assertIn("Cannot relocate", err.getvalue())
 
     def test_index_refuses_a_folder_that_is_not_a_capture(self):
         err = io.StringIO()

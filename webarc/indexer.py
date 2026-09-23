@@ -407,16 +407,19 @@ class DocumentBuilder:
         self.locator = locator
         self.collection = collection or capture.name
         # Where the WARCs will live for whoever reads the index: a path or
-        # URL prefix the file name is appended to. Without it, the file
-        # name alone: files move when they are ingested, and the name plus
-        # offset is the stable pair. relocate_index() sets the root later.
+        # URL prefix the file name is appended to, used as given. Without
+        # it, the full path of where each file is now. Files move when they
+        # are ingested, so relocate_index() rewrites the paths later from
+        # the index alone; the name plus offset is the stable pair.
         self.source_root = str(source_root).rstrip("/\\") if source_root else None
         self.located = 0
         self.unlocated = 0
         self._describe = self._description_fields()
 
     def source_path(self, hit: WarcHit) -> str:
-        return source_path_for(hit.path.name, self.source_root)
+        if self.source_root:
+            return source_path_for(hit.path.name, self.source_root)
+        return str(hit.path.resolve())
 
     def _description_fields(self) -> dict:
         """What metadata.json says about the whole job: rights, subjects."""
@@ -845,8 +848,8 @@ def index_capture(directory: Path, *, output: Optional[Path] = None,
     ``source_root`` is the path or URL prefix under which the WARC files
     will be kept by whoever reads the index, e.g. a repository's storage
     mount or a download URL; ``source_file_path`` becomes that prefix plus
-    the file name. Without it only the file name is recorded, and
-    ``relocate_index`` can add the root later.
+    the file name. Without it the full path of each file's current
+    location is recorded, and ``relocate_index`` can replace it later.
     """
     say = progress or (lambda _msg: None)
     cap = load_capture(directory, platform)
@@ -906,12 +909,15 @@ def find_index(target: Path) -> tuple[Path, Path]:
 
 
 def relocate_index(target: Path, source_root: Optional[str]) -> dict:
-    """Rewrite ``source_file_path`` in an existing index for a new root,
-    or for no root (the file name alone), without re-reading the records
-    or the WARCs. ``target`` is the index file or its capture directory.
-    Returns a summary; the index manifest records the root and when."""
+    """Rewrite ``source_file_path`` in an existing index to a new root plus
+    each file's name, without re-reading the records or the WARCs, which
+    need not exist any more. ``target`` is the index file or its capture
+    directory. Returns a summary; the index manifest records the root and
+    when it was set."""
     index_path, manifest_path = find_index(target)
     root = str(source_root).rstrip("/\\") if source_root else None
+    if not root:
+        raise IndexingError("relocating needs the root under which the WARC files are kept")
     tmp = index_path.with_suffix(index_path.suffix + ".tmp")
     documents = rewritten = 0
     with index_path.open("r", encoding="utf-8") as src, tmp.open("w", encoding="utf-8") as dst:
