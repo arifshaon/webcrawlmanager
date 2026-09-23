@@ -249,6 +249,7 @@ class WarcHit:
     status: Optional[int]
     content_type: Optional[str]
     digest: Optional[str]
+    record_id: Optional[str] = None
 
 
 class WarcLocator:
@@ -289,6 +290,7 @@ class WarcLocator:
                         date=parse_time(record.rec_headers.get_header("WARC-Date")),
                         status=status, content_type=ctype,
                         digest=record.rec_headers.get_header("WARC-Payload-Digest"),
+                        record_id=record.rec_headers.get_header("WARC-Record-ID"),
                     )
                     self._hits.setdefault(normalise_url(uri), []).append(hit)
         except Exception as exc:                          # noqa: BLE001 - keep indexing
@@ -394,13 +396,22 @@ class DocumentBuilder:
     """Shared shape of every document; the platform mappers fill it."""
 
     def __init__(self, capture: Capture, locator: WarcLocator,
-                 collection: Optional[str] = None):
+                 collection: Optional[str] = None, source_root: Optional[str] = None):
         self.capture = capture
         self.locator = locator
         self.collection = collection or capture.name
+        # Where the WARCs will live for whoever reads the index: a path or
+        # URL prefix the file name is appended to. Without it, where they
+        # are now. The file name and offset are the stable pair either way.
+        self.source_root = str(source_root).rstrip("/\\") if source_root else None
         self.located = 0
         self.unlocated = 0
         self._describe = self._description_fields()
+
+    def source_path(self, hit: WarcHit) -> str:
+        if self.source_root:
+            return f"{self.source_root}/{hit.path.name}"
+        return str(hit.path.resolve())
 
     def _description_fields(self) -> dict:
         """What metadata.json says about the whole job: rights, subjects."""
@@ -482,8 +493,10 @@ class DocumentBuilder:
                 "record_type": "response",
                 "status_code": hit.status,
                 "source_file": hit.path.name,
-                "source_file_path": str(hit.path.resolve()),
+                "source_file_path": self.source_path(hit),
                 "source_file_offset": hit.offset,
+                # the record's own identity, good wherever the file ends up
+                "warc_key_id": hit.record_id,
             })
             if hit.digest:
                 doc["hash"] = hit.digest
@@ -785,6 +798,7 @@ class IndexResult:
     output: str
     manifest: str
     collection: str
+    source_root: Optional[str] = None
     documents: int = 0
     by_type: dict = field(default_factory=dict)
     located: int = 0
@@ -800,7 +814,7 @@ class IndexResult:
             "schema": INDEX_SCHEMA, "target_schema": TARGET_SCHEMA,
             "platform": self.platform, "capture_dir": self.capture_dir,
             "output": self.output, "manifest": self.manifest, "collection": self.collection,
-            "documents": self.documents, "by_type": dict(sorted(self.by_type.items())),
+            "source_root": self.source_root, "documents": self.documents, "by_type": dict(sorted(self.by_type.items())),
             "located": self.located, "unlocated": self.unlocated,
             "warc_files": self.warc_files, "warc_records": self.warc_records,
             "invalid": self.invalid, "warnings": list(self.warnings),
@@ -818,21 +832,29 @@ def read_index_manifest(directory: Path) -> dict | None:
 
 def index_capture(directory: Path, *, output: Optional[Path] = None,
                   collection: Optional[str] = None, platform: Optional[str] = None,
+                  source_root: Optional[str] = None,
                   progress: Optional[Callable[[str], None]] = None) -> IndexResult:
     """Index one capture directory. Returns the summary that is also
-    written to ``index/index-manifest.json``."""
+    written to ``index/index-manifest.json``.
+
+    ``source_root`` is the path or URL prefix under which the WARC files
+    will be kept by whoever reads the index, e.g. a repository's storage
+    mount or a download URL; ``source_file_path`` becomes that prefix plus
+    the file name. Without it the files' current location is recorded.
+    """
     say = progress or (lambda _msg: None)
     cap = load_capture(directory, platform)
     say(f"Scanning {len(cap.warc_paths)} WARC file(s)")
     locator = WarcLocator(cap.warc_paths)
-    build = DocumentBuilder(cap, locator, collection)
+    build = DocumentBuilder(cap, locator, collection, source_root)
     out_path = Path(output) if output else index_path_for(cap.directory, cap.platform)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result = IndexResult(
         platform=cap.platform, capture_dir=str(cap.directory.resolve()),
         output=str(out_path.resolve()),
         manifest=str((out_path.parent / INDEX_MANIFEST_NAME).resolve()),
-        collection=build.collection, warc_files=len(cap.warc_paths),
+        collection=build.collection, source_root=build.source_root,
+        warc_files=len(cap.warc_paths),
         warc_records=locator.records_scanned, warnings=list(locator.errors),
         generated_at=iso_utc(datetime.now(timezone.utc)),
     )

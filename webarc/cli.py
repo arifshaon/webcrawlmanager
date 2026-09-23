@@ -337,7 +337,7 @@ def _cmd_index(args) -> int:
     try:
         result = indexer.index_capture(
             _P(args.capture_dir), output=_P(args.output) if args.output else None,
-            collection=args.collection, platform=platform,
+            collection=args.collection, platform=platform, source_root=args.source_root,
             progress=None if args.json else lambda msg: print(msg, file=sys.stderr))
     except indexer.IndexingError as exc:
         print(f"Cannot index: {exc}", file=sys.stderr)
@@ -527,6 +527,11 @@ def main(argv: list[str] | None = None) -> int:
     p_idx.add_argument("--platform",
                        choices=["auto", "facebook", "instagram", "x", "youtube"],
                        default="auto", help="Which capture the folder holds (default: detect)")
+    p_idx.add_argument("--source-root",
+                       help="Path or URL prefix under which the WARC files will be "
+                       "kept by whoever uses the index, e.g. a repository mount or "
+                       "download URL; source_file_path becomes <root>/<file name> "
+                       "(default: where the files are now)")
     p_idx.add_argument("--json", action="store_true",
                        help="print the summary as JSON")
 

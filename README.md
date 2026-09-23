@@ -945,13 +945,28 @@ What a document carries:
 - **Time**: `publication_date` (when the item was written) and `crawl_date`
   and `wayback_date` (when it was captured, taken from the WARC record).
 - **Evidence**: `source_file`, `source_file_path`, `source_file_offset`,
-  `status_code` and the record's payload `hash`. Comments point at the post
-  page they were read from.
+  `warc_key_id` (the WARC record's own id), `status_code` and the record's
+  payload `hash`. Comments point at the post page they were read from.
 - **Context**: `collection` (the capture name unless `--collection` says
   otherwise), `institution` (the operator), `access_terms` and
   `wct_subjects` from the capture's Rights and Subject metadata, and every
   platform detail that has no schema field (reaction counts, parent ids,
   handles) as `key=value` entries in `content_metadata_ss`.
+
+WARC files move when they are ingested, so the path is a hint and the file
+name plus offset is the stable key, the same convention warc-indexer and
+SolrWayback's file resolvers follow. Give `--source-root` the path or URL
+prefix under which the files will be kept, a repository mount or a download
+URL, and every `source_file_path` becomes that prefix plus the file name:
+
+```powershell
+python -m webarc.cli index warcs/12 --source-root https://repo.example/warcstore/
+```
+
+The dashboard's Index button records the files' current location; the same
+option is `source_root` in the API body. Without a WARC beside the records
+(a capture run with WARC writing off) the documents are still complete and
+searchable, only without the evidence fields.
 
 Only field names the schema defines are emitted; a document that would not
 load is left out and counted as invalid in the summary. Items whose page is

@@ -232,6 +232,27 @@ class FacebookTests(CaptureTestCase):
         self.assertEqual(post["crawl_date"], "2026-09-01T12:00:05Z")
         self.assertEqual(comment["source_file_offset"], post["source_file_offset"])
 
+    def test_the_pointer_survives_the_files_moving(self):
+        # Whoever ingests the WARCs decides where they live: the index
+        # carries that root, the file name and offset, and the record's id.
+        facebook_capture(self.dir)
+
+        moved = indexer.index_capture(self.dir, source_root="https://repo.example/warcstore/")
+        post = read_docs(moved)[0]
+
+        self.assertEqual(post["source_file_path"],
+                         "https://repo.example/warcstore/fb-demo-seed001-20260901120000-00001.warc.gz")
+        self.assertEqual(post["source_file"], "fb-demo-seed001-20260901120000-00001.warc.gz")
+        self.assertTrue(post["warc_key_id"].startswith("<urn:uuid:"))
+        self.assertEqual(moved.source_root, "https://repo.example/warcstore")
+        self.assertEqual(indexer.read_index_manifest(self.dir)["source_root"],
+                         "https://repo.example/warcstore")
+        self.assertEqual(indexer.validate_document(post), [])
+
+        here = read_docs(indexer.index_capture(self.dir))[0]
+        self.assertEqual(Path(here["source_file_path"]).parent, self.dir.resolve())
+        self.assertEqual(here["warc_key_id"], post["warc_key_id"])
+
     def test_html_200_is_preferred_over_other_records_of_the_same_url(self):
         facebook_capture(self.dir, warc=False)
         write_warc(self.dir / "a-00001.warc.gz", [(PERMALINK, b"{}")],
@@ -473,12 +494,14 @@ class ServerTests(unittest.TestCase):
         facebook_capture(Path(made["output_dir"]))
         self.assertIsNone(made["index"])
 
-        indexed = self.client.post(f"/api/crawls/{made['id']}/index", json={"collection": "QNL social"})
+        indexed = self.client.post(f"/api/crawls/{made['id']}/index",
+                                   json={"collection": "QNL social", "source_root": "/mnt/repo/warcs"})
 
         self.assertEqual(indexed.status_code, 200, indexed.text)
         body = indexed.json()
         self.assertEqual(body["documents"], 2)
         self.assertEqual(body["collection"], "QNL social")
+        self.assertEqual(body["source_root"], "/mnt/repo/warcs")
         self.assertEqual(body["download_url"], f"/api/crawls/{made['id']}/index.jsonl")
 
         # the job card learns about it, and the files can be fetched back
@@ -491,6 +514,8 @@ class ServerTests(unittest.TestCase):
         download = self.client.get(f"/api/crawls/{made['id']}/index.jsonl")
         self.assertEqual(download.status_code, 200)
         self.assertEqual(len(download.text.strip().splitlines()), 2)
+        first = json.loads(download.text.strip().splitlines()[0])
+        self.assertTrue(first["source_file_path"].startswith("/mnt/repo/warcs/"))
         self.assertIn("attachment", download.headers.get("content-disposition", ""))
 
     def test_only_finished_social_jobs_can_be_indexed(self):

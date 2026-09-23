@@ -1645,11 +1645,15 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 409, "Only Facebook, Instagram, X and YouTube captures can be indexed.")
         if _pid_alive(row.get("pid")):
             raise HTTPException(409, "Stop the capture before indexing it.")
-        collection = None
-        if isinstance(payload, dict) and str(payload.get("collection") or "").strip():
-            collection = str(payload["collection"]).strip()
+        collection = source_root = None
+        if isinstance(payload, dict):
+            if str(payload.get("collection") or "").strip():
+                collection = str(payload["collection"]).strip()
+            if str(payload.get("source_root") or "").strip():
+                source_root = str(payload["source_root"]).strip()
         try:
-            result = indexer.index_capture(_crawl_dir(row), collection=collection)
+            result = indexer.index_capture(_crawl_dir(row), collection=collection,
+                                           source_root=source_root)
         except indexer.IndexingError as exc:
             raise HTTPException(409, str(exc)) from exc
         except Exception as exc:
