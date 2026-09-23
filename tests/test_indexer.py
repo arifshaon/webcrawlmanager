@@ -210,6 +210,28 @@ class FacebookTests(CaptureTestCase):
             self.assertEqual(doc["access_terms"], ["CC BY 4.0"])
             self.assertEqual(doc["wct_subjects"], ["Heritage", "Doha"])
 
+    def test_a_pfbid_permalink_still_finds_the_page_the_capture_targeted(self):
+        # Facebook reports the post's permalink in its pfbid form; the page
+        # the browser loaded (the capture's target) is the slug form.
+        facebook_capture(self.dir, warc=False)
+        pfbid = "https://www.facebook.com/Some.Page/posts/pfbid0abcDEF"
+        (self.dir / "facebook-manifest.json").write_text(json.dumps({
+            "capture": {"crawl_id": 7, "name": "fb demo", "operator": "QNL", "page_url": PERMALINK,
+                        "target_type": "post", "target_post_id": "1593564465471991"}}), encoding="utf-8")
+        post_row = json.loads((self.dir / "facebook-posts.jsonl").read_text(encoding="utf-8"))
+        post_row["permalink_url"] = pfbid
+        jsonl(self.dir / "facebook-posts.jsonl", [post_row])
+        write_warc(self.dir / "fb-00001.warc.gz", [(PERMALINK, b"<html>the post page</html>")])
+
+        result = indexer.index_capture(self.dir)
+        post, comment = read_docs(result)
+
+        self.assertEqual((result.located, result.unlocated), (2, 0))
+        self.assertEqual(post["url"], pfbid)                    # the permalink is still the url
+        self.assertIn("source_file_offset", post)              # but the evidence is the page loaded
+        self.assertEqual(post["crawl_date"], "2026-09-01T12:00:05Z")
+        self.assertEqual(comment["source_file_offset"], post["source_file_offset"])
+
     def test_html_200_is_preferred_over_other_records_of_the_same_url(self):
         facebook_capture(self.dir, warc=False)
         write_warc(self.dir / "a-00001.warc.gz", [(PERMALINK, b"{}")],

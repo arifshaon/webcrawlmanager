@@ -496,12 +496,26 @@ def _facebook(cap: Capture, build: DocumentBuilder) -> Iterator[dict]:
     d = cap.directory
     posts = {row.get("post_id"): row for row in _read_jsonl(d / "facebook-posts.jsonl")}
     page_url = (cap.targets or [None])[0]
+    capture = cap.manifest.get("capture") or {}
+    target_post = str(capture.get("target_post_id") or "")
+
+    def evidence_for(post: dict) -> list:
+        """Where the post's page may be in the WARC. Facebook hands out a
+        permalink in its pfbid form while the page the browser loaded, and
+        the WARC recorded, is the slug or numeric form; when the capture's
+        own target names this post, that URL is tried too."""
+        pid = str(post.get("post_id") or "")
+        urls = [post.get("permalink_url"), *(post.get("aliases") or [])]
+        if page_url and pid and (pid == target_post or pid in page_url):
+            urls.append(page_url)
+        return urls
+
     for post in posts.values():
         permalink = post.get("permalink_url")
         yield build.document(
             kind="post", native_id=str(post.get("post_id")), type_name=TYPE_POST["facebook"],
             url=permalink or page_url,
-            evidence_urls=[permalink, *(post.get("aliases") or [])],
+            evidence_urls=evidence_for(post),
             text=post.get("text") or "", authors=[post.get("author_name")],
             published=post.get("created_time"), images=post.get("media_urls") or [],
             category="facebook/post",
@@ -516,7 +530,7 @@ def _facebook(cap: Capture, build: DocumentBuilder) -> Iterator[dict]:
         url = f"{permalink}?comment_id={cid}" if permalink else None
         yield build.document(
             kind="comment", native_id=cid, type_name=TYPE_COMMENT["facebook"],
-            url=url, evidence_urls=[permalink, *(parent.get("aliases") or [])],
+            url=url, evidence_urls=evidence_for(parent) if parent else [],
             text=comment.get("text") or "", authors=[comment.get("author_name")],
             published=comment.get("created_time"), images=comment.get("media_urls") or [],
             category="facebook/comment",
