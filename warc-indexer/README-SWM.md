@@ -88,19 +88,33 @@ committed.
 
 ## Run
 
-One WARC to JSON Lines, no Solr involved:
+One WARC to JSON Lines, no Solr involved. Always pass the configuration in
+`config/swm-indexer.conf`: it is the SolrWayback bundle's tuned setting,
+the one SWM's indexing was validated with. The jar's built-in defaults
+index request records too and extract much less of each page's text.
 
 ```bash
 java -Xmx2g -jar target/warc-indexer-3.5.1-jar-with-dependencies.jar \
-  -c src/main/resources/reference.conf \
+  -c config/swm-indexer.conf \
   -o ./out -F jsonl --collection "My collection" \
   path/to/capture.warc.gz
 ```
 
-Other destinations are `-s http://host:8983/solr/collection` for Solr and
-`-e http://host:9200/index` for OpenSearch; exactly one of `-o`, `-s`, `-e`
-is allowed. `java -jar ... --help` lists everything, and `--dump` prints the
-effective configuration.
+Windows PowerShell:
+
+```powershell
+java -Xmx2g -jar target\warc-indexer-3.5.1-jar-with-dependencies.jar `
+  -c config\swm-indexer.conf `
+  -o .\out -F jsonl --collection "My collection" `
+  C:\path\to\capture.warc.gz
+```
+
+The output is `out/<warc file name>.jsonl`, one document per line; add
+`-z` to gzip it. Several WARCs can be given at once, or a text file listing
+them one per line. Other destinations are `-s http://host:8983/solr/collection`
+for Solr and `-e http://host:9200/index` for OpenSearch; exactly one of
+`-o`, `-s`, `-e` is allowed. `java -jar ... --help` lists everything, and
+`--dump` prints the effective configuration.
 
 ## Test
 
