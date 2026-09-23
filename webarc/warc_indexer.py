@@ -473,6 +473,19 @@ def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None
     return manifest
 
 
+STALE_SECONDS = 3 * POLL_SECONDS
+
+
+def _stale(crawl_dir: Path) -> bool:
+    """Whether the manifest has not been touched for longer than the
+    runner's own polling would allow while a run is alive."""
+    try:
+        age = time.time() - (Path(crawl_dir) / MANIFEST_NAME).stat().st_mtime
+    except OSError:
+        return True
+    return age > STALE_SECONDS
+
+
 def summary(crawl_dir: Path) -> Optional[dict]:
     """What the dashboard shows about the last run."""
     manifest = read_manifest(crawl_dir)
@@ -480,8 +493,12 @@ def summary(crawl_dir: Path) -> Optional[dict]:
         return None
     status = manifest.get("status")
     error = manifest.get("error")
-    if status == STATUS_RUNNING and not _pid_alive(manifest.get("pid")):
-        status = STATUS_FAILED               # the process went away without finishing
+    if status == STATUS_RUNNING and not _pid_alive(manifest.get("pid")) and _stale(crawl_dir):
+        # the process went away without the run being finished off: the
+        # server restarted or the runner died. A manifest written moments
+        # ago is just the gap between the jar exiting and its outcome being
+        # recorded, so only an old one counts.
+        status = STATUS_FAILED
         error = error or "The indexer stopped without finishing (the server may have restarted)."
     detail = manifest.get("error_detail") or ""
     return {"status": status, "documents": manifest.get("documents"),
