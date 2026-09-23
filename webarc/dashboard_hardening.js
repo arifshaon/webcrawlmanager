@@ -154,6 +154,7 @@ function crawlRow(c) {
       : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
       <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
       : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
+      ${isSocial ? `<button class="act" onclick="indexCapture(${id})" ${(running || paused || blocked || rawStatus === "stopping") ? "disabled" : ""} title="Index the captured posts, comments and profiles as search documents in warc-indexer's schema, beside the capture">${c.index && c.index.documents != null ? `Re-index · ${Number(c.index.documents)}` : "Index"}</button>` : ""}
       ${c.has_selection ? `<button class="act replay" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
       <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>

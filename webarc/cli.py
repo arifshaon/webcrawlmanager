@@ -327,6 +327,39 @@ def _cmd_metadata(args) -> int:
     return 0
 
 
+def _cmd_index(args) -> int:
+    import json as _json
+    from pathlib import Path as _P
+
+    from . import indexer
+
+    platform = None if args.platform == "auto" else args.platform
+    try:
+        result = indexer.index_capture(
+            _P(args.capture_dir), output=_P(args.output) if args.output else None,
+            collection=args.collection, platform=platform,
+            progress=None if args.json else lambda msg: print(msg, file=sys.stderr))
+    except indexer.IndexingError as exc:
+        print(f"Cannot index: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(_json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    print(f"Indexed {result.documents} document(s) from the {result.platform} capture "
+          f"'{result.collection}' → {result.output}")
+    for type_name, count in sorted(result.by_type.items()):
+        print(f"  {count:6d}  {type_name}")
+    print(f"WARC records found for {result.located} document(s); "
+          f"{result.unlocated} carry no WARC pointer "
+          f"({result.warc_files} WARC file(s), {result.warc_records} records scanned)")
+    if result.invalid:
+        print(f"{result.invalid} document(s) failed schema validation and were left out",
+              file=sys.stderr)
+    for warning in result.warnings[:20]:
+        print(f"warning: {warning}", file=sys.stderr)
+    return 0
+
+
 def _cmd_resources(args) -> int:
     import json as _json
 
@@ -477,6 +510,25 @@ def main(argv: list[str] | None = None) -> int:
     p_md_export.add_argument("job_dir", help="A job's folder (holds metadata.json)")
     p_md_export.add_argument("--output", "-o",
                              help="Where to write the sheet (default: metadata.csv in the folder; - for stdout)")
+
+    p_idx = sub.add_parser(
+        "index",
+        help="Index a social-media capture (Facebook, Instagram, X, YouTube) "
+        "into warc-indexer's document schema, as JSON Lines")
+    p_idx.add_argument("capture_dir",
+                       help="A social capture's folder (holds <platform>-manifest.json, "
+                       "the record files and the WARCs)")
+    p_idx.add_argument("--output", "-o",
+                       help="Where to write the documents (default: "
+                       "<capture_dir>/index/<platform>-index.jsonl)")
+    p_idx.add_argument("--collection",
+                       help="Collection name every document carries "
+                       "(default: the capture's name)")
+    p_idx.add_argument("--platform",
+                       choices=["auto", "facebook", "instagram", "x", "youtube"],
+                       default="auto", help="Which capture the folder holds (default: detect)")
+    p_idx.add_argument("--json", action="store_true",
+                       help="print the summary as JSON")
 
     p_rec = sub.add_parser(
         "record",
@@ -797,6 +849,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "metadata":
         return _cmd_metadata(args)
+
+    if args.command == "index":
+        return _cmd_index(args)
 
     if args.command == "serve":
         try:

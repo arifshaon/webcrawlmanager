@@ -24,6 +24,10 @@ Endpoints:
   GET/PUT /api/crawls/{id}/metadata -> a job's descriptive metadata (Dublin Core)
   GET  /api/crawls/{id}/metadata.csv -> the same as a one-row-per-seed sheet
   POST /api/metadata/parse    -> read such a sheet back into the metadata shape
+  POST /api/crawls/{id}/index -> index a social capture's records into
+                                 warc-indexer's document schema (JSON Lines)
+  GET  /api/crawls/{id}/index -> the summary of the last such run
+  GET  /api/crawls/{id}/index.jsonl -> download the documents
 
 A crawl runs as an isolated subprocess (webarc.worker). Pause/resume/stop are
 delivered through the store's control column, which the worker polls between
@@ -707,7 +711,23 @@ def _crawl_view(row: dict) -> dict:
         # replay needs an archive, not just a described folder: metadata.json
         # alone gives a job a size but nothing to replay
         "warc_files": _warc_count(crawl_dir),
+        # the last indexing run of a social capture, if any
+        "index": _index_summary(crawl_dir),
     }
+
+
+_SOCIAL_KINDS = (KIND_FACEBOOK, KIND_INSTAGRAM, KIND_X, KIND_YOUTUBE)
+
+
+def _index_summary(crawl_dir: Path) -> dict | None:
+    """What the dashboard shows about a capture's index: counts and when."""
+    from .indexer import read_index_manifest
+    manifest = read_index_manifest(crawl_dir)
+    if not manifest:
+        return None
+    return {key: manifest.get(key) for key in
+            ("platform", "documents", "by_type", "located", "unlocated",
+             "warc_files", "invalid", "generated_at", "collection")}
 
 
 def _warc_count(crawl_dir: Path) -> int:
@@ -1611,6 +1631,54 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
         return {"collection": coll, "replay_url": _PYWB.replay_url(coll),
                 "pages_url": pages_url}
+
+    @app.post("/api/crawls/{crawl_id}/index")
+    def index_capture(crawl_id: int, payload: dict | None = Body(default=None)):
+        """Index a finished social capture's records into warc-indexer's
+        document schema, beside the capture in index/. Runs in the request,
+        like replay: the records are small and the WARC scan reads headers
+        only."""
+        from . import indexer
+        row = _require(crawl_id)
+        if row.get("kind") not in _SOCIAL_KINDS:
+            raise HTTPException(
+                409, "Only Facebook, Instagram, X and YouTube captures can be indexed.")
+        if _pid_alive(row.get("pid")):
+            raise HTTPException(409, "Stop the capture before indexing it.")
+        collection = None
+        if isinstance(payload, dict) and str(payload.get("collection") or "").strip():
+            collection = str(payload["collection"]).strip()
+        try:
+            result = indexer.index_capture(_crawl_dir(row), collection=collection)
+        except indexer.IndexingError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, f"indexing failed: {exc}") from exc
+        body = result.to_dict()
+        body["download_url"] = f"/api/crawls/{crawl_id}/index.jsonl"
+        return body
+
+    @app.get("/api/crawls/{crawl_id}/index")
+    def index_status(crawl_id: int):
+        from .indexer import read_index_manifest
+        manifest = read_index_manifest(_crawl_dir(_require(crawl_id)))
+        if not manifest:
+            raise HTTPException(404, "this capture has not been indexed yet")
+        manifest["download_url"] = f"/api/crawls/{crawl_id}/index.jsonl"
+        return manifest
+
+    @app.get("/api/crawls/{crawl_id}/index.jsonl")
+    def index_download(crawl_id: int):
+        from fastapi.responses import FileResponse
+
+        from .indexer import read_index_manifest
+        row = _require(crawl_id)
+        manifest = read_index_manifest(_crawl_dir(row))
+        target = Path(manifest["output"]) if manifest and manifest.get("output") else None
+        if not target or not target.is_file():
+            raise HTTPException(404, "this capture has not been indexed yet")
+        return FileResponse(target, media_type="application/x-ndjson",
+                            filename=target.name)
 
     def row_seed_url(crawl_id: int) -> str | None:
         prog = _store().get_progress(crawl_id)

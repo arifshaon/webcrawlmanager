@@ -51,6 +51,9 @@ Key capabilities:
   upload.
 - **Inspection and QA** — list captured URLs, summarise hosts, search recordings
   and cut smaller diagnostic WARCs.
+- **Search indexing of social captures** — one document per post, comment,
+  profile or video in the warc-indexer (SolrWayback) schema, each pointing at
+  its WARC record, from the command line or a dashboard button.
 - **Flexible browser modes** — `headless`, `headed` and `native` (system Chrome
   via CDP); automated crawls support all three, interactive recording supports
   `headed` and `native`.
@@ -89,6 +92,7 @@ Key capabilities:
 - [Theme-based capture](#theme-based-capture)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
+- [Indexing social captures](#indexing-social-captures)
 - [Replay](#replay-replaywebpage)
 - [Dashboard](#dashboard)
 - [Architecture](#architecture)
@@ -899,6 +903,64 @@ The extracted file is intended for inspection and troubleshooting. It is not a
 complete replacement for the original recording when large media or documents
 have been removed.
 
+## Indexing social captures
+
+A Facebook, Instagram, X or YouTube capture leaves normalised records beside
+its WARC files: the posts, comments, profiles, videos and channels it
+collected, each with its text, author, time and media. A generic WARC indexer
+never sees them; it indexes the hundreds of scripts and images behind one
+page whose extracted text is mostly navigation. SWM indexes the records
+instead.
+
+`index` turns a social capture into one search document per item, using the
+field names of the **warc-indexer** (webarchive-discovery) Solr schema that
+SolrWayback and the UK Web Archive tooling use. The documents load into the
+same index as warc-indexer's own output, or into any search engine, and each
+one points at the WARC record of the page it came from (`source_file_path`
+and `source_file_offset`), so a search hit is an archive citation that a
+Wayback-style engine can replay.
+
+```powershell
+python -m webarc.cli index warcs/12
+python -m webarc.cli index warcs/12 --collection "Heritage 2026" --json
+```
+
+The platform is detected from the capture's manifest. Output goes to
+`<capture>/index/<platform>-index.jsonl`, one JSON object per line, with a
+summary in `<capture>/index/index-manifest.json`: documents by type, how
+many found their WARC record, and any warnings. `--output` writes elsewhere.
+
+From the dashboard, every finished social job has an **Index** button. It
+writes the same files, reports the counts, and offers the index file for
+download; the button then shows the document count and re-indexes on demand.
+
+What a document carries:
+
+- **Identity and place**: `id` (`facebook:post:<id>`, `x:user:<id>`, ...),
+  `type` (`Facebook Post`, `Instagram Comment`, `YouTube Video`, ...), `url`,
+  `url_norm`, `host`, `domain`.
+- **Content**: `content` (the post, caption, comment or description),
+  `title`, `author`, `keywords` (hashtags, tags), `content_language` where
+  the platform gives it, `links` and `links_images`.
+- **Time**: `publication_date` (when the item was written) and `crawl_date`
+  and `wayback_date` (when it was captured, taken from the WARC record).
+- **Evidence**: `source_file`, `source_file_path`, `source_file_offset`,
+  `status_code` and the record's payload `hash`. Comments point at the post
+  page they were read from.
+- **Context**: `collection` (the capture name unless `--collection` says
+  otherwise), `institution` (the operator), `access_terms` and
+  `wct_subjects` from the capture's Rights and Subject metadata, and every
+  platform detail that has no schema field (reaction counts, parent ids,
+  handles) as `key=value` entries in `content_metadata_ss`.
+
+Only field names the schema defines are emitted; a document that would not
+load is left out and counted as invalid in the summary. Items whose page is
+not in a WARC (a YouTube video read through yt-dlp, a capture run without
+WARC writing) are still indexed, without the evidence fields.
+
+Automated crawls and interactive recordings are not covered: their content
+is ordinary web pages, which warc-indexer handles from the WARC directly.
+
 ## Replay (ReplayWeb.page)
 
 SWM uses **Webrecorder ReplayWeb.page** and wabac.js for local replay. Replay runs
@@ -1110,6 +1172,10 @@ record command ──► recorder.py ──► visible browser ──► capture
 
 Quality assurance
 WARC folder ──► inspect / extract ──► replay.py ──► ReplayWeb.page
+
+Search
+social capture records + WARC ──► indexer.py ──► index/<platform>-index.jsonl
+                                                  (warc-indexer schema)
 ```
 
 Capture occurs at the browser network-event layer. SWM records what the browser

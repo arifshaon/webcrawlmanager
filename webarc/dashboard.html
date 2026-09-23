@@ -2629,13 +2629,13 @@ function busy(text) {
   node.style.display = "flex";
   return () => { node.style.display = "none"; };
 }
-function offerOpen(url, text) {
+function offerOpen(url, text, label) {
   // A browser lets a click open a new tab only for a few seconds. When the
   // build took longer and the tab was refused, the wait dialog becomes a
   // button: a fresh click, so the tab is allowed.
   const node = document.getElementById("busy-overlay");
   node.innerHTML = `<div class="busy-card"><div class="busy-text">${escapeHtml(text)}</div>`
-    + `<button type="button" class="primary" id="busy-open">Open in a new tab</button>`
+    + `<button type="button" class="primary" id="busy-open">${escapeHtml(label || "Open in a new tab")}</button>`
     + `<button type="button" class="secondary" id="busy-close">Close</button></div>`;
   node.style.display = "flex";
   const close = () => { node.style.display = "none"; node.innerHTML = ""; };
@@ -2662,6 +2662,27 @@ async function replay(id, want) {
   } catch (e) {
     done();
     alert("Could not open: " + e.message);
+  }
+}
+async function indexCapture(id) {
+  // The capture's posts, comments and profiles become one search document
+  // each, in warc-indexer's schema, written beside the capture. The result
+  // is summarised here and can be downloaded; the job card shows the count.
+  const done = busy("Indexing the capture's records. A large WARC takes a moment to scan.");
+  try {
+    const r = await api(`/api/crawls/${id}/index`, {method:"POST"});
+    const types = Object.entries(r.by_type || {}).map(([k, v]) => `${v} ${k}`).join(", ");
+    const pointer = Number(r.unlocated) > 0
+      ? ` ${r.unlocated} of them have no WARC record to point at.`
+      : (Number(r.documents) > 0 ? " Every document points at its WARC record." : "");
+    const text = `Indexed ${r.documents} document${r.documents === 1 ? "" : "s"}`
+      + (types ? ` (${types})` : "") + ` into ${r.output}.` + pointer
+      + (Array.isArray(r.warnings) && r.warnings.length ? ` ${r.warnings.length} warning(s) are in the index manifest.` : "");
+    offerOpen(r.download_url, text, "Download the index");
+    refresh();
+  } catch (e) {
+    done();
+    alert("Indexing failed: " + e.message);
   }
 }
 async function ctl(id, cmd) {
