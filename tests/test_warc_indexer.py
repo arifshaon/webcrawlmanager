@@ -34,13 +34,17 @@ FAKE = textwrap.dedent('''
     coll = args[args.index("--collection") + 1] if "--collection" in args else None
     warcs = [a for a in args if a.endswith(".warc.gz") or a.endswith(".warc")]
     if os.environ.get("FAKE_INDEXER_FAIL"):
-        print("boom", file=sys.stderr); sys.exit(3)
-    for w in warcs:
+        print("Exception in thread main java.lang.RuntimeException: boom", file=sys.stderr); sys.exit(3)
+    import time
+    for n, w in enumerate(warcs, 1):
         name = os.path.basename(w)
+        print("Parsing Archive File [%d/%d]:%s" % (n, len(warcs), w), flush=True)
         with open(os.path.join(out, name + ".jsonl"), "w", encoding="utf-8") as f:
             for i in range(2):
                 f.write('{"id": "%s/%d", "source_file": "%s", "collection": %s}\\n'
                         % (name, i, name, ('"%s"' % coll) if coll else "null"))
+                f.flush()
+        time.sleep(float(os.environ.get("FAKE_INDEXER_SLOW", "0")))
     print("fake indexer done:", " ".join(args))
 ''')
 
@@ -81,6 +85,45 @@ class FindingTests(unittest.TestCase):
                                               warc_indexer.JAVA_ENV: "", "JAVA_HOME": ""}), \
                     mock.patch("webarc.warc_indexer.shutil.which", return_value=None):
                 warc_indexer.build_command(Path("."), [Path("x.warc.gz")])
+
+    def test_the_indexer_settings_come_first(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "jdk"
+            (home / "bin").mkdir(parents=True)
+            java = home / "bin" / ("java.exe" if os.name == "nt" else "java")
+            java.write_text("", encoding="utf-8")
+            jar = Path(tmp) / "custom.jar"
+            jar.write_bytes(b"PK")
+            conf = Path(tmp) / "my.conf"
+            conf.write_text("{}", encoding="utf-8")
+            stored = {"indexer.java": str(home), "indexer.jar": str(jar),
+                      "indexer.config": str(conf), "indexer.memory": "3g"}
+            with mock.patch.dict(os.environ, {warc_indexer.CMD_ENV: "", warc_indexer.JAR_ENV: "/elsewhere.jar",
+                                              warc_indexer.JAVA_ENV: "/elsewhere/java", "JAVA_HOME": ""}):
+                self.assertEqual(warc_indexer.find_java(stored.get), str(java))     # a JAVA_HOME folder
+                self.assertEqual(warc_indexer.find_jar(stored.get), jar)
+                self.assertEqual(warc_indexer.find_config(jar, stored.get), conf)
+                self.assertEqual(warc_indexer.memory_from(stored.get), "3g")
+                cmd = warc_indexer.build_command(Path("/out"), [Path("/w/a.warc.gz")], get_setting=stored.get)
+            self.assertEqual(cmd[:6], [str(java), "-Xmx3g", "-jar", str(jar), "-c", str(conf)])
+            self.assertEqual(warc_indexer.settings_from(stored.get),
+                             {"java": str(home), "jar": str(jar), "config": str(conf), "memory": "3g"})
+
+    def test_settings_are_checked_before_they_are_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            jar = Path(tmp) / "x.jar"
+            jar.write_bytes(b"PK")
+            self.assertEqual(warc_indexer.validate_settings({"jar": str(jar), "memory": "4g", "java": ""}),
+                             {"jar": str(jar), "memory": "4g", "java": ""})
+            for bad, wording in (({"java": str(Path(tmp) / "nope")}, "No java was found"),
+                                 ({"jar": str(Path(tmp) / "missing.jar")}, "does not exist"),
+                                 ({"config": str(Path(tmp) / "no.conf")}, "does not exist"),
+                                 ({"memory": "lots"}, "heap size"),
+                                 ({}, "at least one"),
+                                 ("text", "must be an object")):
+                with self.subTest(bad=bad), self.assertRaises(ValueError) as caught:
+                    warc_indexer.validate_settings(bad)
+                self.assertIn(wording, str(caught.exception))
 
     def test_the_command_names_the_jar_config_output_and_warcs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -128,14 +171,40 @@ class RunTests(FakeJarTestCase):
         with self.assertRaises(warc_indexer.WarcIndexerUnavailable):
             warc_indexer.index_warcs(d, warcs=["missing.warc.gz"])
 
-    def test_a_failing_run_is_recorded_as_failed_with_the_log(self):
+    def test_a_failing_run_says_why_with_the_indexers_own_words(self):
         d = self.job_dir()
         with mock.patch.dict(os.environ, {"FAKE_INDEXER_FAIL": "1"}):
             manifest = warc_indexer.index_warcs(d)
         self.assertEqual(manifest["status"], "failed")
-        self.assertIn("exited with code 3", manifest["error"])
+        self.assertEqual(manifest["error"], "The indexer exited with code 3.")
+        self.assertIn("RuntimeException: boom", manifest["error_detail"])
         self.assertIn("boom", (d / warc_indexer.LOG_NAME).read_text())
-        self.assertEqual(warc_indexer.summary(d)["status"], "failed")
+        shown = warc_indexer.summary(d)
+        self.assertEqual(shown["status"], "failed")
+        self.assertIn("boom", shown["error_detail"])
+        self.assertEqual(warc_indexer._explain(1, "java.lang.UnsupportedClassVersionError: 55.0"),
+                         "This Java is too old for the jar: Java 11 or newer is needed.")
+        self.assertIn("memory", warc_indexer._explain(1, "java.lang.OutOfMemoryError: Java heap space"))
+
+    def test_progress_is_recorded_while_the_run_goes(self):
+        d = self.job_dir()
+        seen = []
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_SLOW": "0.3"}):
+            manifest = warc_indexer.index_warcs(d, poll=0.05, on_progress=seen.append)
+        self.assertEqual(manifest["status"], "done")
+        self.assertTrue(seen, "progress should have been reported during the run")
+        self.assertEqual(seen[-1]["files_total"], 2)
+        self.assertTrue(any(p["documents"] > 0 for p in seen))
+        self.assertTrue(any(p["current_warc"] for p in seen))
+        self.assertEqual(manifest["progress"]["documents"], 4)
+        self.assertEqual(warc_indexer.summary(d)["progress"]["files_total"], 2)
+
+    def test_a_run_that_takes_too_long_is_stopped_and_says_so(self):
+        d = self.job_dir()
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_SLOW": "5"}):
+            manifest = warc_indexer.index_warcs(d, poll=0.05, timeout=0.3)
+        self.assertEqual(manifest["status"], "failed")
+        self.assertIn("ran longer than", manifest["error"])
 
     def test_a_folder_without_warcs_is_refused(self):
         d = self.job_dir(warcs=())
@@ -165,6 +234,27 @@ class CliTests(FakeJarTestCase):
             self.assertEqual(cli.main(["index-warc", str(self.tmp / "nope")]), 1)
         self.assertIn("Cannot index", err.getvalue())
 
+    def test_index_warc_shows_the_failure_and_the_indexers_words(self):
+        d = self.job_dir()
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_FAIL": "1"}), \
+                redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = cli.main(["index-warc", str(d)])
+        self.assertEqual(code, 1)
+        self.assertIn("Indexing failed: The indexer exited with code 3.", err.getvalue())
+        self.assertIn("RuntimeException: boom", err.getvalue())
+        self.assertIn("Full output:", err.getvalue())
+
+    def test_index_warc_shows_progress(self):
+        d = self.job_dir()
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_SLOW": "0.3"}), \
+                mock.patch.object(warc_indexer, "POLL_SECONDS", 0.05), \
+                redirect_stdout(io.StringIO()), redirect_stderr(err):
+            code = cli.main(["index-warc", str(d)])
+        self.assertEqual(code, 0)
+        self.assertIn("documents so far", err.getvalue())
+
 
 class ServerTests(FakeJarTestCase):
     def setUp(self):
@@ -192,6 +282,44 @@ class ServerTests(FakeJarTestCase):
     def test_the_capability_is_reported(self):
         caps = self.client.get("/api/capabilities").json()
         self.assertTrue(caps["warc_indexer"]["available"])
+
+    def test_the_indexer_settings_round_trip_and_are_checked(self):
+        jar = self.tmp / "custom.jar"
+        jar.write_bytes(b"PK")
+        before = self.client.get("/api/settings").json()
+        self.assertEqual(before["indexer"]["settings"], {"java": "", "jar": "", "config": "", "memory": ""})
+
+        saved = self.client.put("/api/settings", json={"indexer": {"jar": str(jar), "memory": "4g"}})
+
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["indexer"]["settings"]["jar"], str(jar))
+        self.assertEqual(saved.json()["indexer"]["settings"]["memory"], "4g")
+        self.assertEqual(saved.json()["indexer"]["memory"], "4g")
+        again = self.client.get("/api/settings").json()
+        self.assertEqual(again["indexer"]["settings"]["jar"], str(jar))
+
+        refused = self.client.put("/api/settings", json={"indexer": {"java": str(self.tmp / "nope")}})
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("No java was found", refused.json()["detail"])
+        self.assertEqual(self.client.put("/api/settings", json={"indexer": {"memory": "lots"}}).status_code, 400)
+        cleared = self.client.put("/api/settings", json={"indexer": {"jar": "", "memory": ""}})
+        self.assertEqual(cleared.json()["indexer"]["settings"]["jar"], "")
+
+    def test_a_failed_run_is_shown_on_the_card_with_the_log(self):
+        made = self.crawl()
+        out_dir = Path(made["output_dir"])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "x.warc.gz").write_bytes(b"\x1f\x8bxx")
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_FAIL": "1"}):
+            self.assertEqual(self.client.post(f"/api/crawls/{made['id']}/warc-index").status_code, 202)
+            view = self.wait_done(made["id"])
+        self.assertEqual(view["warc_index"]["status"], "failed")
+        self.assertEqual(view["warc_index"]["error"], "The indexer exited with code 3.")
+        self.assertIn("boom", view["warc_index"]["error_detail"])
+        log = self.client.get(f"/api/crawls/{made['id']}/warc-index/log")
+        self.assertEqual(log.status_code, 200)
+        self.assertIn("boom", log.text)
+        self.assertEqual(self.client.get("/api/crawls/9999/warc-index/log").status_code, 404)
 
     def test_indexing_a_crawls_warcs_from_the_dashboard(self):
         made = self.crawl()

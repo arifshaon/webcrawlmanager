@@ -19,7 +19,8 @@ Endpoints:
   GET  /api/resources         -> spare CPU, memory and disk; usage per running job
   GET  /api/resources/check   -> whether a new job should be warned before starting
   POST /api/crawls/{id}/start -> launch a job that was told to wait
-  GET/PUT /api/settings       -> default storage location, resource warning levels
+  GET/PUT /api/settings       -> default storage location, resource warning levels,
+                                 the theme judge, the Indexer (Java, jar, config)
   GET  /api/help              -> the help text behind each "?" on the forms
   GET/PUT /api/crawls/{id}/metadata -> a job's descriptive metadata (Dublin Core)
   GET  /api/crawls/{id}/metadata.csv -> the same as a one-row-per-seed sheet
@@ -34,6 +35,7 @@ Endpoints:
                                  recording's WARCs, writing <warc>.jsonl beside
                                  each; returns at once, the job card follows it
   GET  /api/crawls/{id}/warc-index -> the state of that run
+  GET  /api/crawls/{id}/warc-index/log -> the jar's output from it
 
 A crawl runs as an isolated subprocess (webarc.worker). Pause/resume/stop are
 delivered through the store's control column, which the worker polls between
@@ -275,9 +277,10 @@ def _theme_ai_capability() -> dict:
 
 
 def _warc_indexer_capability() -> dict:
-    """Whether the warc-indexer jar can be run here: Java and a built jar."""
+    """Whether the warc-indexer jar can be run here: Java and a built jar,
+    found through the Indexer settings, the environment, or the repository."""
     from .warc_indexer import capability
-    return capability()
+    return capability(_store().get_setting)
 
 
 def _youtube_capability() -> dict:
@@ -1713,7 +1716,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         crawl_dir = _crawl_dir(row)
         if warc_indexer.is_running(crawl_dir):
             raise HTTPException(409, "This job's WARCs are being indexed already.")
-        cap = warc_indexer.capability()
+        get_setting = _store().get_setting
+        cap = warc_indexer.capability(get_setting)
         if not cap["available"]:
             raise HTTPException(409, cap["reason"] or "warc-indexer is unavailable")
         collection = None
@@ -1732,7 +1736,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
         def run():
             try:
-                warc_indexer.index_warcs(crawl_dir, warcs=chosen, collection=collection)
+                warc_indexer.index_warcs(crawl_dir, warcs=chosen, collection=collection,
+                                         get_setting=get_setting)
             except Exception as exc:                    # noqa: BLE001 - recorded for the card
                 log.warning("warc-indexer run for %d failed: %s", crawl_id, exc)
                 warc_indexer._write_manifest(crawl_dir, {
@@ -1755,6 +1760,17 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         manifest["summary"] = summary(crawl_dir)
         manifest.pop("pid", None)
         return manifest
+
+    @app.get("/api/crawls/{crawl_id}/warc-index/log")
+    def warc_index_log(crawl_id: int):
+        """The jar's own output from the last run, as written."""
+        from fastapi.responses import PlainTextResponse
+
+        from .warc_indexer import LOG_NAME
+        path = _crawl_dir(_require(crawl_id)) / LOG_NAME
+        if not path.is_file():
+            raise HTTPException(404, "this job's WARCs have not been indexed yet")
+        return PlainTextResponse(path.read_text(encoding="utf-8", errors="replace"))
 
     @app.get("/api/crawls/{crawl_id}/index")
     def index_status(crawl_id: int):
@@ -1841,6 +1857,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "resources_measured": _monitor().snapshot().get("measured", False),
             "resources_note": resources.measurement_note(),
             "theme_ai": {**ai_settings(_store().get_setting), "capability": _theme_ai_capability()},
+            "indexer": _warc_indexer_capability(),
         }
 
     @app.get("/api/resources")
@@ -1894,10 +1911,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         directory it was written to, so a changed default applies to captures
         made after it.
         """
-        if not any(k in payload for k in ("storage_root", "resources", "theme_ai")):
-            raise HTTPException(400, "provide storage_root, resources or theme_ai")
+        if not any(k in payload for k in ("storage_root", "resources", "theme_ai", "indexer")):
+            raise HTTPException(400, "provide storage_root, resources, theme_ai or indexer")
         if "theme_ai" in payload:
             _write_theme_ai_settings(payload.get("theme_ai"))
+        if "indexer" in payload:
+            from . import warc_indexer
+            try:
+                accepted = warc_indexer.validate_settings(payload.get("indexer"))
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            for key, value in accepted.items():
+                _store().set_setting(warc_indexer.SETTING_PREFIX + key, value)
         if "storage_root" in payload:
             requested = str(payload.get("storage_root") or "").strip()
             if requested:

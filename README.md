@@ -994,11 +994,22 @@ needed) and SWM finds the jar there. Java 11 or newer must be installed.
 From the dashboard, every crawl and recording job with WARC files has an
 **Index WARC** button. It runs the jar over the job's WARC files and writes
 `<warc file name>.jsonl` beside each one, a document per record in
-warc-indexer's schema. The run happens in the background: the button reads
-*Indexing…* while it goes, then the document count; a failure says so and
-the jar's output is in `warc-index.log` in the job's folder, beside
-`warc-index-manifest.json`, which records the run. The button is greyed
-out, with the reason in its tooltip, when Java or the jar cannot be found.
+warc-indexer's schema. The run happens in the background and the job card
+follows it: which file it is on, how many documents so far and how long it
+has run, then the document count when it finishes. A failure is shown on
+the card in the indexer's own words, with the last lines of its output and
+a link to the whole log, which is `warc-index.log` in the job's folder
+beside `warc-index-manifest.json`, the record of the run.
+
+**Settings › Indexer** says where Java, the jar and the configuration are
+and how much memory the jar may use. Each may be left empty, in which case
+SWM looks for Java through `JAVA_HOME` and the PATH, for the jar in the
+repository's `warc-indexer/target`, and for the configuration beside the
+jar; the section reports what it found, or what is missing. When Java or
+the jar cannot be found, pressing Index WARC opens that section with the
+reason, so the path can be given there and the button tried again. The
+Java entry accepts the `JAVA_HOME` folder or the executable itself, and
+every path is checked before it is kept.
 
 The same from the command line, all WARCs in a folder or one by name:
 
@@ -1007,10 +1018,14 @@ python -m webarc.cli index-warc warcs/90
 python -m webarc.cli index-warc warcs/90 --warc rec-x.com-seed001-20260907141427-00001.warc.gz --collection "X profile"
 ```
 
-SWM launches the jar as a separate program and reads what it writes, the
-same arrangement as with gallery-dl, so the jar's licence stays its own.
-`SWM_WARC_INDEXER_JAR`, `SWM_WARC_INDEXER_CONF` and `SWM_JAVA` point SWM at
-a jar, a configuration or a Java elsewhere.
+The command shows progress as it goes and, on a failure, the reason and
+the indexer's last lines. With `--db` pointing at the dashboard's state
+file (the default location is assumed) the Settings › Indexer paths apply
+on the command line too. SWM launches the jar as a separate program and
+reads what it writes, the same arrangement as with gallery-dl, so the
+jar's licence stays its own. `SWM_WARC_INDEXER_JAR`, `SWM_WARC_INDEXER_CONF`
+and `SWM_JAVA` point SWM at a jar, a configuration or a Java elsewhere when
+there is no dashboard.
 
 ## Replay (ReplayWeb.page)
 

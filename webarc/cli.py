@@ -382,25 +382,48 @@ def _cmd_index_warc(args) -> int:
     if not crawl_dir.is_dir():
         print(f"Cannot index: {crawl_dir} is not a folder", file=sys.stderr)
         return 1
-    cap = warc_indexer.capability()
+    # the dashboard's Indexer settings apply on the command line too
+    get_setting = None
+    if _P(args.db).is_file():
+        from .store import Store
+        get_setting = Store(args.db).get_setting
+    cap = warc_indexer.capability(get_setting)
     if not cap["available"]:
         print(f"Cannot index: {cap['reason']}", file=sys.stderr)
+        print("Set the paths under the dashboard's Settings › Indexer, or with SWM_JAVA and "
+              "SWM_WARC_INDEXER_JAR.", file=sys.stderr)
         return 1
     if cap.get("note") and not args.json:
         print(f"note: {cap['note']}", file=sys.stderr)
+
+    def progress(p: dict) -> None:
+        if args.json:
+            return
+        where = (f"file {p['file_index']} of {p['files_total']}" if p.get("files_total", 0) > 1
+                 else (p.get("current_warc") or "starting"))
+        print(f"\r  indexing {where}: {p.get('documents', 0)} documents so far, "
+              f"{p.get('elapsed_seconds', 0)} s", end="", file=sys.stderr, flush=True)
+
     try:
         manifest = warc_indexer.index_warcs(
             crawl_dir, warcs=[args.warc] if args.warc else None,
-            collection=args.collection or crawl_dir.name, memory=args.memory)
+            collection=args.collection or crawl_dir.name, memory=args.memory,
+            get_setting=get_setting, on_progress=progress)
     except warc_indexer.WarcIndexerUnavailable as exc:
         print(f"Cannot index: {exc}", file=sys.stderr)
         return 1
+    if not args.json:
+        print(file=sys.stderr)                          # end the progress line
     if args.json:
         print(_json.dumps(manifest, ensure_ascii=False, indent=2))
         return 0 if manifest["status"] == warc_indexer.STATUS_DONE else 1
     if manifest["status"] != warc_indexer.STATUS_DONE:
-        print(f"Indexing failed: {manifest.get('error')} (log: {manifest.get('log')})",
-              file=sys.stderr)
+        print(f"Indexing failed: {manifest.get('error')}", file=sys.stderr)
+        if manifest.get("error_detail"):
+            print("The indexer said:", file=sys.stderr)
+            for line in str(manifest["error_detail"]).splitlines():
+                print(f"  {line}", file=sys.stderr)
+        print(f"Full output: {manifest.get('log')}", file=sys.stderr)
         return 1
     print(f"Indexed {manifest['documents']} document(s) from {len(manifest['warcs'])} WARC file(s):")
     for out in manifest["outputs"]:
@@ -597,7 +620,10 @@ def main(argv: list[str] | None = None) -> int:
     p_iw.add_argument("--warc", help="Index only this WARC file (by name) rather than all")
     p_iw.add_argument("--collection", help="Collection name every document carries "
                       "(default: the folder name)")
-    p_iw.add_argument("--memory", default="2g", help="Java heap for the jar (default 2g)")
+    p_iw.add_argument("--memory", help="Java heap for the jar (default: the Indexer setting, else 2g)")
+    p_iw.add_argument("--db", default="./webarc-state/webarc.db",
+                      help="dashboard state file whose Indexer settings (Java, jar, "
+                      "configuration) apply when it exists")
     p_iw.add_argument("--json", action="store_true", help="print the run's manifest as JSON")
 
     p_rec = sub.add_parser(
