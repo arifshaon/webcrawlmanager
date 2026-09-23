@@ -334,6 +334,19 @@ def _cmd_index(args) -> int:
     from . import indexer
 
     platform = None if args.platform == "auto" else args.platform
+    if args.relocate:
+        try:
+            moved = indexer.relocate_index(_P(args.capture_dir), args.source_root)
+        except (indexer.IndexingError, OSError, ValueError) as exc:
+            print(f"Cannot relocate: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(_json.dumps(moved, ensure_ascii=False, indent=2))
+        else:
+            where = moved["source_root"] or "the file name alone"
+            print(f"Rewrote source_file_path in {moved['rewritten']} of {moved['documents']} "
+                  f"document(s) to {where} → {moved['output']}")
+        return 0
     try:
         result = indexer.index_capture(
             _P(args.capture_dir), output=_P(args.output) if args.output else None,
@@ -517,7 +530,12 @@ def main(argv: list[str] | None = None) -> int:
         "into warc-indexer's document schema, as JSON Lines")
     p_idx.add_argument("capture_dir",
                        help="A social capture's folder (holds <platform>-manifest.json, "
-                       "the record files and the WARCs)")
+                       "the record files and the WARCs); with --relocate, that folder "
+                       "or the index file itself")
+    p_idx.add_argument("--relocate", action="store_true",
+                       help="Do not re-index: rewrite source_file_path in the existing "
+                       "index for the --source-root given (or for the file name alone "
+                       "when none is given)")
     p_idx.add_argument("--output", "-o",
                        help="Where to write the documents (default: "
                        "<capture_dir>/index/<platform>-index.jsonl)")
@@ -531,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
                        help="Path or URL prefix under which the WARC files will be "
                        "kept by whoever uses the index, e.g. a repository mount or "
                        "download URL; source_file_path becomes <root>/<file name> "
-                       "(default: where the files are now)")
+                       "(default: the file name alone)")
     p_idx.add_argument("--json", action="store_true",
                        help="print the summary as JSON")
 

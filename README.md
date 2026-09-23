@@ -953,20 +953,28 @@ What a document carries:
   platform detail that has no schema field (reaction counts, parent ids,
   handles) as `key=value` entries in `content_metadata_ss`.
 
-WARC files move when they are ingested, so the path is a hint and the file
-name plus offset is the stable key, the same convention warc-indexer and
-SolrWayback's file resolvers follow. Give `--source-root` the path or URL
-prefix under which the files will be kept, a repository mount or a download
-URL, and every `source_file_path` becomes that prefix plus the file name:
+WARC files move when they are ingested, so the index never bakes in where
+they happen to be at indexing time. By default `source_file_path` is the
+file name alone; the name plus `source_file_offset` is the stable key, the
+convention warc-indexer's consumers and SolrWayback's file resolvers already
+follow, and `warc_key_id` identifies the record wherever the file ends up.
+When the files' final home is known, give `--source-root` the path or URL
+prefix under which they will be kept, and every `source_file_path` becomes
+that prefix plus the file name. When it becomes known later, `--relocate`
+rewrites the pointers in the existing index without re-reading the records
+or the WARCs, which may by then be gone:
 
 ```powershell
 python -m webarc.cli index warcs/12 --source-root https://repo.example/warcstore/
+python -m webarc.cli index warcs/12 --relocate --source-root /mnt/repository/warcs
+python -m webarc.cli index warcs/12/index/facebook-index.jsonl --relocate
 ```
 
-The dashboard's Index button records the files' current location; the same
-option is `source_root` in the API body. Without a WARC beside the records
-(a capture run with WARC writing off) the documents are still complete and
-searchable, only without the evidence fields.
+The last form, with no root, returns the pointers to the file name alone.
+In the API the same options are `source_root` and `relocate` in the body of
+the index request. Without a WARC beside the records (a capture run with
+WARC writing off) the documents are still complete and searchable, only
+without the evidence fields.
 
 Only field names the schema defines are emitted; a document that would not
 load is left out and counted as invalid in the summary. Items whose page is

@@ -25,7 +25,9 @@ Endpoints:
   GET  /api/crawls/{id}/metadata.csv -> the same as a one-row-per-seed sheet
   POST /api/metadata/parse    -> read such a sheet back into the metadata shape
   POST /api/crawls/{id}/index -> index a social capture's records into
-                                 warc-indexer's document schema (JSON Lines)
+                                 warc-indexer's document schema (JSON Lines);
+                                 {"relocate": true, "source_root": ...} only
+                                 rewrites where the WARCs are said to live
   GET  /api/crawls/{id}/index -> the summary of the last such run
   GET  /api/crawls/{id}/index.jsonl -> download the documents
 
@@ -1646,12 +1648,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         if _pid_alive(row.get("pid")):
             raise HTTPException(409, "Stop the capture before indexing it.")
         collection = source_root = None
+        relocate = False
         if isinstance(payload, dict):
             if str(payload.get("collection") or "").strip():
                 collection = str(payload["collection"]).strip()
             if str(payload.get("source_root") or "").strip():
                 source_root = str(payload["source_root"]).strip()
+            relocate = bool(payload.get("relocate"))
         try:
+            if relocate:
+                # only the pointers change: no re-reading of records or WARCs
+                moved = indexer.relocate_index(_crawl_dir(row), source_root)
+                moved["download_url"] = f"/api/crawls/{crawl_id}/index.jsonl"
+                return moved
             result = indexer.index_capture(_crawl_dir(row), collection=collection,
                                            source_root=source_root)
         except indexer.IndexingError as exc:

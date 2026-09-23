@@ -392,6 +392,12 @@ def load_capture(directory: Path, platform: Optional[str] = None) -> Capture:
 
 # --- documents -------------------------------------------------------------
 
+def source_path_for(file_name: str, source_root: Optional[str]) -> str:
+    """``source_file_path`` for a WARC: the root plus the name, or the name."""
+    root = str(source_root).rstrip("/\\") if source_root else ""
+    return f"{root}/{file_name}" if root else file_name
+
+
 class DocumentBuilder:
     """Shared shape of every document; the platform mappers fill it."""
 
@@ -401,17 +407,16 @@ class DocumentBuilder:
         self.locator = locator
         self.collection = collection or capture.name
         # Where the WARCs will live for whoever reads the index: a path or
-        # URL prefix the file name is appended to. Without it, where they
-        # are now. The file name and offset are the stable pair either way.
+        # URL prefix the file name is appended to. Without it, the file
+        # name alone: files move when they are ingested, and the name plus
+        # offset is the stable pair. relocate_index() sets the root later.
         self.source_root = str(source_root).rstrip("/\\") if source_root else None
         self.located = 0
         self.unlocated = 0
         self._describe = self._description_fields()
 
     def source_path(self, hit: WarcHit) -> str:
-        if self.source_root:
-            return f"{self.source_root}/{hit.path.name}"
-        return str(hit.path.resolve())
+        return source_path_for(hit.path.name, self.source_root)
 
     def _description_fields(self) -> dict:
         """What metadata.json says about the whole job: rights, subjects."""
@@ -840,7 +845,8 @@ def index_capture(directory: Path, *, output: Optional[Path] = None,
     ``source_root`` is the path or URL prefix under which the WARC files
     will be kept by whoever reads the index, e.g. a repository's storage
     mount or a download URL; ``source_file_path`` becomes that prefix plus
-    the file name. Without it the files' current location is recorded.
+    the file name. Without it only the file name is recorded, and
+    ``relocate_index`` can add the root later.
     """
     say = progress or (lambda _msg: None)
     cap = load_capture(directory, platform)
@@ -880,3 +886,49 @@ def index_capture(directory: Path, *, output: Optional[Path] = None,
                              encoding="utf-8")
     say(f"Indexed {result.documents} document(s)")
     return result
+
+
+def find_index(target: Path) -> tuple[Path, Path]:
+    """The index file and its manifest, from either the file or the
+    capture directory that holds ``index/``."""
+    target = Path(target)
+    if target.is_file():
+        return target, target.parent / INDEX_MANIFEST_NAME
+    index_dir = target / INDEX_DIR_NAME if target.is_dir() else None
+    if index_dir and index_dir.is_dir():
+        manifest = _read_json(index_dir / INDEX_MANIFEST_NAME)
+        if manifest and manifest.get("output") and Path(manifest["output"]).is_file():
+            return Path(manifest["output"]), index_dir / INDEX_MANIFEST_NAME
+        found = sorted(index_dir.glob("*-index.jsonl"))
+        if found:
+            return found[0], index_dir / INDEX_MANIFEST_NAME
+    raise IndexingError(f"{target} holds no index (run `index` on the capture first)")
+
+
+def relocate_index(target: Path, source_root: Optional[str]) -> dict:
+    """Rewrite ``source_file_path`` in an existing index for a new root,
+    or for no root (the file name alone), without re-reading the records
+    or the WARCs. ``target`` is the index file or its capture directory.
+    Returns a summary; the index manifest records the root and when."""
+    index_path, manifest_path = find_index(target)
+    root = str(source_root).rstrip("/\\") if source_root else None
+    tmp = index_path.with_suffix(index_path.suffix + ".tmp")
+    documents = rewritten = 0
+    with index_path.open("r", encoding="utf-8") as src, tmp.open("w", encoding="utf-8") as dst:
+        for line in src:
+            if not line.strip():
+                continue
+            doc = json.loads(line)
+            documents += 1
+            name = doc.get("source_file")
+            if name:
+                doc["source_file_path"] = source_path_for(name, root)
+                rewritten += 1
+            dst.write(json.dumps(doc, ensure_ascii=False) + "\n")
+    os.replace(tmp, index_path)
+    manifest = _read_json(manifest_path) or {"schema": INDEX_SCHEMA, "output": str(index_path)}
+    manifest["source_root"] = root
+    manifest["relocated_at"] = iso_utc(datetime.now(timezone.utc))
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {"output": str(index_path), "manifest": str(manifest_path), "source_root": root,
+            "documents": documents, "rewritten": rewritten}
