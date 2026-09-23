@@ -75,16 +75,24 @@ JSON.
 
 ## Build
 
-Java 11 or newer and Maven. From this folder:
+Only Java 11 or newer is needed. The Maven Wrapper in this folder fetches
+Maven itself on first use (into `~/.m2/wrapper`), so Maven does not have to
+be installed. From this folder:
 
-```bash
-mvn -q package                 # runs the test suite, then builds the jar
-mvn -q -DskipTests package     # jar only
+```powershell
+.\mvnw.cmd -q -DskipTests package     # Windows: jar only
+.\mvnw.cmd -q package                 # Windows: test suite, then the jar
 ```
 
-The result is `target/warc-indexer-3.5.1-jar-with-dependencies.jar`, about
-130 MB, self-contained. `target/` is ignored by git; the jar is never
-committed.
+```bash
+./mvnw -q -DskipTests package         # Linux or macOS
+```
+
+The first build also downloads the project's dependencies and takes a few
+minutes; later builds are quick. The result is
+`target/warc-indexer-3.5.1-jar-with-dependencies.jar`, about 130 MB,
+self-contained. `target/` is ignored by git; the jar is never committed.
+If Maven is installed, `mvn` works in place of the wrapper.
 
 ## Run
 
