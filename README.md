@@ -983,6 +983,10 @@ WARC writing) are still indexed, without the evidence fields.
 
 Automated crawls and interactive recordings are not covered: their content
 is ordinary web pages, which warc-indexer handles from the WARC directly.
+A patched copy of warc-indexer 3.5.1 lives in [`warc-indexer/`](warc-indexer/README-SWM.md)
+with two fixes SWM's captures exposed, the charset the server declared and
+the WARC path in JSON output; it is built and run on its own and is not
+yet wired into SWM.
 
 ## Replay (ReplayWeb.page)
 

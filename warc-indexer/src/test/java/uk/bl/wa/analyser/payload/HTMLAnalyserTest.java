@@ -1,0 +1,133 @@
+package uk.bl.wa.analyser.payload;
+
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+
+import java.io.BufferedInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
+import java.util.HashMap;
+import java.util.Map;
+
+import org.archive.io.ArchiveRecordHeader;
+import org.archive.io.arc.ARCRecordMetaData;
+import org.junit.Test;
+
+import com.typesafe.config.Config;
+import com.typesafe.config.ConfigFactory;
+
+import uk.bl.wa.indexer.HTTPHeader;
+import uk.bl.wa.solr.SolrFields;
+import uk.bl.wa.solr.SolrRecord;
+import uk.bl.wa.solr.SolrRecordFactory;
+
+/**
+ * @author Toke Eskildsen <te@statsbiblioteket.dk>
+ *
+ */
+public class HTMLAnalyserTest {
+
+    // NOTE: The number of extract links is 4. This is correct as the empty
+    // String should be discarded.
+    @Test
+    public void testLinksExtraction() throws IOException {
+
+        SolrRecord solr = createSolrRecord("links_extract.html");
+
+        // Check number of links:
+        assertEquals("The number of links should be correct", 6,
+                solr.getField(SolrFields.SOLR_LINKS).getValueCount());
+
+        // Check hosts are canonicalized:
+        assertEquals("The number of hosts should be correct. Got hosts " + solr.getField(SolrFields.SOLR_LINKS_HOSTS),
+                     1, solr.getField(SolrFields.SOLR_LINKS_HOSTS).getValueCount());
+        String host = (String) solr.getField(SolrFields.SOLR_LINKS_HOSTS)
+                .getFirstValue();
+        assertEquals("The host should be formatted correctly", "example.org",
+                host);
+        // The domains and suffixes too:
+        String domain = (String) solr.getField(SolrFields.SOLR_LINKS_DOMAINS)
+                .getFirstValue();
+        assertEquals("The domain should be formatted correctly", "example.org",
+                domain);
+        String suffix = (String) solr.getField(
+                SolrFields.SOLR_LINKS_PUBLIC_SUFFIXES).getFirstValue();
+        assertEquals("The suffix should be formatted correctly", "org",
+                suffix);
+
+        // Check links_domains_surts
+        String[] linksDomainsSurts = new String[]{"(org,", "(org,example,"};
+        assertArrayEquals("The SURT domains should be correct", linksDomainsSurts,
+                solr.getField(SolrFields.SOLR_LINKS_HOSTS_SURTS).getValues()
+                        .toArray());
+
+        assertEquals("Image links should be for both src and srcset",
+                     12, solr.getField(SolrFields.SOLR_LINKS_IMAGES).getValueCount());
+    }
+
+    @Test
+    public void testIllegalHostHandling() throws IOException {
+
+        SolrRecord solr = createSolrRecord("links_extract_illegals.html");
+
+        // Check number of links:
+        assertEquals("The number of links should be correct. Got links: " + solr.getField(SolrFields.SOLR_LINKS),
+                     6, solr.getField(SolrFields.SOLR_LINKS).getValueCount());
+
+        // The subject-uri host is part of the count
+        // Before the fix in LinkExtractor#extractHost, example.com&arguments and æblegrød.dk was accepted as a valid host
+        assertEquals("The number of hosts should be correct. Got hosts " + solr.getField(SolrFields.SOLR_LINKS_HOSTS),
+                     2, solr.getField(SolrFields.SOLR_LINKS_HOSTS).getValueCount());
+        String host = (String) solr.getField(SolrFields.SOLR_LINKS_HOSTS).getValues().toArray()[1];
+        assertEquals("The only HTML-defined link with a valid host should be correct",
+                     "valid.example.com", host);
+    }
+
+    // domain handling is not using by LinkExtractor#extractHost but must obey similar rules for validity
+    @Test
+    public void testIllegalDomainHandling() throws IOException {
+
+        SolrRecord solr = createSolrRecord("links_extract_illegals.html");
+
+        // Check number of links:
+        assertEquals("The number of links should be correct. Got links: " + solr.getField(SolrFields.SOLR_LINKS),
+                     6, solr.getField(SolrFields.SOLR_LINKS).getValueCount());
+
+        assertEquals("The number of linked domains should be correct. Got hosts " + solr.getField(SolrFields.SOLR_LINKS_DOMAINS),
+                     2, solr.getField(SolrFields.SOLR_LINKS_DOMAINS).getValueCount());
+        String domain = (String) solr.getField(SolrFields.SOLR_LINKS_DOMAINS).getValues().toArray()[1];
+        assertEquals("The only HTML-defined link with a valid domain should be correct",
+                     "example.com", domain); // Not valid.example.com as "valid." is host-only
+    }
+
+    private SolrRecord createSolrRecord(String resource) throws IOException {
+        final URL SAMPLE_RESOURCE = Thread.currentThread().getContextClassLoader().getResource(resource);
+        assertNotNull("The sample file should be resolved", SAMPLE_RESOURCE);
+        final File SAMPLE = new File(SAMPLE_RESOURCE.getFile());
+
+        final URL CONF_RESOURCE = Thread.currentThread().getContextClassLoader().getResource("links_extract.conf");
+        assertNotNull("The config file should be resolved", CONF_RESOURCE);
+        final File CONF = new File(CONF_RESOURCE.getFile());
+        Config config = ConfigFactory.parseFile(CONF);
+        HTMLAnalyser ha = new HTMLAnalyser(config);
+        Map<String, Object> core = new HashMap<String, Object>();
+        core.put("subject-uri", "http://example.org/");
+        core.put("ip-address", "192.168.1.10");
+        core.put("creation-date", "Invalid");
+        core.put("content-type", "text/html");
+        core.put("length", Long.toString(SAMPLE.length()));
+        core.put("version", "InvalidVersion");
+        core.put("absolute-offset", "0");
+        core.put("origin", "");
+        ArchiveRecordHeader header = new ARCRecordMetaData("invalid", core);
+        SolrRecord solr = SolrRecordFactory.createFactory(null).createRecord();
+        InputStream in = new BufferedInputStream(new FileInputStream(SAMPLE), (int) SAMPLE.length());
+        in.mark((int) SAMPLE.length());
+        ha.analyse("source", header, new HTTPHeader(),in, solr);
+        return solr;
+    }
+}

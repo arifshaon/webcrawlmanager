@@ -33,3 +33,6 @@ chrome-profile*/
 
 # Local-only project rules; not for GitHub
 CLAUDE.md
+
+# Java warc-indexer fork: build output only, never the jar
+warc-indexer/target/
