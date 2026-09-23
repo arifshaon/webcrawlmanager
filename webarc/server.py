@@ -46,6 +46,7 @@ import yaml
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import collections as colls
 from . import metadata as md
 from . import resources
 from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
@@ -556,10 +557,13 @@ def _metadata_document(row: dict) -> dict:
     seeds = [{"url": str(s.get("url"))} for s in config.get("seeds", [])
              if isinstance(s, dict) and s.get("url")]
     crawl_dir = _crawl_dir(row)
+    collection = _collection_of(row)
     return md.document(
         job_id=row["id"], kind=row.get("kind", "crawl"), name=row["name"],
         operator=_job_operator(config), seeds=seeds,
-        metadata=md.from_config(config), existing=md.read_document(crawl_dir))
+        metadata=md.from_config(config), existing=md.read_document(crawl_dir),
+        inherited=colls.inherited_fields(collection),
+        collection=colls.brief(collection))
 
 
 def _write_metadata(row: dict) -> dict:
@@ -572,6 +576,128 @@ def _write_metadata(row: dict) -> dict:
     except OSError as exc:
         log.warning("Could not write metadata for crawl %s: %s", row["id"], exc)
     return doc
+
+
+# ---- collections -----------------------------------------------------------
+
+def _collection_of(row: dict | None) -> dict | None:
+    return _store().get_collection((row or {}).get("collection_id"))
+
+
+def _collection_view(row: dict, counts: dict | None = None,
+                     with_bytes: bool = True) -> dict:
+    counts = counts if counts is not None else _store().collection_counts()
+    entry = counts.get(int(row["id"]), {"jobs": 0, "by_status": {}, "last_activity": None})
+    root = Path(row["root_dir"])
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "description": row.get("description") or "",
+        "root_dir": str(root),
+        "metadata": list(row.get("metadata") or []),
+        "metadata_fields": len(row.get("metadata") or []),
+        "inherited_by_jobs": colls.inherited_fields(row),
+        "jobs": entry["jobs"],
+        "by_status": entry["by_status"],
+        "active_jobs": sum(n for status, n in entry["by_status"].items()
+                           if status in ("running", "paused", "blocked", "stopping")),
+        "last_activity": entry["last_activity"] or row.get("updated_at"),
+        "bytes": _dir_size(root) if with_bytes and root.exists() else 0,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _collection_metadata_from(payload: dict) -> list[dict] | None:
+    if "metadata" not in payload:
+        return None
+    raw = payload.get("metadata")
+    try:
+        if isinstance(raw, dict) and ("job" in raw or "seeds" in raw):
+            raw = raw.get("job")
+        return md.normalise_fields(raw)
+    except ValueError as exc:
+        raise HTTPException(400, f"metadata: {exc}") from exc
+
+
+def _create_collection(payload: dict) -> dict:
+    """Make a collection: its row, its directory and its collection.json."""
+    try:
+        name = colls.validate_name(payload.get("name"))
+        description = colls.validate_description(payload.get("description"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    metadata = _collection_metadata_from(payload) or []
+    slug = colls.slugify(name)
+    if _store().find_collection(slug):
+        raise HTTPException(409, f"a collection with the identifier '{slug}' already "
+                                 "exists; choose another name")
+    root = colls.collection_root(_storage_root_for(payload.get("storage_dir")), slug)
+    try:
+        collection_id = _store().create_collection(slug, name, description,
+                                                   str(root), metadata)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    row = _store().get_collection(collection_id)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        colls.write_document(root, colls.document(row, []))
+    except OSError as exc:
+        raise HTTPException(500, f"could not create the collection's directory: {exc}") from exc
+    return row
+
+
+def _resolve_collection(payload: dict) -> dict | None:
+    """The collection a create request names, made if it asks for a new one.
+
+    ``collection_id`` names one by id; ``collection`` by id, identifier or
+    name; ``new_collection`` is a {name, description?, metadata?} to make
+    first. A name that matches nothing is an error, not a new collection:
+    a typo must not file a job in a collection of its own.
+    """
+    if payload.get("new_collection"):
+        spec = payload["new_collection"]
+        if not isinstance(spec, dict):
+            raise HTTPException(400, "new_collection must be an object with a name")
+        return _create_collection(spec)
+    reference = payload.get("collection_id")
+    if reference in (None, ""):
+        reference = payload.get("collection")
+    if reference in (None, ""):
+        return None
+    row = _store().find_collection(reference)
+    if not row:
+        raise HTTPException(404, f"collection not found: {reference}")
+    return row
+
+
+def _job_home(collection: dict | None, storage_root: Path, crawl_id: int) -> Path:
+    """A job's directory: under its collection when it has one."""
+    if collection:
+        return colls.job_home(collection["root_dir"], crawl_id)
+    return storage_root / str(crawl_id)
+
+
+def _refresh_collection_document(collection: dict | None) -> None:
+    """Keep collection.json's list of jobs current."""
+    if not collection:
+        return
+    row = _store().get_collection(collection["id"]) or collection
+    root = Path(row["root_dir"])
+    try:
+        colls.write_document(root, colls.document(
+            row, _store().crawls_in_collection(row["id"]),
+            existing=colls.read_document(root)))
+    except OSError as exc:
+        log.warning("Could not write collection.json for %s: %s", row.get("slug"), exc)
+
+
+def _require_collection(collection_id: int) -> dict:
+    row = _store().get_collection(collection_id)
+    if not row:
+        raise HTTPException(404, "collection not found")
+    return row
 
 
 def _monitor() -> resources.ResourceMonitor:
@@ -698,6 +824,7 @@ def _crawl_view(row: dict) -> dict:
         "output_dir": str(crawl_dir),
         "has_selection": (crawl_dir / "pages" / "selection.html").is_file(),
         "theme": _theme_name_of(row),
+        "collection": colls.brief(_collection_of(row)),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
@@ -892,14 +1019,17 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         # Resolved before the row exists: a location that cannot serve
         # should fail the request, not leave a crawl pointing nowhere.
         storage_root = _storage_root_for(payload.get("storage_dir"))
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="", seeds_total=1,
-            kind=KIND_RECORDING)
-        crawl_dir = storage_root / str(crawl_id)
+            kind=KIND_RECORDING,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id)
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
 
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
@@ -935,15 +1065,17 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "seeds": [{"url": facebook["page_url"]}],
             "metadata": _metadata_from(payload, [facebook["page_url"]]),
         }
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="", seeds_total=1,
             kind=KIND_FACEBOOK,
-        )
-        crawl_dir = storage_root / str(crawl_id)
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id)
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(
             status_code=201,
@@ -1072,15 +1204,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             except ValueError as exc:
                 raise HTTPException(400, f"metadata: {exc}") from exc
         # create once to obtain the id, then point the config at its own dir
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="",
-            seeds_total=len(config["seeds"]))
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config["seeds"]),
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id)
         config["output_dir"] = str(crawl_dir)
         config.setdefault("crawl_name", name)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
 
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
@@ -1247,14 +1382,17 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json = {"instagram": instagram,
                        "seeds": [{"url": u} for u in config.targets],
                        "metadata": _metadata_from(payload, list(config.targets))}
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config_json, output_dir="",
-            seeds_total=len(config.targets), kind=KIND_INSTAGRAM)
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config.targets), kind=KIND_INSTAGRAM,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id)
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
@@ -1334,14 +1472,17 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json = {"youtube": youtube,
                        "seeds": [{"url": u} for u in config.targets],
                        "metadata": _metadata_from(payload, list(config.targets))}
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config_json, output_dir="",
-            seeds_total=len(config.targets), kind=KIND_YOUTUBE)
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config.targets), kind=KIND_YOUTUBE,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id)
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
@@ -1417,14 +1558,17 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json = {"x": x,
                        "seeds": [{"url": u} for u in config.targets],
                        "metadata": _metadata_from(payload, list(config.targets))}
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config_json, output_dir="",
-            seeds_total=len(config.targets), kind=KIND_X)
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config.targets), kind=KIND_X,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id)
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
@@ -1496,9 +1640,11 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                     409, "crawl is still running; stop it first, or delete "
                          "with force to end its worker")
             _terminate(row["pid"])
+        collection = _collection_of(row)
         if purge:
             shutil.rmtree(_crawl_dir(row), ignore_errors=True)
         _store().delete_crawl(crawl_id)
+        _refresh_collection_document(collection)
         return {"ok": True, "purged": purge, "forced": force}
 
     @app.get("/captures/{crawl_id}/{kind}/{path:path}")
@@ -1754,6 +1900,120 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 _store().set_setting(resources.SETTING_PREFIX + key, text)
         return read_settings()
 
+    # -- collections -------------------------------------------------------
+    @app.get("/api/collections")
+    def list_collections():
+        counts = _store().collection_counts()
+        return [_collection_view(r, counts) for r in _store().list_collections()]
+
+    @app.post("/api/collections")
+    def create_collection(payload: dict = Body(...)):
+        row = _create_collection(payload)
+        return JSONResponse(status_code=201, content=_collection_view(row))
+
+    @app.get("/api/collections/{collection_id}")
+    def get_collection(collection_id: int):
+        row = _require_collection(collection_id)
+        view = _collection_view(row)
+        view["job_list"] = [_crawl_view(r) for r in
+                            _store().crawls_in_collection(collection_id)]
+        return view
+
+    @app.put("/api/collections/{collection_id}")
+    def update_collection(collection_id: int, payload: dict = Body(...)):
+        """Rename or redescribe a collection. The identifier and directory
+        never change; every job's metadata.json is rewritten with what it
+        now inherits."""
+        row = _require_collection(collection_id)
+        try:
+            name = colls.validate_name(payload["name"]) if "name" in payload else None
+            description = (colls.validate_description(payload.get("description"))
+                           if "description" in payload else None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        metadata = _collection_metadata_from(payload)
+        _store().update_collection(collection_id, name=name,
+                                   description=description, metadata=metadata)
+        row = _store().get_collection(collection_id)
+        _refresh_collection_document(row)
+        for job in _store().crawls_in_collection(collection_id):
+            _write_metadata(job)
+        return _collection_view(row)
+
+    @app.get("/api/collections/{collection_id}/jobs")
+    def collection_jobs(collection_id: int):
+        _require_collection(collection_id)
+        return [_crawl_view(r) for r in _store().crawls_in_collection(collection_id)]
+
+    @app.get("/api/collections/{collection_id}/impact")
+    def collection_impact(collection_id: int):
+        """What deleting this collection would do, before it is done."""
+        row = _require_collection(collection_id)
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)]
+        root = Path(row["root_dir"])
+        return colls.collection_impact(
+            row, jobs, bytes_on_disk=_dir_size(root) if root.exists() else 0,
+            running=[j["id"] for j in jobs if _worker_alive(j)])
+
+    @app.delete("/api/collections/{collection_id}")
+    def delete_collection(collection_id: int, purge: bool = False,
+                          force: bool = False):
+        """Delete a collection and its jobs, as the impact report said.
+
+        A running job stops the deletion unless forced; purge removes the
+        collection's directory and everything under it from disk.
+        """
+        row = _require_collection(collection_id)
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)]
+        alive = [j for j in jobs if _worker_alive(j)]
+        if alive and not force:
+            raise HTTPException(
+                409, f"{len(alive)} job(s) in this collection are still running; "
+                     "stop them first, or delete with force to end their workers")
+        for job in alive:
+            _terminate(job["pid"])
+        removed = _store().delete_collection(collection_id)
+        if purge:
+            shutil.rmtree(Path(row["root_dir"]), ignore_errors=True)
+        return {"ok": True, "purged": purge, "forced": force,
+                "jobs_removed": removed}
+
+    @app.post("/api/collections/{collection_id}/replay")
+    def replay_collection(collection_id: int):
+        """Replay every WARC of every job in the collection as one archive."""
+        global _PYWB
+        from .replay import ReplayServer, build_replay_site
+        row = _require_collection(collection_id)
+        warcs: list[Path] = []
+        for job in _store().crawls_in_collection(collection_id):
+            job_dir = _crawl_dir(job)
+            warcs += sorted(job_dir.glob("*.warc.gz")) + sorted(job_dir.glob("*.warc"))
+        if not warcs:
+            raise HTTPException(409, "no WARC files in this collection yet")
+        coll = f"collection-{row['slug']}"
+        try:
+            build_replay_site(warcs, _REPLAY_ROOT / coll)
+        except Exception as exc:
+            raise HTTPException(500, f"replay setup failed: {exc}") from exc
+        if _PYWB is None or not _PYWB.is_running():
+            server = ReplayServer(_REPLAY_ROOT, port=8091)
+            try:
+                server.start_background()
+            except OSError as exc:
+                raise HTTPException(
+                    500, f"the replay server could not start: {exc}") from exc
+            _PYWB = server
+        return {"collection": coll, "replay_url": _PYWB.replay_url(coll),
+                "warc_files": len(warcs)}
+
+    @app.get("/api/crawls/{crawl_id}/impact")
+    def crawl_impact(crawl_id: int):
+        """What deleting this job would do, before it is done."""
+        row = _reconcile(_require(crawl_id))
+        collection = _collection_of(row)
+        siblings = _store().crawls_in_collection(collection["id"]) if collection else []
+        return colls.job_impact(collection, row, siblings)
+
     @app.get("/api/storage")
     def storage():
         crawls = _store().list_crawls()
@@ -1764,10 +2024,15 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             total += b
             per_crawl.append({"id": r["id"], "name": r["name"], "bytes": b})
         usage = shutil.disk_usage(_WARC_ROOT)
+        per_collection = [
+            {"id": c["id"], "name": c["name"], "slug": c["slug"],
+             "bytes": _dir_size(Path(c["root_dir"])) if Path(c["root_dir"]).exists() else 0}
+            for c in _store().list_collections()]
         return {
             "warc_root": str(_WARC_ROOT),
             "total_bytes": total,
             "per_crawl": per_crawl,
+            "per_collection": per_collection,
             "disk": {"total": usage.total, "used": usage.used,
                      "free": usage.free},
             "default_disk": resources.disk_snapshot(_default_storage_root()),

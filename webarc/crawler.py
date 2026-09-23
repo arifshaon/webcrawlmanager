@@ -536,8 +536,10 @@ def seed_metadata(crawl: CrawlConfig, seed_url: str) -> list[dict]:
     job's, with the capture's own facts filling anything left empty."""
     from .metadata import defaults_for, merge, with_defaults
     meta = getattr(crawl, "metadata", None) or {"job": [], "seeds": {}}
+    inherited = list(getattr(crawl, "inherited_metadata", None) or [])
     return with_defaults(
-        merge(meta.get("job", []), meta.get("seeds", {}).get(seed_url)),
+        merge(merge(inherited, meta.get("job", [])),
+              meta.get("seeds", {}).get(seed_url)),
         defaults_for("crawl", crawl.crawl_name, crawl.operator, seed_url))
 
 
@@ -548,7 +550,9 @@ def write_crawl_metadata(crawl: CrawlConfig, job_id=None) -> None:
     write_document(crawl.output_dir, document(
         job_id=job_id, kind="crawl", name=crawl.crawl_name,
         operator=crawl.operator, seeds=[{"url": s.url} for s in crawl.seeds],
-        metadata=meta, existing=read_document(crawl.output_dir)))
+        metadata=meta, existing=read_document(crawl.output_dir),
+        inherited=list(getattr(crawl, "inherited_metadata", None) or []),
+        collection=getattr(crawl, "collection", None)))
 
 
 def _env_setting(key: str) -> str | None:

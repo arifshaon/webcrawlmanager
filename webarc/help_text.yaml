@@ -242,3 +242,13 @@ tai-key: >-
   The API key, kept in this dashboard's own database and never written into a capture. Leave the field empty to keep the stored key; the server's ANTHROPIC_API_KEY environment variable is used when none is stored.
 tai-max-calls: >-
   A ceiling on how many times one job may ask the model, so a runaway crawl cannot run up a bill. After it, the rules decide the rest of that job.
+
+# Collections
+job-collection: >-
+  The collection this job belongs to. Its files are placed under the collection's own directory, and it inherits the collection's description for anything it does not say itself. Leave it empty for a job that stands alone; choose "New collection…" to make one here.
+c-name: >-
+  What the collection is called in lists and in the files it produces. Its identifier for directories and archive records is taken from this name when it is created and never changes afterwards, so rename freely.
+c-storage: >-
+  Where the collection's directory is created. Leave it empty for the default folder from Settings. Every job run against the collection is placed under this directory.
+c-metadata: >-
+  A description of the whole collection, in the same fields a job has. Each job in the collection takes these values for any element it does not set itself, and carries a Relation naming the collection.

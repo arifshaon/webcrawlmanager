@@ -177,11 +177,17 @@ class TargetRowTests(DashboardTestCase):
 
 
 class StorageFieldTests(DashboardTestCase):
+    JOB_STORAGE_FIELDS = ["f-storage", "fb-storage", "ig-storage",
+                          "r-storage", "x-storage", "yt-storage"]
+
     def test_every_job_form_can_name_its_own_location(self):
         fields = re.findall(r'id="([a-z-]+)" class="storage-dir"', self.markup)
 
-        self.assertEqual(sorted(fields), ["f-storage", "fb-storage",
-                                          "ig-storage", "r-storage", "x-storage", "yt-storage"])
+        # The collection form has a storage field of its own (c-storage);
+        # every job form has one too.
+        self.assertEqual(sorted(f for f in fields if f != "c-storage"),
+                         self.JOB_STORAGE_FIELDS)
+        self.assertIn("c-storage", fields)
 
     def test_every_storage_field_has_a_browse_button(self):
         """A path typed from memory is a path typed wrong."""
@@ -207,10 +213,47 @@ class StorageFieldTests(DashboardTestCase):
         self.assertIn("if (!storageRootEdited)", self.script)
 
     def test_each_one_is_sent_when_it_is_filled_in(self):
-        for field in ("f-storage", "fb-storage", "ig-storage", "r-storage", "x-storage", "yt-storage"):
+        for field in self.JOB_STORAGE_FIELDS + ["c-storage"]:
             with self.subTest(field=field):
                 self.assertIn(f'$("#{field}").value.trim()', self.script)
-        self.assertEqual(self.script.count("body.storage_dir = "), 6)
+        # six job forms and the collection form each send their location
+        self.assertEqual(self.script.count("body.storage_dir = "), 7)
+
+
+class CollectionFieldTests(DashboardTestCase):
+    """A job can be filed in a collection from every form, and the choice
+    travels with the request."""
+
+    def test_every_job_form_has_a_collection_picker(self):
+        pickers = re.findall(r'id="([a-z-]+)" class="collection-pick"', self.markup)
+
+        self.assertEqual(sorted(pickers), ["f-collection", "fb-collection", "ig-collection",
+                                           "r-collection", "x-collection", "yt-collection"])
+
+    def test_every_picker_can_make_a_new_collection(self):
+        pickers = set(re.findall(r'id="([a-z-]+)" class="collection-pick"', self.markup))
+        buttons = set(re.findall(r'class="secondary collection-new-btn" data-target="([^"]+)"',
+                                 self.markup))
+
+        self.assertEqual(pickers - buttons, set())
+
+    def test_each_picker_is_sent_when_chosen(self):
+        for field in ("f", "fb", "ig", "r", "x", "yt"):
+            with self.subTest(field=field):
+                self.assertIn(f'if ($("#{field}-collection").value) body.collection_id', self.script)
+
+    def test_the_job_list_filters_by_collection(self):
+        self.assertIn('id="jf-collection"', self.markup)
+        self.assertIn('"jf-collection"', self.script)
+        self.assertIn('collection: $("#jf-collection").value', self.script)
+
+    def test_the_collections_page_exists_and_is_reachable(self):
+        self.assertIn(("collections"), [name for _, name in self.views()])
+        self.assertIn('data-view="collections"', self.markup)
+        for handler in ("collectionJobs", "describeCollection", "replayCollection",
+                        "delCollection", "createCollection", "newCollectionFor"):
+            with self.subTest(handler=handler):
+                self.assertIn(f"function {handler}(", self.script)
 
 
 class HelpTextTests(DashboardTestCase):

@@ -87,6 +87,7 @@ Key capabilities:
 - [YouTube capture](#youtube-capture)
 - [Automated crawling](#automated-crawling)
 - [Theme-based capture](#theme-based-capture)
+- [Collections](#collections)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
 - [Replay](#replay-replaywebpage)
@@ -830,6 +831,68 @@ the counts, the estimated tokens spent and the waits. The job list shows
 kept, left out and held for review as the run goes, and a **Selection**
 button opens a page built from the log. The API key is kept in the
 dashboard's database and never written into a capture.
+
+## Collections
+
+A collection groups the jobs that belong together and gives them a directory
+of their own. It is the unit a curator thinks in ("the 2026 election sites",
+"the library's own channels") and, in a later version, the unit within which
+a page already captured is not stored again unless it has changed.
+
+Every collection has:
+
+- a **name**, which can change, and an **identifier** derived from the name
+  when the collection is created, which never changes because it is written
+  into directory paths and archive records;
+- a **directory** of its own, `collections/<identifier>/` under the storage
+  root (or under a location of your choosing), holding `collection.json` and
+  a `jobs/` folder that every job run against the collection is placed in;
+- **descriptive metadata** in the same fields a job has (the Dublin Core
+  elements plus Collector, repeatable, custom fields allowed). Each job in
+  the collection inherits these values for every element it does not set
+  itself, the way a seed inherits its job's, and carries a `Relation` naming
+  the collection and a `Collection` field carrying its identifier, so a WARC
+  that leaves the folder still says which collection it came from.
+
+From the dashboard, the **Collections** page lists every collection with its
+job count by status, size on disk and last activity, and offers *Jobs* (the
+job list filtered to that collection), *Describe* (its metadata), *Replay*
+(every WARC in the collection as one archive) and *Delete*. A new collection
+is made on that page, or from any job form with **New collection…** beside
+the collection picker. The job list can be filtered by collection, and each
+job's row names the collection it belongs to.
+
+From the command line:
+
+```bash
+swm collection create "QNL 2026" --description "The library's own sites" \
+    --metadata-json '[{"name": "Subject", "value": "Libraries"}]'
+swm collection create "Elections" --metadata-file elections-metadata.csv
+swm collection list
+swm collection show qnl-2026
+swm crawl config.yaml --collection qnl-2026        # the job goes under the collection
+swm record https://example.org/ --collection "QNL 2026"
+swm collection delete qnl-2026                     # states what it means, then asks
+```
+
+`--collection` accepts a name, an identifier or an id. A name that matches no
+collection is an error rather than a new collection, so a typo never files a
+job in a collection of its own; add `--create-collection` to make it on the
+spot. A job run from the command line against a collection is registered in
+the dashboard's state file and listed with the collection's other jobs.
+Metadata for `create` is a JSON array of `{name, value}` fields, or a file:
+JSON in that shape, or a metadata sheet as the dashboard exports one.
+
+**Deleting.** A job or a collection can always be deleted, but what that
+means is stated first and nothing changes until you confirm. Deleting a
+collection removes its jobs from the dashboard; with `--purge` (or the
+dashboard's second prompt) their files are deleted from disk as well,
+otherwise the files stay where they are. Once cross-job deduplication
+exists, deleting a job that later jobs refer into will leave those pages
+without their content until they are re-crawled; the impact report will name
+the jobs and records affected. In this version nothing refers into a job
+from outside it, and the report says so. A collection is not deleted while
+one of its jobs is running unless the deletion is forced.
 
 ## Browser modes
 

@@ -59,6 +59,17 @@ CREATE TABLE IF NOT EXISTS crawls (
     updated_at   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS collections (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug          TEXT NOT NULL UNIQUE,
+    name          TEXT NOT NULL,
+    description   TEXT NOT NULL DEFAULT '',
+    root_dir      TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '[]',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key        TEXT PRIMARY KEY,
     value      TEXT NOT NULL,
@@ -192,6 +203,8 @@ class Store:
             if "kind" not in cols:
                 c.execute("ALTER TABLE crawls ADD COLUMN kind TEXT NOT NULL "
                           "DEFAULT 'crawl'")
+            if "collection_id" not in cols:
+                c.execute("ALTER TABLE crawls ADD COLUMN collection_id INTEGER")
             progress_cols = {
                 r["name"] for r in c.execute("PRAGMA table_info(progress)")
             }
@@ -229,15 +242,16 @@ class Store:
     # -- crawl lifecycle -----------------------------------------------------
 
     def create_crawl(self, name: str, config: dict, output_dir: str,
-                     seeds_total: int, kind: str = KIND_CRAWL) -> int:
+                     seeds_total: int, kind: str = KIND_CRAWL,
+                     collection_id: Optional[int] = None) -> int:
         ts = _now()
         with self._conn() as c:
             cur = c.execute(
                 "INSERT INTO crawls (name, kind, config_json, output_dir, "
-                "status, control, seeds_total, created_at, updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "status, control, seeds_total, created_at, updated_at, "
+                "collection_id) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (name, kind, json.dumps(config), output_dir, PENDING,
-                 CTRL_NONE, seeds_total, ts, ts),
+                 CTRL_NONE, seeds_total, ts, ts, collection_id),
             )
             crawl_id = cur.lastrowid
             for idx, seed in enumerate(config.get("seeds", []), start=1):
@@ -598,6 +612,122 @@ class Store:
         with self._conn() as c:
             c.execute("DELETE FROM progress WHERE crawl_id=?", (crawl_id,))
             c.execute("DELETE FROM crawls WHERE id=?", (crawl_id,))
+
+    # -- collections -------------------------------------------------------
+    @staticmethod
+    def _collection_row(row) -> dict:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json", "[]") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            item["metadata"] = []
+            item.pop("metadata_json", None)
+        if not isinstance(item["metadata"], list):
+            item["metadata"] = []
+        return item
+
+    def create_collection(self, slug: str, name: str, description: str,
+                          root_dir: str, metadata: list[dict] | None = None) -> int:
+        ts = _now()
+        with self._conn() as c:
+            try:
+                cur = c.execute(
+                    "INSERT INTO collections (slug, name, description, root_dir, "
+                    "metadata_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                    (slug, name, description, root_dir,
+                     json.dumps(list(metadata or [])), ts, ts))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError(
+                    f"a collection with the identifier '{slug}' already exists") from exc
+            return cur.lastrowid
+
+    def get_collection(self, collection_id) -> Optional[dict]:
+        if collection_id in (None, ""):
+            return None
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM collections WHERE id=?",
+                            (int(collection_id),)).fetchone()
+            return self._collection_row(row) if row else None
+
+    def find_collection(self, reference: object) -> Optional[dict]:
+        """A collection by id, slug or name (name matched case-insensitively)."""
+        text = str(reference or "").strip()
+        if not text:
+            return None
+        with self._conn() as c:
+            row = None
+            if text.isdigit():
+                row = c.execute("SELECT * FROM collections WHERE id=?",
+                                (int(text),)).fetchone()
+            if row is None:
+                row = c.execute("SELECT * FROM collections WHERE slug=?",
+                                (text,)).fetchone()
+            if row is None:
+                row = c.execute("SELECT * FROM collections WHERE lower(name)=lower(?)",
+                                (text,)).fetchone()
+            return self._collection_row(row) if row else None
+
+    def list_collections(self) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM collections ORDER BY lower(name)").fetchall()
+            return [self._collection_row(r) for r in rows]
+
+    def update_collection(self, collection_id: int, *, name: str | None = None,
+                          description: str | None = None,
+                          metadata: list[dict] | None = None) -> None:
+        sets, values = [], []
+        if name is not None:
+            sets.append("name=?"); values.append(name)
+        if description is not None:
+            sets.append("description=?"); values.append(description)
+        if metadata is not None:
+            sets.append("metadata_json=?"); values.append(json.dumps(list(metadata)))
+        if not sets:
+            return
+        sets.append("updated_at=?"); values.append(_now())
+        values.append(int(collection_id))
+        with self._conn() as c:
+            c.execute(f"UPDATE collections SET {', '.join(sets)} WHERE id=?", values)
+
+    def delete_collection(self, collection_id: int) -> list[int]:
+        """Remove a collection and its jobs' rows; returns the job ids removed."""
+        with self._conn() as c:
+            ids = [int(r["id"]) for r in c.execute(
+                "SELECT id FROM crawls WHERE collection_id=?", (int(collection_id),))]
+            for crawl_id in ids:
+                c.execute("DELETE FROM progress WHERE crawl_id=?", (crawl_id,))
+            c.execute("DELETE FROM crawls WHERE collection_id=?", (int(collection_id),))
+            c.execute("DELETE FROM collections WHERE id=?", (int(collection_id),))
+            return ids
+
+    def crawls_in_collection(self, collection_id: int) -> list[dict]:
+        with self._conn() as c:
+            rows = c.execute("SELECT * FROM crawls WHERE collection_id=? ORDER BY id",
+                             (int(collection_id),)).fetchall()
+            return [dict(r) for r in rows]
+
+    def set_crawl_collection(self, crawl_id: int, collection_id: Optional[int]) -> None:
+        with self._conn() as c:
+            c.execute("UPDATE crawls SET collection_id=?, updated_at=? WHERE id=?",
+                      (collection_id, _now(), int(crawl_id)))
+
+    def collection_counts(self) -> dict[int, dict]:
+        """Per collection: how many jobs, by status, and the last activity."""
+        counts: dict[int, dict] = {}
+        with self._conn() as c:
+            rows = c.execute(
+                "SELECT collection_id, status, COUNT(*) AS n, MAX(updated_at) AS last "
+                "FROM crawls WHERE collection_id IS NOT NULL "
+                "GROUP BY collection_id, status").fetchall()
+        for row in rows:
+            entry = counts.setdefault(int(row["collection_id"]),
+                                      {"jobs": 0, "by_status": {}, "last_activity": None})
+            entry["jobs"] += int(row["n"])
+            entry["by_status"][str(row["status"])] = int(row["n"])
+            if row["last"] and (entry["last_activity"] is None
+                                or row["last"] > entry["last_activity"]):
+                entry["last_activity"] = row["last"]
+        return counts
 
 
 def wait_for_db(path: str | Path, tries: int = 50) -> None:

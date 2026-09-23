@@ -203,22 +203,27 @@ def warc_fields_text(fields: list[dict]) -> bytes:
 
 def document(*, job_id, kind: str, name: str, operator: str,
              seeds: list[dict], metadata: dict,
-             when: datetime | None = None, existing: dict | None = None) -> dict:
+             when: datetime | None = None, existing: dict | None = None,
+             inherited: list[dict] | None = None,
+             collection: dict | None = None) -> dict:
     """The metadata.json for one job.
 
     ``seeds`` is a list of {"url", "label"?}. Each seed's ``effective``
     fields are what the outputs carry: its own values over the job's, with
     defaults for anything still empty. ``existing`` keeps the first
-    written_at and the WARC-time record across later edits.
+    written_at and the WARC-time record across later edits. ``inherited``
+    is what the job's collection contributes, underneath the job's own
+    values; ``collection`` names it.
     """
     when = when or datetime.now(timezone.utc)
     stamp = when.isoformat(timespec="seconds")
     job_fields = list(metadata.get("job", []))
+    inherited = list(inherited or [])
     seed_docs = []
     for seed in seeds:
         url = str(seed.get("url") or "")
         own = list(metadata.get("seeds", {}).get(url, []))
-        effective = with_defaults(merge(job_fields, own),
+        effective = with_defaults(merge(merge(inherited, job_fields), own),
                                   defaults_for(kind, name, operator, url, when))
         entry = {"url": url, "fields": own, "effective": effective}
         if seed.get("label"):
@@ -240,6 +245,7 @@ def document(*, job_id, kind: str, name: str, operator: str,
                  "Identifier, Date, Type and Collector filled from the capture "
                  "where left empty. A WARC written at capture time keeps the "
                  "values of that moment; this file is current."),
+        **({"collection": collection, "inherited": inherited} if collection else {}),
     }
 
 

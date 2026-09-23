@@ -290,6 +290,17 @@
   .seed .cur { color: var(--faint); font-size: 11px; margin-top: 2px; }
   .seed .st { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; white-space: nowrap; }
   .empty { padding: 40px; text-align: center; color: var(--muted); }
+  .coll-chip { background: var(--accent-bg); color: var(--accent); }
+  .coll-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .coll-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 11px;
+    text-transform: uppercase; letter-spacing: .05em; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
+  .coll-table td { padding: 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .coll-table .coll-name { font-weight: 600; }
+  .coll-table .coll-desc { color: var(--muted); font-size: 12px; margin-top: 2px; max-width: 42ch; }
+  .coll-table .coll-actions { white-space: nowrap; }
+  .coll-table .coll-actions button { margin-right: 4px; }
+  .coll-status { color: var(--muted); font-size: 12px; }
+  .coll-new { margin-top: 18px; }
   .empty code { font-family: var(--mono); }
   #new-form, .job-form { border: 1px solid var(--rule); border-radius: var(--radius);
     overflow: hidden; background: var(--paper); box-shadow: var(--shadow); }
@@ -413,6 +424,7 @@
 <div class="shell">
 <nav class="sidebar" aria-label="Sections">
   <button type="button" class="nav-item active" data-view="jobs">Jobs<span class="nav-count" id="nav-active"></span></button>
+  <button type="button" class="nav-item" data-view="collections">Collections</button>
   <button type="button" class="nav-item" data-view="new">New job</button>
   <button type="button" class="nav-item" data-view="settings">Settings</button>
 </nav>
@@ -435,6 +447,10 @@
         <option value="x">X</option>
         <option value="youtube">YouTube</option>
       </select>
+      <select id="jf-collection" aria-label="Collection">
+        <option value="">All collections</option>
+        <option value="none">Not in a collection</option>
+      </select>
       <select id="jf-status" aria-label="Job status">
         <option value="">Any status</option>
         <option value="active">Active</option>
@@ -451,6 +467,39 @@
       <span class="jf-count" id="jf-count"></span>
     </div>
     <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
+  </section>
+  <section class="view hidden" id="view-collections">
+    <div class="eyebrow">Collections</div>
+    <span class="help">A collection groups the jobs that belong together and gives them a directory of their own. Each job in it inherits the collection's description for anything it does not say itself.</span>
+    <div class="manifest" id="collection-list"><div class="empty">Loading…</div></div>
+    <div class="eyebrow coll-new">New collection</div>
+    <form id="collection-form" onsubmit="return false">
+      <div class="form-grid">
+        <div class="field">
+          <label class="field-label" for="c-name">Name <button type="button" class="tip" aria-label="What is this for?" data-help="c-name">?</button></label>
+          <input type="text" id="c-name" placeholder="e.g. Qatar news sites 2026">
+        </div>
+        <div class="field wide">
+          <label class="field-label" for="c-description">Description <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+          <textarea id="c-description" rows="2" placeholder="What this collection is for, in a sentence or two"></textarea>
+        </div>
+        <div class="field wide">
+          <label class="field-label" for="c-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="c-storage">?</button></label>
+          <div class="storage-row">
+            <input type="text" id="c-storage" class="storage-dir" placeholder="leave empty for the default location">
+            <button type="button" class="secondary browse-btn" data-target="c-storage">Browse…</button>
+          </div>
+        </div>
+        <div class="field wide">
+          <label class="field-label">Describe the collection <button type="button" class="tip" aria-label="What is this for?" data-help="c-metadata">?</button></label>
+          <div class="md-editor" id="c-metadata"></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="c-create-btn">Create collection</button>
+        <span class="msg" id="c-msg"></span>
+      </div>
+    </form>
   </section>
   <section class="view hidden" id="view-settings">
     <div class="eyebrow">Storage</div>
@@ -770,6 +819,13 @@
               </label>
             </div>
             <div class="field wide">
+              <label class="field-label" for="f-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
+              <div class="storage-row">
+                <select id="f-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+                <button type="button" class="secondary collection-new-btn" data-target="f-collection">New collection…</button>
+              </div>
+            </div>
+            <div class="field wide">
               <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="f-storage">?</button></label>
               <div class="storage-row">
               <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty for the default location">
@@ -829,6 +885,13 @@
               <option value="headed">Headed — managed Chrome (recommended)</option>
               <option value="native">Native — system Chrome via CDP (advanced)</option>
             </select>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="r-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
+            <div class="storage-row">
+              <select id="r-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <button type="button" class="secondary collection-new-btn" data-target="r-collection">New collection…</button>
+            </div>
           </div>
           <div class="field wide">
             <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="r-storage">?</button></label>
@@ -894,6 +957,13 @@
               <option value="native">Native — system Chrome via CDP (advanced)</option>
             </select>
             <span class="help">SWM keeps a dedicated Facebook browser profile so your login can persist between captures.</span>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="fb-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
+            <div class="storage-row">
+              <select id="fb-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <button type="button" class="secondary collection-new-btn" data-target="fb-collection">New collection…</button>
+            </div>
           </div>
           <div class="field wide">
             <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="fb-storage">?</button></label>
@@ -1026,6 +1096,13 @@
               <option value="native">Native — your system Chrome via CDP (advanced)</option>
             </select>
             <span class="help">Either way SWM keeps a dedicated Instagram profile: sign in there once. With the browser method the window stays open for the capture, like a Facebook capture.</span>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="ig-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
+            <div class="storage-row">
+              <select id="ig-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <button type="button" class="secondary collection-new-btn" data-target="ig-collection">New collection…</button>
+            </div>
           </div>
           <div class="field wide">
             <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="ig-storage">?</button></label>
@@ -1166,6 +1243,13 @@
               <option value="Latest">Latest — newest first, as X served them</option>
               <option value="Top">Top — X's ranked selection</option>
             </select>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="x-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
+            <div class="storage-row">
+              <select id="x-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <button type="button" class="secondary collection-new-btn" data-target="x-collection">New collection…</button>
+            </div>
           </div>
           <div class="field wide">
             <label class="field-label" for="x-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="x-storage">?</button></label>
@@ -1311,6 +1395,13 @@
               <option value="480">Up to 480p</option>
               <option value="none">Metadata only — no video files</option>
             </select>
+          </div>
+          <div class="field wide">
+            <label class="field-label" for="yt-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
+            <div class="storage-row">
+              <select id="yt-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <button type="button" class="secondary collection-new-btn" data-target="yt-collection">New collection…</button>
+            </div>
           </div>
           <div class="field wide">
             <label class="field-label" for="yt-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="yt-storage">?</button></label>
@@ -1469,6 +1560,7 @@ const fmtBytes = b => {
 };
 const clone = value => value ? JSON.parse(JSON.stringify(value)) : value;
 let lastCrawls = [];          // the job list as last fetched; filters and the metadata editor read it
+let lastCollections = [];     // the collections as last fetched; pickers, the filter and the list read them
 const openState = new Set();
 // A theme on the automated crawl form: the fields are read and filled
 // through their "ct-" prefix.
@@ -1865,6 +1957,7 @@ async function startRecording() {
     if ($("#r-name").value.trim()) body.name = $("#r-name").value.trim();
     if ($("#r-operator").value.trim()) body.operator = $("#r-operator").value.trim();
     if ($("#r-storage").value.trim()) body.storage_dir = $("#r-storage").value.trim();
+    if ($("#r-collection").value) body.collection_id = Number($("#r-collection").value);
     body.metadata = metadataEditors.record.value();
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setRecMessage("Cancelled.", ""); return; }
@@ -1943,6 +2036,7 @@ async function startFacebook() {
   if ($("#fb-name").value.trim()) body.name = $("#fb-name").value.trim();
   if ($("#fb-operator").value.trim()) body.operator = $("#fb-operator").value.trim();
   if ($("#fb-storage").value.trim()) body.storage_dir = $("#fb-storage").value.trim();
+  if ($("#fb-collection").value) body.collection_id = Number($("#fb-collection").value);
   setFbMessage("Opening browser…");
   $("#facebook-start-btn").disabled = true;
   try {
@@ -2035,6 +2129,7 @@ async function startInstagram() {
   if ($("#ig-name").value.trim()) body.name = $("#ig-name").value.trim();
   if ($("#ig-operator").value.trim()) body.operator = $("#ig-operator").value.trim();
   if ($("#ig-storage").value.trim()) body.storage_dir = $("#ig-storage").value.trim();
+  if ($("#ig-collection").value) body.collection_id = Number($("#ig-collection").value);
   setMsg("Starting…");
   $("#instagram-start-btn").disabled = true;
   try {
@@ -2127,6 +2222,7 @@ async function startX() {
   if ($("#x-name").value.trim()) body.name = $("#x-name").value.trim();
   if ($("#x-operator").value.trim()) body.operator = $("#x-operator").value.trim();
   if ($("#x-storage").value.trim()) body.storage_dir = $("#x-storage").value.trim();
+  if ($("#x-collection").value) body.collection_id = Number($("#x-collection").value);
   setMsg("Starting…");
   $("#x-start-btn").disabled = true;
   try {
@@ -2231,6 +2327,7 @@ async function startYouTube() {
   if ($("#yt-name").value.trim()) body.name = $("#yt-name").value.trim();
   if ($("#yt-operator").value.trim()) body.operator = $("#yt-operator").value.trim();
   if ($("#yt-storage").value.trim()) body.storage_dir = $("#yt-storage").value.trim();
+  if ($("#yt-collection").value) body.collection_id = Number($("#yt-collection").value);
   setMsg("Starting…");
   $("#youtube-start-btn").disabled = true;
   try {
@@ -2485,6 +2582,142 @@ $("#ig-targets").addEventListener("change", () => metadataEditors.instagram.rend
 $("#x-targets").addEventListener("change", () => metadataEditors.x.render());
 $("#yt-targets").addEventListener("change", () => metadataEditors.youtube.render());
 
+// ---- collections ------------------------------------------------------------
+const collectionMetadata = new MetadataEditor($("#c-metadata"), {scopes: () => []});
+
+function collectionOptions(selected) {
+  return `<option value="">Not in a collection</option>` + lastCollections.map(c =>
+    `<option value="${Number(c.id)}"${String(c.id) === String(selected) ? " selected" : ""}>${escapeHtml(c.name)}</option>`).join("");
+}
+function fillCollectionPickers() {
+  $$(".collection-pick").forEach(select => {
+    const chosen = select.value;
+    select.innerHTML = collectionOptions(chosen);
+    if (chosen && !lastCollections.some(c => String(c.id) === chosen)) select.value = "";
+  });
+}
+function fillCollectionFilter() {
+  const select = $("#jf-collection");
+  const chosen = select.value;
+  select.innerHTML = `<option value="">All collections</option><option value="none">Not in a collection</option>`
+    + lastCollections.map(c => `<option value="${Number(c.id)}">${escapeHtml(c.name)} (${Number(c.jobs) || 0})</option>`).join("");
+  select.value = chosen;
+  if (select.value !== chosen) select.value = "";
+}
+function statusSummary(byStatus) {
+  const parts = Object.entries(byStatus || {}).sort().map(([k, n]) => `${n} ${escapeHtml(k)}`);
+  return parts.length ? parts.join(" · ") : "no jobs yet";
+}
+function renderCollections() {
+  const box = $("#collection-list");
+  if (!lastCollections.length) {
+    box.innerHTML = `<div class="empty">No collections yet. Create one below, or from any job form.</div>`;
+    return;
+  }
+  const rows = lastCollections.map(c => `
+    <tr>
+      <td><div class="coll-name">${escapeHtml(c.name)}</div>
+          ${c.description ? `<div class="coll-desc">${escapeHtml(c.description)}</div>` : ""}
+          <div class="coll-status">${escapeHtml(c.slug)} · ${Number(c.metadata_fields) || 0} metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}</div></td>
+      <td><div>${Number(c.jobs) || 0} job${Number(c.jobs) === 1 ? "" : "s"}</div>
+          <div class="coll-status">${statusSummary(c.by_status)}</div></td>
+      <td>${fmtBytes(Number(c.bytes) || 0)}</td>
+      <td class="coll-status">${escapeHtml(String(c.last_activity || "").slice(0, 16).replace("T", " "))}</td>
+      <td class="coll-actions">
+        <button type="button" class="secondary" onclick="collectionJobs(${Number(c.id)})">Jobs</button>
+        <button type="button" class="secondary" onclick="describeCollection(${Number(c.id)})">Describe</button>
+        <button type="button" class="secondary" onclick="replayCollection(${Number(c.id)})">Replay</button>
+        <button type="button" class="secondary" onclick="delCollection(${Number(c.id)})">Delete</button>
+      </td>
+    </tr>`).join("");
+  box.innerHTML = `<table class="coll-table"><thead><tr>
+      <th>Collection</th><th>Jobs</th><th>On disk</th><th>Last activity</th><th></th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+function collectionJobs(id) {
+  $("#jf-collection").value = String(id);
+  saveJobFilter();
+  renderJobList();
+  showView("jobs");
+}
+async function describeCollection(id) {
+  const msg = $("#metadata-msg");
+  msg.textContent = ""; msg.className = "msg";
+  try {
+    const view = await api(`/api/collections/${id}`);
+    metadataJobId = null; metadataCollectionId = id;
+    modalScopes = [];
+    modalMetadata.load({job: view.metadata || [], seeds: {}});
+    $("#metadata-title").textContent = "Describe this collection";
+    $("#metadata-sub").textContent = `${view.name} · every job in it inherits these values for elements it does not set itself; their metadata.json files are rewritten on save.`;
+    $("#metadata-export").hidden = true;
+    $("#metadata-overlay").classList.add("open");
+  } catch (e) { alert("Could not load the collection: " + e.message); }
+}
+async function replayCollection(id) {
+  const done = busy("Preparing every WARC in the collection for replay. Large collections take a moment.");
+  try {
+    const r = await api(`/api/collections/${id}/replay`, {method: "POST"});
+    if (window.open(r.replay_url, "_blank")) { done(); return; }
+    offerOpen(r.replay_url, "The replay is ready.");
+  } catch (e) {
+    done();
+    alert("Could not replay: " + e.message);
+  }
+}
+async function delCollection(id) {
+  let impact;
+  try { impact = await api(`/api/collections/${id}/impact`); }
+  catch (e) { alert("Could not check what deleting would do: " + e.message); return; }
+  const name = (impact.collection || {}).name || `#${id}`;
+  const summary = statusSummary(impact.by_status).replace(/<[^>]+>/g, "");
+  const running = impact.running_jobs && impact.running_jobs.length
+    ? `\n${impact.running_jobs.length} of them are still running and would be ended.` : "";
+  const first = `Delete the collection "${name}"?\n\nThis removes its ${impact.job_count} job(s) from the dashboard (${summary}).${running}\n\nNothing is changed until you confirm.`;
+  if (!confirm(first)) return;
+  const purge = confirm(`Also delete the collection's files from disk (${fmtBytes(Number(impact.bytes_on_disk) || 0)} under ${impact.root_dir})?\n\nOK = delete the files too. Cancel = keep the files on disk, remove only the records.`);
+  try {
+    await api(`/api/collections/${id}?purge=${purge}${running ? "&force=true" : ""}`, {method: "DELETE"});
+    refresh();
+  } catch (e) { alert("Delete failed: " + e.message); }
+}
+async function createCollection() {
+  const msg = $("#c-msg");
+  const say = (text, cls = "") => { msg.textContent = text; msg.className = "msg" + (cls ? " " + cls : ""); };
+  const name = $("#c-name").value.trim();
+  if (!name) { say("Give the collection a name.", "err"); return; }
+  say("Creating…");
+  $("#c-create-btn").disabled = true;
+  try {
+    const body = {name, description: $("#c-description").value.trim(),
+                  metadata: collectionMetadata.value().job};
+    if ($("#c-storage").value.trim()) body.storage_dir = $("#c-storage").value.trim();
+    await api("/api/collections", {method: "POST", headers: {"Content-Type": "application/json"},
+                                   body: JSON.stringify(body)});
+    $("#c-name").value = ""; $("#c-description").value = ""; $("#c-storage").value = "";
+    collectionMetadata.load({job: [], seeds: {}});
+    say("Collection created.", "ok");
+    refresh();
+  } catch (e) { say(e.message, "err"); }
+  finally { $("#c-create-btn").disabled = false; }
+}
+$("#c-create-btn").addEventListener("click", createCollection);
+// "New collection…" beside a job form's picker: name it, and it is chosen.
+async function newCollectionFor(selectId) {
+  const name = prompt("Name for the new collection:");
+  if (!name || !name.trim()) return;
+  try {
+    const made = await api("/api/collections", {method: "POST", headers: {"Content-Type": "application/json"},
+                                                body: JSON.stringify({name: name.trim()})});
+    lastCollections = [...lastCollections, made].sort((a, b) => String(a.name).localeCompare(String(b.name)));
+    fillCollectionPickers();
+    fillCollectionFilter();
+    $(`#${selectId}`).value = String(made.id);
+    renderCollections();
+  } catch (e) { alert("Could not create the collection: " + e.message); }
+}
+$$(".collection-new-btn").forEach(b => b.addEventListener("click", () => newCollectionFor(b.dataset.target)));
+
 // Editing after the fact, from the job list.
 let metadataJobId = null;
 let modalScopes = [];
@@ -2502,16 +2735,28 @@ async function editMetadata(id) {
     $("#metadata-overlay").classList.add("open");
   } catch (e) { alert("Could not load metadata: " + e.message); }
 }
-function closeMetadata() { $("#metadata-overlay").classList.remove("open"); metadataJobId = null; }
+let metadataCollectionId = null;
+function closeMetadata() {
+  $("#metadata-overlay").classList.remove("open");
+  metadataJobId = null; metadataCollectionId = null;
+  $("#metadata-title").textContent = "Describe this capture";
+  $("#metadata-export").hidden = false;
+}
 $("#metadata-cancel").addEventListener("click", closeMetadata);
 $("#metadata-overlay").addEventListener("click", e => { if (e.target.id === "metadata-overlay") closeMetadata(); });
 $("#metadata-save").addEventListener("click", async () => {
   const msg = $("#metadata-msg");
   msg.textContent = "Saving…"; msg.className = "msg";
   try {
-    await api(`/api/crawls/${metadataJobId}/metadata`, {
-      method: "PUT", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({metadata: modalMetadata.value()})});
+    if (metadataCollectionId != null) {
+      await api(`/api/collections/${metadataCollectionId}`, {
+        method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({metadata: modalMetadata.value().job})});
+    } else {
+      await api(`/api/crawls/${metadataJobId}/metadata`, {
+        method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({metadata: modalMetadata.value()})});
+    }
     closeMetadata();
     refresh();
   } catch (e) { msg.textContent = e.message; msg.className = "msg err"; }
@@ -2674,7 +2919,14 @@ async function forceStop(id) {
   catch (e) { alert("Force stop failed: " + e.message); }
 }
 async function del(id) {
-  if (!confirm("Delete crawl #"+id+"? WARC files are kept unless you purge.")) return;
+  let impact = "";
+  try {
+    const r = await api(`/api/crawls/${id}/impact`);
+    impact = r.referring_records
+      ? `\n\n${r.referring_jobs.length} later job(s) hold ${r.referring_records} record(s) that refer into this one; those pages will replay without their content until re-crawled.`
+      : r.collection ? `\n\nIt belongs to the collection "${r.collection.name}". ${r.note}` : "";
+  } catch (_) { impact = ""; }
+  if (!confirm("Delete crawl #"+id+"? WARC files are kept unless you purge." + impact)) return;
   const purge = confirm("Also delete captured WARC files from disk? OK = delete files, Cancel = keep files.");
   try { await api(`/api/crawls/${id}?purge=${purge}`, {method:"DELETE"}); refresh(); }
   catch (e) {
@@ -2698,6 +2950,7 @@ async function start() {
       body = {config_yaml: $("#config-yaml").value};
     }
     if ($("#f-storage").value.trim()) body.storage_dir = $("#f-storage").value.trim();
+    if ($("#f-collection").value) body.collection_id = Number($("#f-collection").value);
     body.metadata = metadataEditors.crawl.value();
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setMessage("Cancelled.", ""); return; }
@@ -2716,8 +2969,8 @@ async function start() {
 }
 async function refresh() {
   try {
-    const [crawls, storage, res] = await Promise.all([
-      api("/api/crawls"), api("/api/storage"), api("/api/resources")]);
+    const [crawls, storage, res, collections] = await Promise.all([
+      api("/api/crawls"), api("/api/storage"), api("/api/resources"), api("/api/collections")]);
     const active = crawls.filter(c => ["running","paused","blocked","stopping"].includes(c.status)).length;
     renderResources(res);
     const diskPercent = storage.disk.total ? storage.disk.used/storage.disk.total*100 : 0;
@@ -2733,6 +2986,10 @@ async function refresh() {
     renderThemeAiSettings(settings);
     $("#nav-active").textContent = active ? String(active) : "";
     lastCrawls = crawls;
+    lastCollections = Array.isArray(collections) ? collections : [];
+    fillCollectionFilter();
+    fillCollectionPickers();
+    renderCollections();
     renderJobList();
   } catch (e) {
     $("#manifest").innerHTML = `<div class="empty">Server unreachable — ${e.message}</div>`;
@@ -2743,12 +3000,13 @@ async function refresh() {
 // the figures live and the filter in place. The chosen filter survives a
 // reload through the browser's storage for this dashboard.
 const ACTIVE_STATUSES = ["running", "paused", "blocked", "stopping"];
-const FILTER_FIELDS = ["jf-search", "jf-kind", "jf-status", "jf-from", "jf-to"];
+const FILTER_FIELDS = ["jf-search", "jf-kind", "jf-collection", "jf-status", "jf-from", "jf-to"];
 
 function jobFilter() {
   return {
     search: $("#jf-search").value.trim().toLowerCase(),
     kind: $("#jf-kind").value,
+    collection: $("#jf-collection").value,
     status: $("#jf-status").value,
     from: $("#jf-from").value,
     to: $("#jf-to").value,
@@ -2756,6 +3014,8 @@ function jobFilter() {
 }
 function jobMatches(c, f) {
   if (f.kind && (c.kind || "crawl") !== f.kind) return false;
+  if (f.collection === "none" ? c.collection
+      : f.collection && String((c.collection || {}).id) !== f.collection) return false;
   if (f.status === "active" ? !ACTIVE_STATUSES.includes(c.status)
       : f.status && c.status !== f.status) return false;
   const day = String(c.created_at || "").slice(0, 10);     // ISO date part
@@ -2770,7 +3030,7 @@ function jobMatches(c, f) {
 }
 function renderJobList() {
   const f = jobFilter();
-  const filtering = Boolean(f.search || f.kind || f.status || f.from || f.to);
+  const filtering = Boolean(f.search || f.kind || f.collection || f.status || f.from || f.to);
   const shown = lastCrawls.filter(c => jobMatches(c, f));
   $("#jf-count").textContent = lastCrawls.length
     ? (filtering ? `${shown.length} of ${lastCrawls.length} jobs` : `${lastCrawls.length} job${lastCrawls.length === 1 ? "" : "s"}`)
@@ -2791,6 +3051,7 @@ function restoreJobFilter() {
   if (!saved) return;
   $("#jf-search").value = saved.search || "";
   $("#jf-kind").value = saved.kind || "";
+  $("#jf-collection").value = saved.collection || "";
   $("#jf-status").value = saved.status || "";
   $("#jf-from").value = saved.from || "";
   $("#jf-to").value = saved.to || "";
@@ -2887,7 +3148,7 @@ document.addEventListener("keydown", event => {
 $$(".browse-btn").forEach(button =>
   button.addEventListener("click", () => openBrowser(button.dataset.target)));
 
-const VIEWS = ["jobs", "new", "settings"];
+const VIEWS = ["jobs", "collections", "new", "settings"];
 
 function showView(name) {
   const view = VIEWS.includes(name) ? name : "jobs";

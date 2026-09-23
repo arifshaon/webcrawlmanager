@@ -95,6 +95,10 @@ class CrawlConfig:
     metadata: dict = field(default_factory=lambda: {"job": [], "seeds": {}})
     # optional theme: only pages about one topic are kept (see webarc.theme)
     theme: Optional[dict] = None
+    # the collection this job belongs to, if any, and the metadata it
+    # contributes underneath the job's own (see webarc.collections)
+    collection: Optional[dict] = None
+    inherited_metadata: list = field(default_factory=list)
 
 
 def _build_section(cls, data: dict):

@@ -117,7 +117,7 @@ function crawlRow(c) {
       <div class="gutter g-${statusCss}"></div>
       <div>
         <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : isInstagram ? '<span class="fb-chip ig-chip">IG</span>' : isX ? '<span class="fb-chip x-chip">X</span>' : isYouTube ? '<span class="fb-chip yt-chip">YT</span>' : ""}${name}</div>
-        <div class="meta"><span class="id">#${id}</span> · ${c.theme ? `<span class="theme-chip" title="theme-based selection">theme: ${escapeHtml(c.theme)}</span> · ` : ""}${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
+        <div class="meta"><span class="id">#${id}</span> · ${c.collection ? `<span class="theme-chip coll-chip" title="collection">${escapeHtml(c.collection.name)}</span> · ` : ""}${c.theme ? `<span class="theme-chip" title="theme-based selection">theme: ${escapeHtml(c.theme)}</span> · ` : ""}${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
       </div>
       <div class="counts">
         ${isRec

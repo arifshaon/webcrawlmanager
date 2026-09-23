@@ -1,0 +1,512 @@
+"""Collections: named containers jobs belong to, each with a directory.
+
+A collection is where a curator files the jobs that belong together. Its
+directory holds every job run against it, its metadata is inherited by
+those jobs, and deleting it -- or one of its jobs -- states the consequences
+before anything changes. Everything here runs without a browser.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from webarc import collections as colls
+from webarc import metadata as md
+from webarc import server as srv
+from webarc.cli import main as cli_main
+from webarc.store import Store
+
+
+class ModuleTests(unittest.TestCase):
+    def test_a_slug_is_stable_and_directory_safe(self):
+        self.assertEqual(colls.slugify("Qatar News Sites 2026"), "qatar-news-sites-2026")
+        self.assertEqual(colls.slugify("  a/b\\c:d  "), "a-b-c-d")
+        self.assertEqual(colls.slugify("مكتبة قطر"), "مكتبة-قطر")
+        self.assertEqual(colls.slugify(""), "collection")
+        self.assertLessEqual(len(colls.slugify("x" * 500)), colls.MAX_SLUG)
+
+    def test_a_job_inherits_the_collections_fields_and_a_relation(self):
+        collection = {"id": 1, "slug": "qnl-2026", "name": "QNL 2026",
+                      "metadata": [{"name": "Subject", "value": "Libraries"},
+                                   {"name": "Rights", "value": "Public"}]}
+
+        fields = colls.inherited_fields(collection)
+
+        self.assertIn({"name": "Subject", "value": "Libraries"}, fields)
+        self.assertIn({"name": "Relation", "value": "isPartOf: QNL 2026"}, fields)
+        self.assertIn({"name": "Collection", "value": "qnl-2026"}, fields)
+
+    def test_the_jobs_own_value_replaces_the_inherited_one(self):
+        collection = {"id": 1, "slug": "c", "name": "C",
+                      "metadata": [{"name": "Subject", "value": "Libraries"},
+                                   {"name": "Rights", "value": "Public"}]}
+
+        fields = colls.effective_job_fields(collection, [{"name": "Subject", "value": "Football"}])
+
+        subjects = [f["value"] for f in fields if f["name"] == "Subject"]
+        self.assertEqual(subjects, ["Football"])
+        self.assertIn({"name": "Rights", "value": "Public"}, fields)
+
+    def test_nothing_is_inherited_without_a_collection(self):
+        self.assertEqual(colls.inherited_fields(None), [])
+        self.assertIsNone(colls.brief(None))
+
+    def test_metadata_comes_from_json_or_a_file(self):
+        self.assertEqual(colls.load_metadata_argument('[{"name": "Subject", "value": "X"}]', None),
+                         [{"name": "Subject", "value": "X"}])
+        self.assertEqual(colls.load_metadata_argument('{"Subject": "X"}', None),
+                         [{"name": "Subject", "value": "X"}])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "m.json"
+            path.write_text('{"job": [{"name": "Rights", "value": "Open"}]}', encoding="utf-8")
+            self.assertEqual(colls.load_metadata_argument(None, str(path)),
+                             [{"name": "Rights", "value": "Open"}])
+            sheet = Path(tmp) / "m.csv"
+            sheet.write_text(md.csv_text(md.document(
+                job_id=1, kind="crawl", name="n", operator="o", seeds=[],
+                metadata={"job": [{"name": "Subject", "value": "Sheet"}], "seeds": {}})),
+                encoding="utf-8")
+            self.assertEqual(colls.load_metadata_argument(None, str(sheet)),
+                             [{"name": "Subject", "value": "Sheet"}])
+        with self.assertRaises(ValueError):
+            colls.load_metadata_argument("not json", None)
+        with self.assertRaises(ValueError):
+            colls.load_metadata_argument("[]", "also.json")
+
+    def test_the_document_lists_the_jobs_and_what_they_inherit(self):
+        collection = {"id": 3, "slug": "c", "name": "C", "description": "d",
+                      "root_dir": "/x/collections/c", "metadata": [], "created_at": "t"}
+        doc = colls.document(collection, [{"id": 7, "name": "j", "kind": "crawl",
+                                           "status": "completed", "output_dir": "/x/c/jobs/7"}])
+
+        self.assertEqual(doc["schema"], colls.SCHEMA)
+        self.assertEqual([j["id"] for j in doc["jobs"]], [7])
+        self.assertIn({"name": "Relation", "value": "isPartOf: C"}, doc["inherited_by_jobs"])
+        with tempfile.TemporaryDirectory() as tmp:
+            colls.write_document(tmp, doc)
+            self.assertEqual(colls.read_document(tmp)["slug"], "c")
+
+    def test_deleting_a_job_says_nothing_else_refers_into_it_yet(self):
+        collection = {"id": 1, "slug": "c", "name": "C", "metadata": []}
+        row = {"id": 5, "name": "first", "kind": "crawl", "status": "completed",
+               "created_at": "2026-09-01"}
+        later = {"id": 6, "name": "second", "created_at": "2026-09-02"}
+
+        impact = colls.job_impact(collection, row, [row, later])
+
+        self.assertEqual(impact["referring_records"], 0)
+        self.assertEqual([j["id"] for j in impact["later_jobs_in_collection"]], [6])
+        self.assertIn("not enabled", impact["note"])
+        self.assertIn("Deleting job #5", colls.describe_impact(impact))
+
+    def test_deleting_a_collection_counts_its_jobs(self):
+        collection = {"id": 1, "slug": "c", "name": "C", "root_dir": "/x"}
+        impact = colls.collection_impact(
+            collection, [{"id": 1, "status": "completed"}, {"id": 2, "status": "failed"}],
+            bytes_on_disk=2048, running=[])
+
+        self.assertEqual(impact["job_count"], 2)
+        self.assertEqual(impact["by_status"], {"completed": 1, "failed": 1})
+        text = colls.describe_impact(impact)
+        self.assertIn('Deleting collection "C" removes 2 job(s)', text)
+
+
+class StoreTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = Store(Path(self._tmp.name) / "swm.db")
+
+    def test_a_collection_is_created_found_and_listed(self):
+        cid = self.store.create_collection("qnl", "QNL", "desc", "/x/qnl",
+                                           [{"name": "Subject", "value": "L"}])
+
+        self.assertEqual(self.store.get_collection(cid)["slug"], "qnl")
+        self.assertEqual(self.store.find_collection("QNL")["id"], cid)
+        self.assertEqual(self.store.find_collection("qnl")["id"], cid)
+        self.assertEqual(self.store.find_collection(str(cid))["id"], cid)
+        self.assertIsNone(self.store.find_collection("nope"))
+        self.assertEqual([c["name"] for c in self.store.list_collections()], ["QNL"])
+        self.assertEqual(self.store.get_collection(cid)["metadata"],
+                         [{"name": "Subject", "value": "L"}])
+
+    def test_the_identifier_is_unique(self):
+        self.store.create_collection("qnl", "QNL", "", "/x/qnl")
+        with self.assertRaises(ValueError):
+            self.store.create_collection("qnl", "Other", "", "/y/qnl")
+
+    def test_jobs_are_counted_per_collection(self):
+        cid = self.store.create_collection("qnl", "QNL", "", "/x/qnl")
+        first = self.store.create_crawl("a", {"seeds": []}, "/x/qnl/jobs/1", 0,
+                                        collection_id=cid)
+        self.store.create_crawl("b", {"seeds": []}, "/x/qnl/jobs/2", 0, collection_id=cid)
+        self.store.create_crawl("loose", {"seeds": []}, "/x/3", 0)
+        self.store.set_status(first, "completed")
+
+        counts = self.store.collection_counts()[cid]
+        self.assertEqual(counts["jobs"], 2)
+        self.assertEqual(counts["by_status"], {"completed": 1, "pending": 1})
+        self.assertEqual([j["name"] for j in self.store.crawls_in_collection(cid)], ["a", "b"])
+
+    def test_an_older_database_gains_the_column(self):
+        """A store made before collections existed still opens, and its
+        jobs simply belong to none."""
+        path = Path(self._tmp.name) / "old.db"
+        import sqlite3
+        with sqlite3.connect(path) as c:
+            c.executescript("""
+                CREATE TABLE crawls (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'crawl', config_json TEXT NOT NULL,
+                    output_dir TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    control TEXT NOT NULL DEFAULT 'none', pid INTEGER,
+                    seeds_total INTEGER NOT NULL DEFAULT 0, error TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                INSERT INTO crawls (name, config_json, output_dir, created_at, updated_at)
+                    VALUES ('old', '{}', '/x/1', 't', 't');""")
+        store = Store(path)
+
+        self.assertIsNone(store.get_crawl(1)["collection_id"])
+        self.assertEqual(store.collection_counts(), {})
+
+    def test_deleting_a_collection_removes_its_jobs_rows(self):
+        cid = self.store.create_collection("qnl", "QNL", "", "/x/qnl")
+        job = self.store.create_crawl("a", {"seeds": []}, "/x/qnl/jobs/1", 0, collection_id=cid)
+        loose = self.store.create_crawl("loose", {"seeds": []}, "/x/2", 0)
+
+        removed = self.store.delete_collection(cid)
+
+        self.assertEqual(removed, [job])
+        self.assertIsNone(self.store.get_crawl(job))
+        self.assertIsNotNone(self.store.get_crawl(loose))
+        self.assertIsNone(self.store.get_collection(cid))
+
+
+class ServerTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.root = self.tmp / "warcs"
+        self.app = srv.create_app(str(self.tmp / "swm.db"), str(self.root),
+                                  simulate=True, replay_root=str(self.tmp / "replay"),
+                                  monitor_resources=False)
+        self.client = TestClient(self.app)
+
+    def collection(self, name="QNL 2026", **extra):
+        body = {"name": name, "description": "The library's own sites",
+                "metadata": [{"name": "Subject", "value": "Libraries"},
+                             {"name": "Rights", "value": "Public"}], **extra}
+        made = self.client.post("/api/collections", json=body)
+        self.assertEqual(made.status_code, 201, made.text)
+        return made.json()
+
+    def job(self, **extra):
+        body = {"name": "demo", "start": "wait",
+                "config": {"operator": "QNL", "seeds": [{"url": "https://a.example/"}]}}
+        body.update(extra)
+        made = self.client.post("/api/crawls", json=body)
+        self.assertEqual(made.status_code, 201, made.text)
+        return made.json()
+
+
+class ServerTests(ServerTestCase):
+    def test_a_collection_gets_a_directory_and_a_document(self):
+        made = self.collection()
+
+        root = Path(made["root_dir"])
+        self.assertEqual(root, self.root / "collections" / "qnl-2026")
+        self.assertTrue((root / colls.DOCUMENT_NAME).is_file())
+        doc = json.loads((root / colls.DOCUMENT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(doc["name"], "QNL 2026")
+        self.assertEqual(made["jobs"], 0)
+        self.assertEqual(made["metadata_fields"], 2)
+
+    def test_a_second_collection_of_the_same_name_is_refused(self):
+        self.collection()
+        again = self.client.post("/api/collections", json={"name": "qnl 2026"})
+
+        self.assertEqual(again.status_code, 409)
+
+    def test_a_nameless_collection_is_refused(self):
+        self.assertEqual(self.client.post("/api/collections", json={"name": " "}).status_code, 400)
+
+    def test_a_job_is_placed_under_its_collection(self):
+        made = self.collection()
+        job = self.job(collection_id=made["id"])
+
+        self.assertEqual(Path(job["output_dir"]),
+                         Path(made["root_dir"]) / "jobs" / str(job["id"]))
+        self.assertEqual(job["collection"], {"id": made["id"], "slug": "qnl-2026",
+                                             "name": "QNL 2026"})
+        doc = json.loads((Path(made["root_dir"]) / colls.DOCUMENT_NAME).read_text())
+        self.assertEqual([j["id"] for j in doc["jobs"]], [job["id"]])
+        listed = self.client.get("/api/collections").json()[0]
+        self.assertEqual(listed["jobs"], 1)
+
+    def test_a_collection_can_be_named_or_made_from_the_job_form(self):
+        made = self.collection()
+        by_name = self.job(collection="QNL 2026")
+        self.assertEqual(by_name["collection"]["id"], made["id"])
+
+        fresh = self.job(new_collection={"name": "Elections"})
+        self.assertEqual(fresh["collection"]["slug"], "elections")
+        self.assertEqual(len(self.client.get("/api/collections").json()), 2)
+
+    def test_a_name_that_matches_nothing_is_an_error_not_a_new_collection(self):
+        body = {"name": "demo", "start": "wait", "collection": "typo",
+                "config": {"operator": "QNL", "seeds": [{"url": "https://a.example/"}]}}
+
+        self.assertEqual(self.client.post("/api/crawls", json=body).status_code, 404)
+        self.assertEqual(self.client.get("/api/collections").json(), [])
+
+    def test_every_job_type_can_join_a_collection(self):
+        made = self.collection()
+        rec = self.client.post("/api/recordings", json={
+            "url": "https://a.example/", "start": "wait", "collection_id": made["id"]})
+        self.assertEqual(rec.status_code, 201, rec.text)
+        self.assertEqual(rec.json()["collection"]["id"], made["id"])
+        self.assertTrue(str(rec.json()["output_dir"]).startswith(made["root_dir"]))
+
+    def test_the_job_inherits_the_collections_metadata(self):
+        made = self.collection()
+        job = self.job(collection_id=made["id"],
+                       metadata={"job": {"Subject": "Football"}})
+
+        doc = json.loads((Path(job["output_dir"]) / md.DOCUMENT_NAME).read_text())
+        effective = doc["seeds"][0]["effective"]
+        self.assertEqual([f["value"] for f in effective if f["name"] == "Subject"], ["Football"])
+        self.assertIn({"name": "Rights", "value": "Public"}, effective)
+        self.assertIn({"name": "Relation", "value": "isPartOf: QNL 2026"}, effective)
+        self.assertIn({"name": "Collection", "value": "qnl-2026"}, effective)
+        self.assertEqual(doc["collection"]["slug"], "qnl-2026")
+        self.assertEqual(doc["job"], [{"name": "Subject", "value": "Football"}])
+
+    def test_changing_the_collection_reaches_its_jobs(self):
+        made = self.collection()
+        job = self.job(collection_id=made["id"])
+
+        updated = self.client.put(f"/api/collections/{made['id']}", json={
+            "name": "QNL 2027", "metadata": [{"name": "Rights", "value": "Restricted"}]})
+
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["slug"], "qnl-2026")      # never changes
+        self.assertEqual(updated.json()["name"], "QNL 2027")
+        doc = json.loads((Path(job["output_dir"]) / md.DOCUMENT_NAME).read_text())
+        effective = doc["seeds"][0]["effective"]
+        self.assertIn({"name": "Rights", "value": "Restricted"}, effective)
+        self.assertIn({"name": "Relation", "value": "isPartOf: QNL 2027"}, effective)
+        self.assertNotIn({"name": "Subject", "value": "Libraries"}, effective)
+
+    def test_the_collection_view_lists_its_jobs(self):
+        made = self.collection()
+        job = self.job(collection_id=made["id"])
+
+        view = self.client.get(f"/api/collections/{made['id']}").json()
+        self.assertEqual([j["id"] for j in view["job_list"]], [job["id"]])
+        jobs = self.client.get(f"/api/collections/{made['id']}/jobs").json()
+        self.assertEqual([j["id"] for j in jobs], [job["id"]])
+
+    def test_deleting_a_job_states_its_impact_first(self):
+        made = self.collection()
+        first = self.job(collection_id=made["id"])
+        second = self.job(collection_id=made["id"])
+
+        impact = self.client.get(f"/api/crawls/{first['id']}/impact").json()
+
+        self.assertEqual(impact["collection"]["id"], made["id"])
+        self.assertEqual(impact["referring_records"], 0)
+        self.assertEqual([j["id"] for j in impact["later_jobs_in_collection"]], [second["id"]])
+        self.assertIn("not enabled", impact["note"])
+
+    def test_deleting_a_job_keeps_the_collections_document_current(self):
+        made = self.collection()
+        job = self.job(collection_id=made["id"])
+
+        gone = self.client.delete(f"/api/crawls/{job['id']}?purge=true")
+
+        self.assertEqual(gone.status_code, 200, gone.text)
+        doc = json.loads((Path(made["root_dir"]) / colls.DOCUMENT_NAME).read_text())
+        self.assertEqual(doc["jobs"], [])
+        self.assertFalse(Path(job["output_dir"]).exists())
+        self.assertTrue(Path(made["root_dir"]).exists())
+
+    def test_deleting_a_collection_states_its_impact_then_does_as_told(self):
+        made = self.collection()
+        job = self.job(collection_id=made["id"])
+        (Path(job["output_dir"]) / "a.warc.gz").write_bytes(b"x" * 100)
+
+        impact = self.client.get(f"/api/collections/{made['id']}/impact").json()
+        self.assertEqual(impact["job_count"], 1)
+        self.assertGreaterEqual(impact["bytes_on_disk"], 100)
+        self.assertEqual(impact["running_jobs"], [])
+
+        kept = self.client.delete(f"/api/collections/{made['id']}")
+        self.assertEqual(kept.status_code, 200, kept.text)
+        self.assertEqual(kept.json()["jobs_removed"], [job["id"]])
+        self.assertTrue((Path(job["output_dir"]) / "a.warc.gz").exists())   # files kept
+        self.assertEqual(self.client.get(f"/api/crawls/{job['id']}").status_code, 404)
+        self.assertEqual(self.client.get("/api/collections").json(), [])
+
+    def test_a_purged_collection_takes_its_files_with_it(self):
+        made = self.collection()
+        job = self.job(collection_id=made["id"])
+
+        self.client.delete(f"/api/collections/{made['id']}?purge=true")
+
+        self.assertFalse(Path(made["root_dir"]).exists())
+        self.assertFalse(Path(job["output_dir"]).exists())
+
+    def test_nothing_changes_when_the_collection_is_missing(self):
+        self.assertEqual(self.client.get("/api/collections/99").status_code, 404)
+        self.assertEqual(self.client.delete("/api/collections/99").status_code, 404)
+        self.assertEqual(self.client.get("/api/collections/99/impact").status_code, 404)
+
+    def test_a_collection_with_no_warc_cannot_replay_yet(self):
+        made = self.collection()
+        self.job(collection_id=made["id"])
+
+        self.assertEqual(self.client.post(f"/api/collections/{made['id']}/replay").status_code, 409)
+
+    def test_storage_reports_each_collection(self):
+        made = self.collection()
+        storage = self.client.get("/api/storage").json()
+
+        self.assertEqual([c["id"] for c in storage["per_collection"]], [made["id"]])
+
+    def test_a_job_outside_any_collection_is_unchanged(self):
+        job = self.job()
+
+        self.assertIsNone(job["collection"])
+        self.assertEqual(Path(job["output_dir"]), self.root / str(job["id"]))
+        doc = json.loads((Path(job["output_dir"]) / md.DOCUMENT_NAME).read_text())
+        self.assertNotIn("collection", doc)
+
+
+class CommandLineTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.db = str(self.tmp / "swm.db")
+        self.root = str(self.tmp / "warcs")
+
+    def run_cli(self, *argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli_main(list(argv))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_collection_is_created_listed_and_shown(self):
+        code, out, _ = self.run_cli(
+            "collection", "create", "QNL 2026", "--db", self.db, "--warc-root", self.root,
+            "--description", "The library's sites",
+            "--metadata-json", '[{"name": "Subject", "value": "Libraries"}]')
+
+        self.assertEqual(code, 0, out)
+        self.assertIn("qnl-2026", out)
+        root = self.tmp / "warcs" / "collections" / "qnl-2026"
+        self.assertTrue((root / colls.DOCUMENT_NAME).is_file())
+
+        code, out, _ = self.run_cli("collection", "list", "--db", self.db)
+        self.assertEqual(code, 0)
+        self.assertIn("QNL 2026", out)
+        self.assertIn("0 job(s)", out)
+
+        code, out, _ = self.run_cli("collection", "show", "qnl-2026", "--db", self.db)
+        self.assertEqual(code, 0)
+        self.assertIn("Subject: Libraries", out)
+
+        code, out, _ = self.run_cli("collection", "list", "--db", self.db, "--json")
+        self.assertEqual(json.loads(out)[0]["slug"], "qnl-2026")
+
+    def test_metadata_can_come_from_a_file(self):
+        path = self.tmp / "m.json"
+        path.write_text('[{"name": "Rights", "value": "Open"}]', encoding="utf-8")
+        code, out, _ = self.run_cli(
+            "collection", "create", "Open", "--db", self.db, "--warc-root", self.root,
+            "--metadata-file", str(path))
+
+        self.assertEqual(code, 0, out)
+        self.assertEqual(Store(self.db).find_collection("open")["metadata"],
+                         [{"name": "Rights", "value": "Open"}])
+
+    def test_a_duplicate_name_is_refused(self):
+        self.run_cli("collection", "create", "QNL", "--db", self.db, "--warc-root", self.root)
+        code, _, err = self.run_cli("collection", "create", "qnl", "--db", self.db,
+                                    "--warc-root", self.root)
+
+        self.assertEqual(code, 2)
+        self.assertIn("already exists", err)
+
+    def test_deleting_says_what_it_means_and_needs_a_yes(self):
+        self.run_cli("collection", "create", "QNL", "--db", self.db, "--warc-root", self.root)
+        store = Store(self.db)
+        cid = store.find_collection("qnl")["id"]
+        store.create_crawl("a", {"seeds": []}, str(self.tmp / "warcs/collections/qnl/jobs/1"),
+                           0, collection_id=cid)
+
+        # no terminal to ask on, no --yes: nothing happens
+        code, out, err = self.run_cli("collection", "delete", "qnl", "--db", self.db)
+        self.assertEqual(code, 2)
+        self.assertIn("removes 1 job(s)", out)
+        self.assertIn("Nothing is changed until you confirm", out)
+        self.assertIsNotNone(store.find_collection("qnl"))
+
+        code, out, _ = self.run_cli("collection", "delete", "qnl", "--db", self.db, "--yes")
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(store.find_collection("qnl"))
+        self.assertIsNone(store.get_crawl(1))
+        self.assertTrue((self.tmp / "warcs/collections/qnl").exists())     # files kept
+
+    def test_purge_removes_the_directory(self):
+        self.run_cli("collection", "create", "QNL", "--db", self.db, "--warc-root", self.root)
+        self.assertTrue((self.tmp / "warcs/collections/qnl").exists())
+
+        code, _, _ = self.run_cli("collection", "delete", "qnl", "--db", self.db,
+                                  "--yes", "--purge")
+
+        self.assertEqual(code, 0)
+        self.assertFalse((self.tmp / "warcs/collections/qnl").exists())
+
+    def test_a_job_names_a_collection_that_must_exist(self):
+        from types import SimpleNamespace
+
+        from webarc.cli import _register_job_in_collection
+
+        args = SimpleNamespace(db=self.db, collection="nope", create_collection=False,
+                               warc_root=self.root)
+        with self.assertRaises(ValueError) as caught:
+            _register_job_in_collection(args, "job", "crawl", {"seeds": []}, seeds_total=0)
+        self.assertIn("Create it first", str(caught.exception))
+        self.assertEqual(Store(self.db).list_collections(), [])
+
+    def test_a_job_can_make_its_collection_and_is_placed_in_it(self):
+        from types import SimpleNamespace
+
+        from webarc.cli import _register_job_in_collection, _settle_registered_job
+
+        args = SimpleNamespace(db=self.db, collection="Fresh", create_collection=True,
+                               warc_root=self.root)
+        registered, collection, job_dir = _register_job_in_collection(
+            args, "job", "crawl", {"seeds": [{"url": "https://a.example/"}]}, seeds_total=1)
+
+        self.assertEqual(collection["slug"], "fresh")
+        self.assertEqual(job_dir, self.tmp / "warcs/collections/fresh/jobs" / str(registered[1]))
+        self.assertTrue(job_dir.is_dir())
+        store = Store(self.db)
+        self.assertEqual(store.get_crawl(registered[1])["status"], "running")
+        _settle_registered_job(registered, "completed")
+        self.assertEqual(store.get_crawl(registered[1])["status"], "completed")
+        doc = colls.read_document(collection["root_dir"])
+        self.assertEqual([j["id"] for j in doc["jobs"]], [registered[1]])
+
+
+if __name__ == "__main__":
+    unittest.main()
