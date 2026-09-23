@@ -28,12 +28,15 @@ public class SolrRecordMementoTest {
         solr.addField(SolrFields.SOURCE_FILE, "sample.warc.gz");
         solr.addField(SolrFields.SOURCE_FILE_PATH, "/data/warcs/116/sample.warc.gz");
         solr.addField(SolrFields.SOURCE_FILE_OFFSET, "4903324");
+        solr.addField(SolrFields.SOLR_TYPE, "Web Page");
 
         Memento memento = solr.toMemento();
         assertEquals("/data/warcs/116/sample.warc.gz", memento.getSourceFilePath());
+        assertEquals("Web Page", memento.getType());
 
         JsonNode json = new ObjectMapper().readTree(memento.toJSON());
         assertEquals("/data/warcs/116/sample.warc.gz", json.get("source_file_path").asText());
+        assertEquals("Web Page", json.get("type").asText());
         assertEquals("sample.warc.gz", json.get("source_file").asText());
         assertEquals(4903324L, json.get("source_file_offset").asLong());
         assertTrue(json.has("url"));

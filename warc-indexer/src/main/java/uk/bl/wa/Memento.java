@@ -1,8 +1,9 @@
 /*
  * Modified for Simple Webcrawl Manager (SWM), 2026-09-23, from
  * netarchivesuite/warc-indexer 3.5.1: accessors for sourceFilePath, which
- * had a JSON property but no way to be set. See README-SWM.md at the root
- * of this fork.
+ * had a JSON property but no way to be set, and a "type" property, which
+ * the JSON output lacked altogether. See README-SWM.md at the root of this
+ * fork.
  */
 package uk.bl.wa;
 
@@ -201,6 +202,11 @@ public class Memento {
     
     @JsonProperty("record_type")
     private String recordType;
+
+    // SWM: the coarse type ("Web Page", "Image", "Document", ...) the XML
+    // and Solr outputs carry and SolrWayback dispatches on
+    @JsonProperty("type")
+    private String type;
     
     //float sentiment_score; // Not in use
     
@@ -834,6 +840,14 @@ public class Memento {
 
     public void setRecordType(String recordType) {
         this.recordType = recordType;
+    }
+
+    public String getType() {
+        return type;
+    }
+
+    public void setType(String type) {
+        this.type = type;
     }
 
 

@@ -1,9 +1,10 @@
 /*
  * Modified for Simple Webcrawl Manager (SWM), 2026-09-23, from
  * netarchivesuite/warc-indexer 3.5.1: toMemento() now carries
- * source_file_path, so the JSON Lines output names the WARC file's path
- * as the XML and Solr outputs already did. See README-SWM.md at the root
- * of this fork.
+ * source_file_path and type, so the JSON Lines output names the WARC
+ * file's path and the record's coarse type ("Web Page", "Image", ...) as
+ * the XML and Solr outputs already did. See README-SWM.md at the root of
+ * this fork.
  */
 package uk.bl.wa.solr;
 
@@ -542,6 +543,8 @@ public class SolrRecord implements Serializable {
         m.setPublicationYear(this.getFieldAsInteger(SolrFields.PUBLICATION_YEAR));
 
         m.setRecordType(this.getFieldAsString(SolrFields.SOLR_RECORD_TYPE));
+        // SWM: "Web Page", "Image", ... was in the XML and Solr outputs only
+        m.setType(this.getFieldAsString(SolrFields.SOLR_TYPE));
 
         m.setServer(this.getFieldAsStrings(SolrFields.SERVER));
 

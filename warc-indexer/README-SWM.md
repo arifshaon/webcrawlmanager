@@ -57,20 +57,22 @@ Bengali and Arabic and no meta tag, and a page sent as windows-1256. On the
 SWM sample WARC the post's text now indexes intact where the unmodified
 3.5.1 build garbles it.
 
-### 2. The JSON Lines output now names the WARC file's path
+### 2. The JSON Lines output now names the WARC file's path and the type
 
 **Symptom.** With `-o DIR -F jsonl`, every document had `source_file_path:
-null`, while the XML and Solr outputs carried the path. A consumer of the
-JSON output could not locate the record without knowing which folder the
-WARC was in.
+null` and no `type` at all, while the XML and Solr outputs carried both.
+A consumer of the JSON output could not locate the record without knowing
+which folder the WARC was in, and could not tell a web page from an image
+or a script without re-deriving it from the content type. SolrWayback
+dispatches on `type` ("Web Page", "Image", "Document", ...).
 
 **Cause.** `SolrRecord.toMemento()`, which the JSON writer uses, copied the
-file name and offset but never the path; `Memento` had the JSON property
-but no setter for it.
+file name and offset but never the path or the type; `Memento` had a JSON
+property for the path but no setter, and nothing for the type.
 
 **Change** (`src/main/java/uk/bl/wa/solr/SolrRecord.java`,
-`src/main/java/uk/bl/wa/Memento.java`). The path is copied like the other
-two fields, through a new accessor pair. `SolrRecordMementoTest` checks the
+`src/main/java/uk/bl/wa/Memento.java`). Both are copied like the other
+fields, through new accessor pairs. `SolrRecordMementoTest` checks the
 JSON.
 
 ## Build
