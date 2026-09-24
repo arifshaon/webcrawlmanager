@@ -37,6 +37,7 @@ import logging
 
 import os
 import shutil
+from contextlib import asynccontextmanager
 import signal
 import subprocess
 import sys
@@ -881,17 +882,6 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     if resources.measurement_note():
         log.warning("%s", resources.measurement_note())
 
-    app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
-                  version="0.3.0")
-
-    # crawls left mid-flight by a previous server are settled at once
-    for stale in _STORE.list_crawls():
-        try:
-            _reconcile(stale)
-        except Exception as exc:               # pragma: no cover
-            log.warning("Could not reconcile crawl %s: %s", stale.get("id"), exc)
-
-    @app.on_event("shutdown")
     def _leave_cleanly() -> None:
         """Ctrl+C must end the process: stop what the dashboard started."""
         global _PYWB
@@ -903,6 +893,23 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             _PYWB = None
         if _MONITOR is not None:
             _MONITOR.stop()
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        # The app's lifespan replaces the on_event hook, which newer FastAPI
+        # versions warn about on every start.
+        yield
+        _leave_cleanly()
+
+    app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
+                  version="0.3.0", lifespan=_lifespan)
+
+    # crawls left mid-flight by a previous server are settled at once
+    for stale in _STORE.list_crawls():
+        try:
+            _reconcile(stale)
+        except Exception as exc:               # pragma: no cover
+            log.warning("Could not reconcile crawl %s: %s", stale.get("id"), exc)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
