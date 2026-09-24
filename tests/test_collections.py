@@ -14,6 +14,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -452,13 +453,32 @@ class CommandLineTests(unittest.TestCase):
         store.create_crawl("a", {"seeds": []}, str(self.tmp / "warcs/collections/qnl/jobs/1"),
                            0, collection_id=cid)
 
-        # no terminal to ask on, no --yes: nothing happens
-        code, out, err = self.run_cli("collection", "delete", "qnl", "--db", self.db)
+        # no terminal to ask on, no --yes: nothing happens. (Standard input is
+        # replaced so the test never waits on a real keyboard.)
+        with mock.patch("sys.stdin", io.StringIO()):
+            code, out, err = self.run_cli("collection", "delete", "qnl", "--db", self.db)
         self.assertEqual(code, 2)
         self.assertIn("removes 1 job(s)", out)
         self.assertIn("Nothing is changed until you confirm", out)
+        self.assertIn("no terminal to confirm on", err)
         self.assertIsNotNone(store.find_collection("qnl"))
 
+        # a terminal that answers no: nothing happens either
+        terminal = mock.Mock(); terminal.isatty.return_value = True
+        with mock.patch("sys.stdin", terminal), mock.patch("builtins.input", return_value="n"):
+            code, out, _ = self.run_cli("collection", "delete", "qnl", "--db", self.db)
+        self.assertEqual(code, 1)
+        self.assertIn("Nothing was changed", out)
+        self.assertIsNotNone(store.find_collection("qnl"))
+
+        # a terminal that answers yes deletes, as --yes does
+        with mock.patch("sys.stdin", terminal), mock.patch("builtins.input", return_value="y"):
+            code, out, _ = self.run_cli("collection", "delete", "qnl", "--db", self.db)
+        self.assertEqual(code, 0, out)
+        self.assertIsNone(store.find_collection("qnl"))
+
+        # made again, --yes needs no terminal at all
+        self.run_cli("collection", "create", "QNL", "--db", self.db, "--warc-root", self.root)
         code, out, _ = self.run_cli("collection", "delete", "qnl", "--db", self.db, "--yes")
         self.assertEqual(code, 0, out)
         self.assertIsNone(store.find_collection("qnl"))
