@@ -104,7 +104,7 @@ class ModuleTests(unittest.TestCase):
 
         self.assertEqual(impact["referring_records"], 0)
         self.assertEqual([j["id"] for j in impact["later_jobs_in_collection"]], [6])
-        self.assertIn("not enabled", impact["note"])
+        self.assertIn("No other job's records refer into this one", impact["note"])
         self.assertIn("Deleting job #5", colls.describe_impact(impact))
 
     def test_deleting_a_collection_counts_its_jobs(self):
@@ -249,8 +249,10 @@ class ServerTests(ServerTestCase):
 
         self.assertEqual(Path(job["output_dir"]),
                          Path(made["root_dir"]) / "jobs" / str(job["id"]))
-        self.assertEqual(job["collection"], {"id": made["id"], "slug": "qnl-2026",
-                                             "name": "QNL 2026"})
+        self.assertEqual(job["collection"]["id"], made["id"])
+        self.assertEqual(job["collection"]["slug"], "qnl-2026")
+        self.assertEqual(job["collection"]["name"], "QNL 2026")
+        self.assertTrue(job["collection"]["dedup_across_jobs"])
         doc = json.loads((Path(made["root_dir"]) / colls.DOCUMENT_NAME).read_text())
         self.assertEqual([j["id"] for j in doc["jobs"]], [job["id"]])
         listed = self.client.get("/api/collections").json()[0]
@@ -329,7 +331,7 @@ class ServerTests(ServerTestCase):
         self.assertEqual(impact["collection"]["id"], made["id"])
         self.assertEqual(impact["referring_records"], 0)
         self.assertEqual([j["id"] for j in impact["later_jobs_in_collection"]], [second["id"]])
-        self.assertIn("not enabled", impact["note"])
+        self.assertIn("No other job's records refer into this one", impact["note"])
 
     def test_deleting_a_job_keeps_the_collections_document_current(self):
         made = self.collection()

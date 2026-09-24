@@ -350,9 +350,13 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
     frontier.add(scope.seed, 0)
     robots = RobotsCache("webarc") if seed.behavior.obey_robots else None
 
+    from .collections import open_index
+    index = open_index(getattr(crawl, "collection", None))
     warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
                        seed_idx, crawl.operator, seed.warc,
-                       metadata_fields=seed_metadata(crawl, seed.url))
+                       metadata_fields=seed_metadata(crawl, seed.url),
+                       collection_index=index,
+                       crawl_id=getattr(crawl, "job_id", None))
     themed = _ThemedSeed(theme_judge, seed, crawl, seed_idx) if theme_judge else None
     sink = themed.hold if themed else warc
     stats = {"visited": 0, "skipped_robots": 0, "failed": 0, "blocked": 0,

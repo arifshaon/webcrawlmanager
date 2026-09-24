@@ -29,6 +29,9 @@ from .store import (BLOCKED, COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP,
 log = logging.getLogger("webarc.worker")
 
 
+from .collections import open_index  # noqa: E402  (after the module's own imports)
+
+
 def _config_from_row(row: dict, collection: dict | None = None) -> CrawlConfig:
     import json
     raw = json.loads(row["config_json"])
@@ -64,6 +67,7 @@ def _config_from_row(row: dict, collection: dict | None = None) -> CrawlConfig:
         theme=theme if isinstance(theme, dict) else None,
         collection=brief(collection),
         inherited_metadata=inherited_fields(collection),
+        job_id=row.get("id"),
     )
 
 
@@ -113,9 +117,12 @@ def _simulate(crawl: CrawlConfig, controller: StoreController) -> None:
         from .crawler import seed_metadata, write_crawl_metadata
         if idx == 1:
             write_crawl_metadata(crawl)
+        from .collections import open_index
         warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
                            idx, crawl.operator, seed.warc,
-                           metadata_fields=seed_metadata(crawl, seed.url))
+                           metadata_fields=seed_metadata(crawl, seed.url),
+                           collection_index=open_index(crawl.collection),
+                           crawl_id=crawl.job_id)
         visited = queued = 0
         stopped = False
         total = min(seed.scope.max_pages, 12)  # keep the demo short
@@ -169,6 +176,7 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
     described = _job_metadata(row, KIND_RECORDING, [start_url],
                               rec.get("operator", "webarc"),
                               collection=store.get_collection(row.get("collection_id")))
+    from .collections import open_index
     warc = WarcSession(
         Path(row["output_dir"]), row["name"], start_url, 1,
         rec.get("operator", "webarc"), WarcConfig(),
@@ -177,7 +185,9 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
             "description": f"Interactive session recording starting "
                            f"at {start_url}",
         },
-        metadata_fields=described.get(start_url))
+        metadata_fields=described.get(start_url),
+        collection_index=open_index(store.get_collection(row.get("collection_id"))),
+        crawl_id=row["id"])
 
     def control_poll():
         command = store.get_control(crawl_id)
@@ -264,6 +274,8 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
             "facebook-page-key": fb_config.page_key,
         },
         metadata_fields=described.get(fb_config.page_url),
+        collection_index=open_index(store.get_collection(row.get("collection_id"))),
+        crawl_id=row["id"],
     )
 
     def control_poll():
@@ -356,7 +368,9 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
                                 "normalised records beside it are the primary "
                                 "record."),
             },
-            metadata_fields=described.get(config.targets[0]))
+            metadata_fields=described.get(config.targets[0]),
+            collection_index=open_index(store.get_collection(row.get("collection_id"))),
+            crawl_id=row["id"])
     client = InstagramBrowserClient(
         BrowserConfig(mode=config.browser_mode,
                       user_data_dir=config.browser_profile_dir,
@@ -465,7 +479,9 @@ def _run_x(store: Store, crawl_id: int, row: dict) -> dict:
                                 "raw responses and normalised records beside it "
                                 "are the primary record."),
             },
-            metadata_fields=described.get(config.targets[0]))
+            metadata_fields=described.get(config.targets[0]),
+            collection_index=open_index(store.get_collection(row.get("collection_id"))),
+            crawl_id=row["id"])
     client = XBrowserClient(
         BrowserConfig(mode=config.browser_mode,
                       user_data_dir=config.browser_profile_dir,
@@ -585,7 +601,9 @@ def _run_youtube(store: Store, crawl_id: int, row: dict) -> dict:
                                         "the Posts tab. Video streams are not in it; the "
                                         "downloaded files, evidence and records beside it are "
                                         "the record.")},
-            metadata_fields=described.get(config.targets[0]))
+            metadata_fields=described.get(config.targets[0]),
+            collection_index=open_index(store.get_collection(row.get("collection_id"))),
+            crawl_id=row["id"])
 
     evidence = {"sink": None}
     videos_client = None

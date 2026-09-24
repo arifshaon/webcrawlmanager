@@ -99,6 +99,9 @@ class CrawlConfig:
     # contributes underneath the job's own (see webarc.collections)
     collection: Optional[dict] = None
     inherited_metadata: list = field(default_factory=list)
+    # the dashboard's id for this job, when it has one; the collection index
+    # records captures against it
+    job_id: Optional[int] = None
 
 
 def _build_section(cls, data: dict):

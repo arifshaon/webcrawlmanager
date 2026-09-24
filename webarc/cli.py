@@ -374,7 +374,8 @@ def _refresh_collection_document(store, collection: dict) -> None:
 
 def _create_collection_row(store, name: str, description: str,
                            metadata: list[dict], base: "Path",
-                           storage_dir: str | None = None) -> dict:
+                           storage_dir: str | None = None,
+                           policy: dict | None = None) -> dict:
     """A collection's row, directory and collection.json."""
     from pathlib import Path as _P
 
@@ -386,7 +387,8 @@ def _create_collection_row(store, name: str, description: str,
     if store.find_collection(slug):
         raise ValueError(f"A collection with the identifier '{slug}' already exists.")
     root = colls.collection_root(_P(storage_dir) if storage_dir else _P(base), slug)
-    collection_id = store.create_collection(slug, name, description, str(root), metadata)
+    collection_id = store.create_collection(slug, name, description, str(root), metadata,
+                                            policy or dict(colls.DEFAULT_POLICY))
     row = store.get_collection(collection_id)
     root.mkdir(parents=True, exist_ok=True)
     colls.write_document(root, colls.document(row, []))
@@ -405,14 +407,18 @@ def _cmd_collection(args) -> int:
     if command == "create":
         try:
             metadata = colls.load_metadata_argument(args.metadata_json, args.metadata_file)
-            row = _create_collection_row(store, args.name, args.description, metadata,
-                                         _P(args.warc_root), args.storage_dir)
+            row = _create_collection_row(
+                store, args.name, args.description, metadata, _P(args.warc_root),
+                args.storage_dir, policy={"dedup_across_jobs": not args.no_cross_job_dedup})
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
         print(f"Created collection '{row['name']}' ({row['slug']}, id {row['id']})")
         print(f"  Directory : {row['root_dir']}")
         print(f"  Metadata  : {len(row['metadata'])} field(s)")
+        print("  Dedup     : " + ("each payload stored once across the collection's jobs"
+                                 if colls.policy_of(row)["dedup_across_jobs"]
+                                 else "every payload stored in full in each job"))
         print(f"Run a job against it with: swm crawl config.yaml --collection {row['slug']}")
         return 0
 
@@ -450,6 +456,21 @@ def _cmd_collection(args) -> int:
             print(f"  {row['description']}")
         print(f"  Directory : {row['root_dir']}")
         print(f"  Created   : {row['created_at']}")
+        print("  Dedup     : " + ("each payload stored once across the collection's jobs"
+                                 if colls.policy_of(row)["dedup_across_jobs"]
+                                 else "every payload stored in full in each job"))
+        index = colls.read_index(row)
+        if index is not None:
+            try:
+                counts = index.counts()
+                orphans = index.orphan_urls()
+            finally:
+                index.close()
+            print(f"  Index     : {counts['originals']} original(s), {counts['revisits']} "
+                  f"revisit(s), {counts['bytes_saved'] / (1024 * 1024):.1f} MB not stored twice")
+            if orphans:
+                print(f"  Missing   : {len(orphans)} page(s) whose original was deleted; "
+                      "re-crawl them to restore")
         if row["metadata"]:
             print("  Metadata  :")
             for field in row["metadata"]:
@@ -695,6 +716,9 @@ def main(argv: list[str] | None = None) -> int:
             sp.add_argument("--metadata-file",
                             help="the same, read from a .json file or a "
                             "metadata sheet (.csv) as the dashboard exports one")
+            sp.add_argument("--no-cross-job-dedup", action="store_true",
+                            help="store every payload in full in each job, rather "
+                            "than once across the collection's jobs")
         elif name == "list":
             sp.add_argument("--json", action="store_true",
                             help="print the collections as JSON")
@@ -927,7 +951,7 @@ def main(argv: list[str] | None = None) -> int:
         print("pause capture, resume, or capture the current page. Close the")
         print("browser window (or press Ctrl+C here) to finish.\n")
 
-        from .collections import inherited_fields
+        from .collections import inherited_fields, open_index
         from .metadata import defaults_for, with_defaults
         warc = WarcSession(
             out_dir, name, args.url, 1, args.operator, WarcConfig(),
@@ -939,7 +963,9 @@ def main(argv: list[str] | None = None) -> int:
             metadata_fields=with_defaults(
                 inherited_fields(collection),
                 defaults_for("recording", name, args.operator, args.url))
-            if collection else None)
+            if collection else None,
+            collection_index=open_index(collection),
+            crawl_id=registered[1] if registered else None)
         last = {"visited": -1}
 
         def on_progress(state, visited, bytes_written, current_url):
@@ -1116,6 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
         cfg.output_dir = job_dir
         cfg.collection = brief(collection)
         cfg.inherited_metadata = inherited_fields(collection)
+        cfg.job_id = registered[1]
         print(f"Collection: {collection['name']} ({collection['slug']})\n"
               f"Job #{registered[1]} writes to {job_dir}")
 

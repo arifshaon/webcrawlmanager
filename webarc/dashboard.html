@@ -491,6 +491,13 @@
           </div>
         </div>
         <div class="field wide">
+          <label class="check-row" style="gap:6px">
+            <input type="checkbox" id="c-dedup" checked>
+            <span class="check-copy"><strong>Store each payload once across the collection's jobs</strong><span>An image, stylesheet or script a job of this collection already holds is referred to rather than stored again. Replay a job together with its collection.</span></span>
+            <button type="button" class="tip" aria-label="What is this for?" data-help="c-dedup">?</button>
+          </label>
+        </div>
+        <div class="field wide">
           <label class="field-label">Describe the collection <button type="button" class="tip" aria-label="What is this for?" data-help="c-metadata">?</button></label>
           <div class="md-editor" id="c-metadata"></div>
         </div>
@@ -2620,8 +2627,9 @@ function renderCollections() {
           ${c.description ? `<div class="coll-desc">${escapeHtml(c.description)}</div>` : ""}
           <div class="coll-status">${escapeHtml(c.slug)} · ${Number(c.metadata_fields) || 0} metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}</div></td>
       <td><div>${Number(c.jobs) || 0} job${Number(c.jobs) === 1 ? "" : "s"}</div>
-          <div class="coll-status">${statusSummary(c.by_status)}</div></td>
-      <td>${fmtBytes(Number(c.bytes) || 0)}</td>
+          <div class="coll-status">${statusSummary(c.by_status)}</div>
+          ${c.index && Number(c.index.orphaned) ? `<div class="coll-status" style="color:var(--danger,#b42318)">${Number(c.index.orphaned)} page(s) missing their original <button type="button" class="secondary" style="margin-left:4px" onclick="recrawlOrphans(${Number(c.id)})">Re-crawl</button></div>` : ""}</td>
+      <td>${fmtBytes(Number(c.bytes) || 0)}${c.index && Number(c.index.revisits) ? `<div class="coll-status">${Number(c.index.revisits)} reused · ${fmtBytes(Number(c.index.bytes_saved) || 0)} not stored twice</div>` : c.policy && c.policy.dedup_across_jobs === false ? `<div class="coll-status">stored in full per job</div>` : ""}</td>
       <td class="coll-status">${escapeHtml(String(c.last_activity || "").slice(0, 16).replace("T", " "))}</td>
       <td class="coll-actions">
         <button type="button" class="secondary" onclick="collectionJobs(${Number(c.id)})">Jobs</button>
@@ -2681,6 +2689,26 @@ async function delCollection(id) {
     refresh();
   } catch (e) { alert("Delete failed: " + e.message); }
 }
+// The pages a deleted job left without their content become the seeds of
+// a new crawl in the same collection.
+async function recrawlOrphans(id) {
+  let found;
+  try { found = await api(`/api/collections/${id}/orphans`); }
+  catch (e) { alert("Could not list the missing pages: " + e.message); return; }
+  const urls = (found.urls || []).slice(0, 200);
+  if (!urls.length) { alert("Nothing is missing its original in this collection."); return; }
+  const collection = lastCollections.find(c => Number(c.id) === Number(id));
+  showView("new");
+  switchJob("crawl");
+  $$(".seed-editor-row").forEach(row => row.remove());
+  urls.forEach(u => addSeed(u));
+  metadataEditors.crawl.render();
+  $("#f-collection").value = String(id);
+  const nameField = $("#f-crawl-name");
+  if (nameField && ["", "example-crawl"].includes(nameField.value.trim()))
+    nameField.value = `recrawl-${collection ? collection.slug : id}`;
+  setMessage(`${urls.length} page(s) whose original was deleted are set as seeds${(found.urls || []).length > urls.length ? " (the first 200)" : ""}. Start the crawl to store them again.`, "ok");
+}
 async function createCollection() {
   const msg = $("#c-msg");
   const say = (text, cls = "") => { msg.textContent = text; msg.className = "msg" + (cls ? " " + cls : ""); };
@@ -2690,11 +2718,13 @@ async function createCollection() {
   $("#c-create-btn").disabled = true;
   try {
     const body = {name, description: $("#c-description").value.trim(),
-                  metadata: collectionMetadata.value().job};
+                  metadata: collectionMetadata.value().job,
+                  dedup_across_jobs: $("#c-dedup").checked};
     if ($("#c-storage").value.trim()) body.storage_dir = $("#c-storage").value.trim();
     await api("/api/collections", {method: "POST", headers: {"Content-Type": "application/json"},
                                    body: JSON.stringify(body)});
     $("#c-name").value = ""; $("#c-description").value = ""; $("#c-storage").value = "";
+    $("#c-dedup").checked = true;
     collectionMetadata.load({job: [], seeds: {}});
     say("Collection created.", "ok");
     refresh();

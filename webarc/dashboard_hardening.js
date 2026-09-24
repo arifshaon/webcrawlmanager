@@ -67,6 +67,11 @@ function crawlRow(c) {
   const failed = Number(t.failed) || 0;
   const bytes = Number(t.bytes) || 0;
   const hasWarc = Number(c.warc_files) > 0;
+  const dd = c.dedup && typeof c.dedup === "object" ? c.dedup : null;
+  const reused = dd ? (Number(dd.revisits_within_job) || 0) + (Number(dd.revisits_across_jobs) || 0) : 0;
+  const dedupLine = reused
+    ? ` · ${reused} reused${Number(dd.revisits_across_jobs) ? ` (${Number(dd.revisits_across_jobs)} held by other jobs)` : ""}`
+    : "";
   const seeds = Array.isArray(c.seeds) ? c.seeds : [];
   const fb = isSocial && seeds[0] && seeds[0].details
     ? seeds[0].details : {};
@@ -130,7 +135,7 @@ function crawlRow(c) {
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b>${Number(fb.media_expected) ? `/${Number(fb.media_expected)}` : ""} media<br>${Number(fb.warc_files) ? "rendered WARC · " : ""}${fmtBytes(bytes)}`
           : isFacebook
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b> media${Number(fb.album_photos_viewed) ? ` · <b>${Number(fb.album_photos_viewed)}</b> album photos` : ""}<br>${Number(fb.graphql_responses) || 0} API responses${Number(fb.pagination_failures) ? ` · ${Number(fb.pagination_failures)} failed` : ""} · ${fmtBytes(bytes)}`
-          : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}`}${usageLine}
+          : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}${dedupLine}`}${usageLine}
       </div>
       <span class="badge b-${statusCss}">${status}</span>
     </div>

@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS collections (
     description   TEXT NOT NULL DEFAULT '',
     root_dir      TEXT NOT NULL,
     metadata_json TEXT NOT NULL DEFAULT '[]',
+    policy_json   TEXT NOT NULL DEFAULT '{}',
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
 );
@@ -205,6 +206,12 @@ class Store:
                           "DEFAULT 'crawl'")
             if "collection_id" not in cols:
                 c.execute("ALTER TABLE crawls ADD COLUMN collection_id INTEGER")
+            collection_cols = {
+                r["name"] for r in c.execute("PRAGMA table_info(collections)")
+            }
+            if "policy_json" not in collection_cols:
+                c.execute("ALTER TABLE collections ADD COLUMN policy_json TEXT "
+                          "NOT NULL DEFAULT '{}'")
             progress_cols = {
                 r["name"] for r in c.execute("PRAGMA table_info(progress)")
             }
@@ -624,18 +631,28 @@ class Store:
             item.pop("metadata_json", None)
         if not isinstance(item["metadata"], list):
             item["metadata"] = []
+        try:
+            item["policy"] = json.loads(item.pop("policy_json", "{}") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            item["policy"] = {}
+            item.pop("policy_json", None)
+        if not isinstance(item["policy"], dict):
+            item["policy"] = {}
         return item
 
     def create_collection(self, slug: str, name: str, description: str,
-                          root_dir: str, metadata: list[dict] | None = None) -> int:
+                          root_dir: str, metadata: list[dict] | None = None,
+                          policy: dict | None = None) -> int:
         ts = _now()
         with self._conn() as c:
             try:
                 cur = c.execute(
                     "INSERT INTO collections (slug, name, description, root_dir, "
-                    "metadata_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                    "metadata_json, policy_json, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
                     (slug, name, description, root_dir,
-                     json.dumps(list(metadata or [])), ts, ts))
+                     json.dumps(list(metadata or [])), json.dumps(dict(policy or {})),
+                     ts, ts))
             except sqlite3.IntegrityError as exc:
                 raise ValueError(
                     f"a collection with the identifier '{slug}' already exists") from exc
@@ -674,7 +691,8 @@ class Store:
 
     def update_collection(self, collection_id: int, *, name: str | None = None,
                           description: str | None = None,
-                          metadata: list[dict] | None = None) -> None:
+                          metadata: list[dict] | None = None,
+                          policy: dict | None = None) -> None:
         sets, values = [], []
         if name is not None:
             sets.append("name=?"); values.append(name)
@@ -682,6 +700,8 @@ class Store:
             sets.append("description=?"); values.append(description)
         if metadata is not None:
             sets.append("metadata_json=?"); values.append(json.dumps(list(metadata)))
+        if policy is not None:
+            sets.append("policy_json=?"); values.append(json.dumps(dict(policy)))
         if not sets:
             return
         sets.append("updated_at=?"); values.append(_now())

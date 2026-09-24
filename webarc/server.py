@@ -598,6 +598,8 @@ def _collection_view(row: dict, counts: dict | None = None,
         "root_dir": str(root),
         "metadata": list(row.get("metadata") or []),
         "metadata_fields": len(row.get("metadata") or []),
+        "policy": colls.policy_of(row),
+        "index": _index_counts(row) if with_bytes else None,
         "inherited_by_jobs": colls.inherited_fields(row),
         "jobs": entry["jobs"],
         "by_status": entry["by_status"],
@@ -622,6 +624,54 @@ def _collection_metadata_from(payload: dict) -> list[dict] | None:
         raise HTTPException(400, f"metadata: {exc}") from exc
 
 
+def _collection_policy_from(payload: dict) -> dict | None:
+    """The policy a request carries, or None when it says nothing about it."""
+    if "dedup_across_jobs" not in payload:
+        return None
+    return {"dedup_across_jobs": bool(payload.get("dedup_across_jobs"))}
+
+
+def _referenced_warcs(row: dict) -> list[Path]:
+    collection = _collection_of(row)
+    index = colls.read_index(collection)
+    if index is None:
+        return []
+    try:
+        referenced = index.referenced_jobs(int(row["id"]))
+    finally:
+        index.close()
+    found: list[Path] = []
+    for job_id in referenced:
+        other = _store().get_crawl(job_id)
+        if not other:
+            continue
+        other_dir = _crawl_dir(other)
+        found += sorted(other_dir.glob("*.warc.gz")) + sorted(other_dir.glob("*.warc"))
+    return found
+
+
+def _dedup_summary(crawl_dir: Path) -> dict | None:
+    """dedup-summary.json, written by the WARC writer, if the job has one."""
+    import json
+    path = crawl_dir / "dedup-summary.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _index_counts(collection: dict) -> dict | None:
+    """What the collection's index holds, or None when it has none yet."""
+    index = colls.read_index(collection)
+    if index is None:
+        return None
+    try:
+        return index.counts()
+    finally:
+        index.close()
+
+
 def _create_collection(payload: dict) -> dict:
     """Make a collection: its row, its directory and its collection.json."""
     try:
@@ -630,6 +680,7 @@ def _create_collection(payload: dict) -> dict:
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     metadata = _collection_metadata_from(payload) or []
+    policy = _collection_policy_from(payload) or dict(colls.DEFAULT_POLICY)
     slug = colls.slugify(name)
     if _store().find_collection(slug):
         raise HTTPException(409, f"a collection with the identifier '{slug}' already "
@@ -637,7 +688,7 @@ def _create_collection(payload: dict) -> dict:
     root = colls.collection_root(_storage_root_for(payload.get("storage_dir")), slug)
     try:
         collection_id = _store().create_collection(slug, name, description,
-                                                   str(root), metadata)
+                                                   str(root), metadata, policy)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     row = _store().get_collection(collection_id)
@@ -826,6 +877,7 @@ def _crawl_view(row: dict) -> dict:
         "has_selection": (crawl_dir / "pages" / "selection.html").is_file(),
         "theme": _theme_name_of(row),
         "collection": colls.brief(_collection_of(row)),
+        "dedup": _dedup_summary(crawl_dir),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
@@ -1652,7 +1704,15 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             shutil.rmtree(_crawl_dir(row), ignore_errors=True)
         _store().delete_crawl(crawl_id)
         _refresh_collection_document(collection)
-        return {"ok": True, "purged": purge, "forced": force}
+        orphaned = 0
+        index = colls.read_index(collection)
+        if index is not None:
+            try:
+                orphaned = index.forget_job(crawl_id)
+            finally:
+                index.close()
+        return {"ok": True, "purged": purge, "forced": force,
+                "orphaned_records": orphaned}
 
     @app.get("/captures/{crawl_id}/{kind}/{path:path}")
     def capture_file(crawl_id: int, kind: str, path: str):
@@ -1684,6 +1744,10 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from .replay import (ReplayServer, build_replay_site, collection_name)
         crawl_dir = _crawl_dir(row)
         warcs = sorted(crawl_dir.glob("*.warc.gz")) + sorted(crawl_dir.glob("*.warc"))
+        # A job in a collection may hold revisit records whose originals
+        # live in earlier jobs; those WARCs come along, or the pages replay
+        # without their content.
+        warcs += _referenced_warcs(row)
 
         # A Facebook capture is read through the pages built from its records.
         # They are built inside the capture directory, beside the media they
@@ -1939,8 +2003,12 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         metadata = _collection_metadata_from(payload)
+        policy = _collection_policy_from(payload)
+        if policy is not None:
+            policy = {**colls.policy_of(row), **policy}
         _store().update_collection(collection_id, name=name,
-                                   description=description, metadata=metadata)
+                                   description=description, metadata=metadata,
+                                   policy=policy)
         row = _store().get_collection(collection_id)
         _refresh_collection_document(row)
         for job in _store().crawls_in_collection(collection_id):
@@ -1985,6 +2053,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return {"ok": True, "purged": purge, "forced": force,
                 "jobs_removed": removed}
 
+    @app.get("/api/collections/{collection_id}/orphans")
+    def collection_orphans(collection_id: int):
+        """Pages whose original was deleted: what a re-crawl should fetch."""
+        row = _require_collection(collection_id)
+        index = colls.read_index(row)
+        if index is None:
+            return {"urls": [], "records": []}
+        try:
+            return {"urls": index.orphan_urls(), "records": index.orphans()}
+        finally:
+            index.close()
+
     @app.post("/api/collections/{collection_id}/replay")
     def replay_collection(collection_id: int):
         """Replay every WARC of every job in the collection as one archive."""
@@ -2019,7 +2099,14 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         row = _reconcile(_require(crawl_id))
         collection = _collection_of(row)
         siblings = _store().crawls_in_collection(collection["id"]) if collection else []
-        return colls.job_impact(collection, row, siblings)
+        referring = None
+        index = colls.read_index(collection)
+        if index is not None:
+            try:
+                referring = index.referring_into(crawl_id)
+            finally:
+                index.close()
+        return colls.job_impact(collection, row, siblings, referring)
 
     @app.get("/api/storage")
     def storage():

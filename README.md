@@ -883,16 +883,37 @@ the dashboard's state file and listed with the collection's other jobs.
 Metadata for `create` is a JSON array of `{name, value}` fields, or a file:
 JSON in that shape, or a metadata sheet as the dashboard exports one.
 
-**Deleting.** A job or a collection can always be deleted, but what that
-means is stated first and nothing changes until you confirm. Deleting a
-collection removes its jobs from the dashboard; with `--purge` (or the
-dashboard's second prompt) their files are deleted from disk as well,
-otherwise the files stay where they are. Once cross-job deduplication
-exists, deleting a job that later jobs refer into will leave those pages
-without their content until they are re-crawled; the impact report will name
-the jobs and records affected. In this version nothing refers into a job
-from outside it, and the report says so. A collection is not deleted while
-one of its jobs is running unless the deletion is forced.
+**Stored once across the collection.** Within one job SWM already stores a
+repeated payload as a WARC *revisit* record pointing at the first copy. A
+collection makes that table durable and shared: `index.sqlite` in the
+collection's directory records every capture (URL, date, payload digest, and
+the WARC file and record that hold it), and a payload any job of the
+collection already holds (an image, a stylesheet, a script, a media file) is
+written as a revisit pointing at that copy, whichever job meets it again.
+Bytes are saved; nothing is lost, because a revisit is a standard WARC 1.1
+record (`identical-payload-digest` profile) that replay tools resolve. The
+same URL with different content is stored in full, so the index is also a
+history of each page. Each job's row on the dashboard says how many payloads
+it reused and how many of those other jobs hold; `dedup-summary.json` in the
+job's folder has the numbers. This is on by default for a new collection and
+can be turned off per collection (the checkbox on the form, or
+`--no-cross-job-dedup` on the command line), in which case every job stores
+everything in full.
+
+Two consequences follow. A job's WARC is no longer self-contained on its own:
+replaying a job brings in the WARCs of the jobs it refers to, and replaying
+the collection loads them all. And **deleting** a job that later jobs refer
+into leaves their pages without that content. A job or a collection can
+always be deleted, but what that means is stated first and nothing changes
+until you confirm: the delete warning names the jobs and the number of
+records that refer into the job. After such a deletion the collection lists
+the pages that are missing their original, and **Re-crawl** on the
+Collections page sets them up as the seeds of a new crawl in the same
+collection; once stored again they leave the list. Deleting a collection
+removes its jobs from the dashboard; with `--purge` (or the dashboard's
+second prompt) their files are deleted from disk as well, otherwise the files
+stay where they are. A collection is not deleted while one of its jobs is
+running unless the deletion is forced.
 
 ## Browser modes
 

@@ -252,3 +252,5 @@ c-storage: >-
   Where the collection's directory is created. Leave it empty for the default folder from Settings. Every job run against the collection is placed under this directory.
 c-metadata: >-
   A description of the whole collection, in the same fields a job has. Each job in the collection takes these values for any element it does not set itself, and carries a Relation naming the collection.
+c-dedup: >-
+  When on, a payload one job of the collection already holds (an image, a stylesheet, a script) is written as a reference to that copy rather than stored again. A job's own replay then brings in the jobs it refers to, and the collection's replay has everything. Deleting a job that others refer into leaves their pages without that content until re-crawled, and the delete warning says how many.

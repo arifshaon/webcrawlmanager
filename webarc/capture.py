@@ -38,6 +38,13 @@ _WINDOWS_RESERVED = {
 }
 
 
+def _content_type(headers) -> str | None:
+    for name, value in headers:
+        if str(name).lower() == "content-type":
+            return str(value).split(";", 1)[0].strip().lower() or None
+    return None
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -137,7 +144,8 @@ class WarcSession:
     def __init__(self, out_dir: Path, crawl_name: str, seed_url: str,
                  seed_idx: int, operator: str, cfg: WarcConfig,
                  info_extra: dict | None = None,
-                 metadata_fields: list[dict] | None = None):
+                 metadata_fields: list[dict] | None = None,
+                 collection_index=None, crawl_id: int | None = None):
         self.out_dir = out_dir
         self.crawl_name = crawl_name
         self.file_stem = safe_filename_component(crawl_name, "capture")
@@ -157,6 +165,17 @@ class WarcSession:
         self._fh = None
         self._writer: WARCWriter | None = None
         self._digests: dict[str, tuple[str, str, str]] = {}  # digest -> (uri, date, record_id)
+        # The collection's durable payload table, when this job is in a
+        # collection that deduplicates across jobs: a payload another job
+        # of the collection holds is written as a revisit pointing at it.
+        self._index = collection_index
+        self.crawl_id = crawl_id
+        # originals found in the index, remembered for the session so a
+        # stylesheet every page shares is looked up once
+        self._foreign: dict[str, tuple[str, str, str, int | None]] = {}
+        self.dedup_stats = {"responses": 0, "revisits_within_job": 0,
+                            "revisits_across_jobs": 0, "bytes_saved": 0,
+                            "bytes_saved_across_jobs": 0, "refers_to_jobs": {}}
         out_dir.mkdir(parents=True, exist_ok=True)
         self._rotate()
 
@@ -250,13 +269,35 @@ class WarcSession:
         resp_status = StatusAndHeaders(f"{status} {status_text}".strip(),
                                        resp_hlist, protocol=http_version)
 
-        if self.cfg.dedup and body and digest in self._digests:
-            orig_uri, orig_date, orig_id = self._digests[digest]
+        held = None            # (uri, date, record_id, crawl_id) of the original
+        if self.cfg.dedup and body:
+            own = self._digests.get(digest)
+            if own is not None:
+                held = (*own, self.crawl_id)
+            elif digest in self._foreign:
+                held = self._foreign[digest]
+            elif self._index is not None:
+                found = self._index_lookup(digest)
+                if found:
+                    held = (found["url"], found["warc_date"], found["record_id"],
+                            found["crawl_id"])
+                    self._foreign[digest] = held
+        mime = _content_type(resp_hlist)
+        if held is not None:
+            orig_uri, orig_date, orig_id, orig_job = held
             record = self._writer.create_revisit_record(
                 url, digest=digest, refers_to_uri=orig_uri,
                 refers_to_date=orig_date, http_headers=resp_status,
             )
             record.rec_headers.add_header("WARC-Refers-To", orig_id)
+            across = orig_job is not None and orig_job != self.crawl_id
+            self.dedup_stats["revisits_across_jobs" if across
+                             else "revisits_within_job"] += 1
+            self.dedup_stats["bytes_saved"] += len(body)
+            if across:
+                self.dedup_stats["bytes_saved_across_jobs"] += len(body)
+                jobs = self.dedup_stats["refers_to_jobs"]
+                jobs[str(orig_job)] = jobs.get(str(orig_job), 0) + 1
         else:
             record = self._writer.create_warc_record(
                 url, "response",
@@ -264,11 +305,15 @@ class WarcSession:
                 http_headers=resp_status,
                 warc_content_type="application/http; msgtype=response",
             )
+            self.dedup_stats["responses"] += 1
             if self.cfg.dedup and body:
                 self._digests[digest] = (
                     url, date, record.rec_headers.get_header("WARC-Record-ID"))
 
         record.rec_headers.replace_header("WARC-Date", date)
+        if self._index is not None:
+            self._index_record(record, url, date, digest, status, mime, len(body),
+                               held)
         # link request to response
         req_record.rec_headers.add_header(
             "WARC-Concurrent-To",
@@ -278,7 +323,75 @@ class WarcSession:
         self._writer.write_record(req_record)
         self._maybe_rotate()
 
+    # -- the collection index --------------------------------------------------
+    def _index_lookup(self, digest: str):
+        try:
+            return self._index.lookup(digest)
+        except Exception as exc:                       # pragma: no cover
+            log.warning("Collection index lookup failed: %s", exc)
+            return None
+
+    def _index_record(self, record, url: str, date: str, digest: str,
+                      status: int, mime: str | None, length: int, held) -> None:
+        record_id = record.rec_headers.get_header("WARC-Record-ID")
+        try:
+            if held is None:
+                self._index.record_response(
+                    crawl_id=self.crawl_id, url=url, warc_date=date, digest=digest,
+                    record_id=record_id, warc_file=self._current_path.name,
+                    status=status, mime=mime, length=length)
+            else:
+                orig_uri, orig_date, orig_id, orig_job = held
+                self._index.record_revisit(
+                    crawl_id=self.crawl_id, url=url, warc_date=date, digest=digest,
+                    record_id=record_id, warc_file=self._current_path.name,
+                    status=status, mime=mime, length=length,
+                    refers_to={"crawl_id": orig_job, "record_id": orig_id,
+                               "url": orig_uri, "warc_date": orig_date})
+        except Exception as exc:                       # pragma: no cover
+            log.warning("Collection index write failed: %s", exc)
+
+    def write_dedup_summary(self) -> None:
+        """Merge this session's counts into dedup-summary.json beside the
+        WARCs. A job writes one session per seed, so the file is a sum."""
+        import json
+        path = self.out_dir / "dedup-summary.json"
+        try:
+            current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        except (OSError, ValueError):
+            current = {}
+        merged = {
+            "responses": int(current.get("responses", 0)) + self.dedup_stats["responses"],
+            "revisits_within_job": int(current.get("revisits_within_job", 0))
+            + self.dedup_stats["revisits_within_job"],
+            "revisits_across_jobs": int(current.get("revisits_across_jobs", 0))
+            + self.dedup_stats["revisits_across_jobs"],
+            "bytes_saved": int(current.get("bytes_saved", 0)) + self.dedup_stats["bytes_saved"],
+            "bytes_saved_across_jobs": int(current.get("bytes_saved_across_jobs", 0))
+            + self.dedup_stats["bytes_saved_across_jobs"],
+            "refers_to_jobs": dict(current.get("refers_to_jobs") or {}),
+            "dedup_across_jobs": self._index is not None or bool(current.get("dedup_across_jobs")),
+            "note": ("A revisit record stands for a payload already held: within this "
+                     "job, or by another job of the collection (refers_to_jobs). "
+                     "Replaying a page whose original lives in another job needs "
+                     "that job's WARC as well; the collection replay loads all."),
+        }
+        for job, n in self.dedup_stats["refers_to_jobs"].items():
+            merged["refers_to_jobs"][job] = int(merged["refers_to_jobs"].get(job, 0)) + n
+        try:
+            path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:                         # pragma: no cover
+            log.warning("Could not write dedup-summary.json: %s", exc)
+
     def close(self) -> None:
         if self._fh:
             self._fh.close()
             self._fh = None
+            if any(self.dedup_stats[k] for k in ("responses", "revisits_within_job",
+                                                  "revisits_across_jobs")):
+                self.write_dedup_summary()
+        if self._index is not None:
+            try:
+                self._index.commit()
+            except Exception as exc:                   # pragma: no cover
+                log.debug("Collection index commit failed: %s", exc)

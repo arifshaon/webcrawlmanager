@@ -94,12 +94,55 @@ def job_home(root_dir: Path | str, crawl_id: int | str) -> Path:
 
 # --- metadata -------------------------------------------------------------
 
+DEFAULT_POLICY = {"dedup_across_jobs": True}
+
+
+def policy_of(collection: Optional[dict]) -> dict:
+    """The collection's policy with defaults filled in."""
+    raw = (collection or {}).get("policy") or {}
+    return {**DEFAULT_POLICY, **{k: v for k, v in raw.items() if k in DEFAULT_POLICY}}
+
+
 def brief(collection: Optional[dict]) -> Optional[dict]:
     """The few facts about a collection that travel with a job."""
     if not collection:
         return None
     return {"id": collection.get("id"), "slug": collection.get("slug"),
-            "name": collection.get("name")}
+            "name": collection.get("name"),
+            "root_dir": str(collection.get("root_dir") or ""),
+            "dedup_across_jobs": policy_of(collection)["dedup_across_jobs"]}
+
+
+def open_index(collection: Optional[dict]):
+    """The collection's payload index, when the collection deduplicates
+    across jobs; None otherwise. Takes a full row or a brief."""
+    if not collection or not collection.get("root_dir"):
+        return None
+    dedup = collection.get("dedup_across_jobs")
+    if dedup is None:
+        dedup = policy_of(collection)["dedup_across_jobs"]
+    if not dedup:
+        return None
+    from .dedup_index import CollectionIndex
+    try:
+        return CollectionIndex.for_collection(collection["root_dir"])
+    except Exception:
+        return None
+
+
+def read_index(collection: Optional[dict]):
+    """The index if the collection has one on disk, for reading; None
+    otherwise. Never creates the file."""
+    if not collection or not collection.get("root_dir"):
+        return None
+    from .dedup_index import CollectionIndex
+    path = CollectionIndex.path_for(collection["root_dir"])
+    if not path.exists():
+        return None
+    try:
+        return CollectionIndex(path)
+    except Exception:
+        return None
 
 
 def inherited_fields(collection: Optional[dict]) -> list[dict]:
@@ -184,6 +227,7 @@ def document(collection: dict, jobs: Iterable[dict] = (),
         "updated_at": stamp,
         "elements": list(md.ELEMENTS),
         "metadata": md.normalise_fields(collection.get("metadata") or []),
+        "policy": policy_of(collection),
         "inherited_by_jobs": inherited_fields(collection),
         "jobs": [
             {"id": job.get("id"), "name": job.get("name"),
@@ -225,36 +269,55 @@ def read_document(root_dir: Path | str) -> Optional[dict]:
 # --- what a deletion would do --------------------------------------------
 
 _NO_DEDUP_NOTE = (
-    "Cross-job deduplication is not enabled in this version, so no other "
-    "job's records refer into this one and nothing else will lose content. "
-    "Once it is, this report names the jobs and records that would."
+    "This collection does not deduplicate across jobs, so no other job's "
+    "records refer into this one and nothing else will lose content."
 )
 
 
 def job_impact(collection: Optional[dict], row: dict,
-               siblings: Iterable[dict] = ()) -> dict:
+               siblings: Iterable[dict] = (),
+               referring: Optional[dict] = None) -> dict:
     """What deleting one job means for the rest of its collection.
 
-    Later jobs in the same collection are listed because they are the ones
-    that would refer into this one once cross-job deduplication exists; the
-    record count they would lose is zero until then, and said to be.
+    ``referring`` is the index's answer -- which jobs hold revisit records
+    pointing at this job's originals, and how many -- looked up by the
+    caller. Those pages will replay without their content once this job
+    is gone, until they are crawled again.
     """
+    by_id = {job.get("id"): job for job in siblings}
     later = [
         {"id": job.get("id"), "name": job.get("name"), "kind": job.get("kind", "crawl")}
         for job in siblings
         if job.get("id") != row.get("id")
         and str(job.get("created_at") or "") >= str(row.get("created_at") or "")
     ]
+    jobs = (referring or {}).get("jobs") or {}
+    referring_jobs = [
+        {"id": job_id, "name": (by_id.get(job_id) or {}).get("name"),
+         "records": count}
+        for job_id, count in sorted(jobs.items())]
+    records = int((referring or {}).get("records") or sum(jobs.values()))
+    if not collection:
+        note = "This job is not in a collection; nothing else refers to it."
+    elif not policy_of(collection)["dedup_across_jobs"]:
+        note = _NO_DEDUP_NOTE
+    elif records:
+        note = (f"{len(referring_jobs)} later job(s) hold {records} record(s) that "
+                "refer into this job for their content. After deletion those pages "
+                "replay without it until they are crawled again; the collection "
+                "lists them as missing their originals.")
+    else:
+        note = ("No other job's records refer into this one; nothing else in the "
+                "collection loses content.")
     return {
         "job": {"id": row.get("id"), "name": row.get("name"),
                 "kind": row.get("kind", "crawl"), "status": row.get("status")},
         "collection": brief(collection),
         "later_jobs_in_collection": later,
-        "referring_jobs": [],
-        "referring_records": 0,
-        "breaks_replay_elsewhere": False,
-        "note": _NO_DEDUP_NOTE if collection else
-        "This job is not in a collection; nothing else refers to it.",
+        "referring_jobs": referring_jobs,
+        "referring_records": records,
+        "breaks_replay_elsewhere": records > 0,
+        "note": note,
     }
 
 
