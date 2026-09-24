@@ -161,8 +161,11 @@ class StoreTests(unittest.TestCase):
         jobs simply belong to none."""
         path = Path(self._tmp.name) / "old.db"
         import sqlite3
-        with sqlite3.connect(path) as c:
-            c.executescript("""
+        # Closed explicitly: sqlite3's context manager commits but keeps the
+        # connection open, and Windows will not remove the file while it is.
+        conn = sqlite3.connect(path)
+        try:
+            conn.executescript("""
                 CREATE TABLE crawls (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
                     kind TEXT NOT NULL DEFAULT 'crawl', config_json TEXT NOT NULL,
                     output_dir TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
@@ -171,6 +174,8 @@ class StoreTests(unittest.TestCase):
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 INSERT INTO crawls (name, config_json, output_dir, created_at, updated_at)
                     VALUES ('old', '{}', '/x/1', 't', 't');""")
+        finally:
+            conn.close()
         store = Store(path)
 
         self.assertIsNone(store.get_crawl(1)["collection_id"])
