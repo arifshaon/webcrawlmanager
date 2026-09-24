@@ -757,3 +757,50 @@ class EditTests(unittest.TestCase):
                              ("QNL 2026", "News sites", "qnl"))
             self.assertFalse(view["policy"]["dedup_across_jobs"])
             self.assertEqual(colls.read_document(Path(made["root_dir"]))["name"], "QNL 2026")
+
+
+class MigrationSafetyTests(unittest.TestCase):
+    def test_a_job_never_finalised_keeps_its_empty_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            cid = store.create_collection("t", "T", "", "warcs/collections/t")
+            job = store.create_crawl("j", {"seeds": []}, "", 0, collection_id=cid)
+            changed = colls.absolutise_roots(store, base=tmp)
+            self.assertEqual(changed[0]["jobs"], [])
+            self.assertEqual(store.get_crawl(job)["output_dir"], "")     # never the cwd
+
+
+class RebuildLockTests(unittest.TestCase):
+    def test_no_job_of_the_collection_starts_while_its_index_is_rebuilt(self):
+        from fastapi import HTTPException
+        from webarc import server as srv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = srv.create_app(str(Path(tmp) / "swm.db"), str(Path(tmp) / "warcs"),
+                                 simulate=True, replay_root=str(Path(tmp) / "replay"),
+                                 monitor_resources=False)
+            from fastapi.testclient import TestClient
+            client = TestClient(app)
+            coll = client.post("/api/collections", json={"name": "QNL"}).json()
+            job = client.post("/api/crawls", json={
+                "name": "j", "start": "wait", "collection_id": coll["id"],
+                "config": {"seeds": [{"url": "https://s/"}]}}).json()
+            srv._store().set_status(job["id"], "waiting")
+            with srv._REBUILD_LOCK:
+                srv._REBUILDING.add(coll["id"])
+            try:
+                with self.assertRaises(HTTPException) as refused:
+                    srv._launch(job["id"])
+                self.assertEqual(refused.exception.status_code, 409)
+                with mock.patch.object(srv, "_launch") as launch:
+                    srv._launch_waiting({"cpu": 0, "memory": 0, "disk": {}})
+                    launch.assert_not_called()
+                again = client.post(f"/api/collections/{coll['id']}/rebuild-index")
+                self.assertEqual(again.status_code, 409)
+            finally:
+                with srv._REBUILD_LOCK:
+                    srv._REBUILDING.discard(coll["id"])
+            self.assertEqual(srv._store().get_crawl(job["id"])["status"], "waiting")
+            srv._store().set_status(job["id"], "pending")               # launched, not yet running
+            pending = client.post(f"/api/collections/{coll['id']}/rebuild-index")
+            self.assertEqual(pending.status_code, 409, pending.text)

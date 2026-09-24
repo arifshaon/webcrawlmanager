@@ -28,7 +28,10 @@ CHANGES = ("new", "changed", "unchanged", "gone")
 PAGE_MIMES = ("text/html", "application/xhtml+xml")
 GONE_STATUSES = (404, 410)
 
-_SKIP = {"script", "style", "noscript", "template", "svg", "head"}
+# Not "head": HTML5 lets </head> be omitted and the parser would then skip
+# the whole body. A title is content anyway; scripts and styles are skipped
+# wherever they sit.
+_SKIP = {"script", "style", "noscript", "template", "svg"}
 _LINK_ATTRS = {("a", "href"), ("area", "href"), ("iframe", "src"), ("img", "src"),
                ("video", "src"), ("audio", "src"), ("source", "src")}
 _WS = re.compile(r"\s+")
@@ -59,7 +62,10 @@ class _TextAndLinks(HTMLParser):
 
 def page_fingerprint(body: bytes, charset: Optional[str] = None) -> str:
     """The fingerprint of an HTML page: its words and its links."""
-    text = body.decode(charset or "utf-8", "replace") if body else ""
+    try:
+        text = body.decode(charset or "utf-8", "replace") if body else ""
+    except LookupError:                                 # charset=none, utf8mb4, ...
+        text = body.decode("utf-8", "replace")
     parser = _TextAndLinks()
     try:
         parser.feed(text)

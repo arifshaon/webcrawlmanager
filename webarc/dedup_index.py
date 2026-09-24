@@ -286,12 +286,14 @@ class CollectionIndex:
 
     # -- pages: what changed since the collection last saw them -----------------
     def last_page(self, url: str, before_crawl_id: Optional[int] = None) -> Optional[dict]:
-        """The collection's latest capture of a page by an earlier job."""
+        """The collection's latest capture of a page by an earlier job (a
+        lower job number: a sibling running at the same time is not the
+        previous capture to compare with)."""
         query = ("SELECT crawl_id, warc_date, status, fingerprint FROM pages WHERE url_key=? "
                  "AND status IN (200, 404, 410)")
         args: list = [url_key(url)]
-        if before_crawl_id is not None:
-            query += " AND crawl_id<>?"
+        if before_crawl_id is not None:               # earlier jobs only, not a sibling running now
+            query += " AND crawl_id<?"
             args.append(before_crawl_id)
         row = self._conn.execute(query + " ORDER BY warc_date DESC, id DESC LIMIT 1",
                                  args).fetchone()
@@ -333,7 +335,7 @@ class CollectionIndex:
         visited = {r["url_key"] for r in self._conn.execute(
             "SELECT DISTINCT url_key FROM pages WHERE crawl_id=?", (crawl_id,))}
         rows = self._conn.execute(
-            "SELECT url, url_key, warc_date, status, crawl_id FROM pages WHERE crawl_id<>? "
+            "SELECT url, url_key, warc_date, status, crawl_id FROM pages WHERE crawl_id<? "
             "ORDER BY url_key, warc_date DESC, id DESC", (crawl_id,)).fetchall()
         out, seen = [], set()
         for row in rows:                       # the first row per page is its latest capture
@@ -473,15 +475,24 @@ def rebuild(root_dir: Path | str, jobs: list[tuple[int, Path | str]]) -> dict:
     per_job: dict[int, dict] = {}
     unresolved = 0
     unreadable: list[str] = []
+    ordered = sorted(jobs, key=lambda item: int(item[0]))
+    files = {int(crawl_id): sorted(Path(job_dir).glob("*.warc.gz"))
+             + sorted(Path(job_dir).glob("*.warc")) for crawl_id, job_dir in ordered}
     try:
-        for crawl_id, job_dir in sorted(jobs, key=lambda item: int(item[0])):
+        # Jobs of one collection may run at once, so a revisit can point at
+        # an original a higher-numbered job stored first: every original of
+        # every job is read before any revisit is resolved.
+        for kind in ("response", "revisit"):
+            for crawl_id, _job_dir in ordered:
+                for warc in files[int(crawl_id)]:
+                    try:
+                        _read_warc_into(index, int(crawl_id), warc, kind)
+                    except Exception as exc:          # noqa: BLE001 - one bad file, not the run
+                        note = f"{warc.name}: {exc}"
+                        if note not in unreadable:
+                            unreadable.append(note)
+        for crawl_id, job_dir in ordered:
             job_dir = Path(job_dir)
-            warcs = sorted(job_dir.glob("*.warc.gz")) + sorted(job_dir.glob("*.warc"))
-            for warc in warcs:
-                try:
-                    _read_warc_into(index, int(crawl_id), warc)
-                except Exception as exc:              # noqa: BLE001 - one bad file, not the run
-                    unreadable.append(f"{warc.name}: {exc}")
             summary = index.summary(int(crawl_id))
             summary["pages"] = index.page_counts(int(crawl_id))
             per_job[int(crawl_id)] = summary
@@ -494,27 +505,29 @@ def rebuild(root_dir: Path | str, jobs: list[tuple[int, Path | str]]) -> dict:
     for leftover in (final.with_name(final.name + "-wal"), final.with_name(final.name + "-shm")):
         try:
             leftover.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
     os.replace(fresh, final)
     for leftover in (fresh.with_name(fresh.name + "-wal"), fresh.with_name(fresh.name + "-shm")):
         try:
             leftover.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
     return {"jobs": per_job, "unresolved_revisits": index.unresolved, "unreadable": unreadable,
             **totals}
 
 
-def _read_warc_into(index: "CollectionIndex", crawl_id: int, warc: Path) -> None:
-    """Every response and revisit record of one WARC file, into the index."""
+def _read_warc_into(index: "CollectionIndex", crawl_id: int, warc: Path,
+                    kind: str = "response") -> None:
+    """The records of one type (response or revisit) of one WARC file, into
+    the index."""
     import hashlib
 
     from warcio.archiveiterator import ArchiveIterator
 
     with warc.open("rb") as handle:
         for record in ArchiveIterator(handle):
-            if record.rec_type not in ("response", "revisit"):
+            if record.rec_type != kind:
                 continue
             h = record.rec_headers
             url = h.get_header("WARC-Target-URI") or ""

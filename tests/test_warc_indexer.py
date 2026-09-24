@@ -592,3 +592,22 @@ class CollectionRunTests(FakeJarTestCase):
         self.assertEqual(code, 0, out.getvalue() + err.getvalue())
         self.assertIn(f"#{first['id']}", out.getvalue())
         self.assertIn("carrying the collection 'QNL 2026'", out.getvalue())
+
+
+class CollectionRunProgressTests(FakeJarTestCase):
+    def test_the_collection_manifest_is_refreshed_while_a_job_runs_even_with_nobody_listening(self):
+        import threading
+        job = self.job_dir("one", warcs=("a-00001.warc.gz",))
+        root = self.tmp / "coll"
+        root.mkdir()
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_SLOW": "1.5"}):
+            worker = threading.Thread(
+                target=lambda: warc_indexer.index_collection(root, [(1, job)], collection="C",
+                                                             poll=0.2))
+            worker.start()
+            time.sleep(0.9)
+            manifest = warc_indexer.read_collection_manifest(root)
+            worker.join()
+        self.assertEqual(manifest["status"], "running")
+        self.assertIn("progress", manifest["jobs"][0])         # written during the run
+        self.assertEqual(warc_indexer.read_collection_manifest(root)["status"], "done")

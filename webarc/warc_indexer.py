@@ -651,8 +651,7 @@ def index_collection(root_dir: Path, jobs: list[tuple[int, Path]], *, collection
         try:
             result = index_warcs(crawl_dir, collection=collection, memory=memory,
                                  get_setting=get_setting, poll=poll,
-                                 on_progress=(lambda p, e=entry: note(e, progress=p))
-                                 if on_progress else None)
+                                 on_progress=lambda p, e=entry: note(e, progress=p))
         except Exception as exc:                          # noqa: BLE001 - recorded, run goes on
             note(entry, status=STATUS_FAILED, error=str(exc))
             continue

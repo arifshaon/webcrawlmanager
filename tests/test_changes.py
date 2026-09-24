@@ -229,3 +229,48 @@ class EndOfJobTests(unittest.TestCase):
             "name": "lone", "start": "wait", "config": {"seeds": [{"url": "https://s/"}]}}).json()
         self.assertEqual(self.client.get(f"/api/crawls/{lone['id']}/changes").status_code, 404)
         self.assertIsNone(self.client.get(f"/api/crawls/{lone['id']}").json()["changes"])
+
+
+class ReviewFixTests(_WriterCase):
+    def test_a_page_without_a_closing_head_tag_still_has_its_text_compared(self):
+        one = b"<html><head><title>t</title><body><p>one text</p></body></html>"
+        two = b"<html><head><title>t</title><body><p>completely different</p></body></html>"
+        self.assertNotEqual(changes.page_fingerprint(one), changes.page_fingerprint(two))
+
+    def test_an_unknown_charset_does_not_stop_the_fingerprint(self):
+        body = "<html><body><p>café</p></body></html>".encode("utf-8")
+        self.assertEqual(changes.page_fingerprint(body, "none"), changes.page_fingerprint(body))
+        self.assertEqual(changes.page_fingerprint(body, "utf8mb4"), changes.page_fingerprint(body))
+
+    def test_a_sibling_running_at_the_same_time_is_not_the_previous_capture(self):
+        earlier = self.session(4)
+        self.write(earlier, "https://s/", page(text="Old text."))
+        earlier.close()
+        later_sibling = self.session(6)                 # started first, higher number
+        self.write(later_sibling, "https://s/", page(text="Old text."))
+        self.write(later_sibling, "https://s/only-six/", page(text="Six."))
+        later_sibling.close()
+        this = self.session(5)
+        self.write(this, "https://s/", page(text="Old text."))
+        this.close()
+        report = changes.write_report(self.index, 5, self.root / "jobs" / "5")
+        self.assertEqual(report["counts"]["unchanged"], 1)
+        self.assertEqual(report["unchanged"][0]["previous_job"], 4)     # not 6
+        self.assertEqual(report["not_visited"], [])                     # job 6's page is not "earlier"
+
+    def test_a_rebuild_resolves_a_revisit_into_a_higher_numbered_job(self):
+        six = self.session(6)                           # started first, stored the original
+        self.write(six, "https://s/", page())
+        six.close()
+        five = self.session(5)
+        self.write(five, "https://s/", page())          # identical: a revisit into job 6
+        five.close()
+        self.assertEqual(five.dedup_stats["revisits_across_jobs"], 1)
+        colls.remove_index(self.root)
+        result = rebuild(self.root, [(5, self.root / "jobs" / "5"), (6, self.root / "jobs" / "6")])
+        self.assertEqual(result["unresolved_revisits"], 0)
+        self.assertEqual(result["orphaned"], 0)
+        self.assertEqual(result["jobs"][5]["revisits_across_jobs"], 1)
+        self.assertEqual(result["jobs"][5]["refers_to_jobs"], {"6": 1})
+        self.assertGreater(result["jobs"][5]["bytes_saved"], 0)
+        self.assertEqual(result["jobs"][5]["pages"]["new"], 1)          # nothing earlier than 5 held it

@@ -820,7 +820,22 @@ def _job_usage(row: dict) -> dict | None:
     return _MONITOR.processes.usage(row.get("pid"))
 
 
+# Collections whose index is being rebuilt: no job of theirs may start
+# meanwhile, or its captures would go to the index file being replaced.
+_REBUILDING: set[int] = set()
+_REBUILD_LOCK = __import__("threading").Lock()
+
+
+def _collection_rebuilding(row: dict) -> bool:
+    with _REBUILD_LOCK:
+        return bool(row.get("collection_id")) and int(row["collection_id"]) in _REBUILDING
+
+
 def _launch(crawl_id: int) -> None:
+    row = _store().get_crawl(crawl_id)
+    if row and _collection_rebuilding(row):
+        raise HTTPException(409, "this collection's index is being rebuilt; start the job "
+                                 "once that is done")
     # pending until the worker reports running: a waiting job must leave
     # the waiting state the moment it is launched, or the next tick would
     # launch it again
@@ -870,7 +885,8 @@ def _launch_waiting(snapshot: dict) -> None:
     own use shows in the reading, and launching every waiting job at once
     would recreate the shortage the curator chose to wait out.
     """
-    waiting = [r for r in _store().list_crawls() if r.get("status") == WAITING]
+    waiting = [r for r in _store().list_crawls() if r.get("status") == WAITING
+               and not _collection_rebuilding(r)]
     if not waiting:
         return
     job = min(waiting, key=lambda r: r["id"])
@@ -2396,15 +2412,22 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         jobs made before the index existed, or an index that was lost."""
         row = _require_collection(collection_id)
         jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)]
-        alive = [j["id"] for j in jobs if _worker_alive(j)]
+        alive = [j["id"] for j in jobs if _worker_alive(j) or j.get("status") == PENDING]
         if alive:
             raise HTTPException(
                 409, f"job(s) {', '.join(map(str, alive))} are still running; the index is "
                      "rebuilt once the collection is quiet")
+        with _REBUILD_LOCK:
+            if collection_id in _REBUILDING:
+                raise HTTPException(409, "this collection's index is being rebuilt already")
+            _REBUILDING.add(collection_id)
         try:
             result = colls.rebuild_index(_store(), row)
         except OSError as exc:
             raise HTTPException(500, f"the index could not be rebuilt: {exc}") from exc
+        finally:
+            with _REBUILD_LOCK:
+                _REBUILDING.discard(collection_id)
         return {"ok": True, **result}
 
     @app.post("/api/collections/{collection_id}/replay")

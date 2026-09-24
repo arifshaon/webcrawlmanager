@@ -444,9 +444,9 @@ def absolutise_roots(store, base: Path | str | None = None) -> list[dict]:
         store.set_collection_root(row["id"], str(resolved))
         jobs = []
         for job in store.crawls_in_collection(row["id"]):
-            out = Path(job.get("output_dir") or "")
-            if str(out) and not out.is_absolute():
-                store.set_output_dir(job["id"], str((base / out).resolve()))
+            raw = job.get("output_dir") or ""       # "" is a job never finalised: leave it
+            if raw and not Path(raw).is_absolute():
+                store.set_output_dir(job["id"], str((base / raw).resolve()))
                 jobs.append(job["id"])
         changed.append({"id": row["id"], "slug": row["slug"], "from": str(root),
                         "to": str(resolved), "jobs": jobs})
