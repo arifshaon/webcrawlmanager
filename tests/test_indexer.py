@@ -92,7 +92,14 @@ class UrlAndTimeTests(unittest.TestCase):
         self.assertEqual(indexer.parse_time(1756728005), datetime(2025, 9, 1, 12, 0, 5, tzinfo=utc))
         self.assertIsNone(indexer.parse_time("yesterday"))
         self.assertIsNone(indexer.parse_time(None))
+        # a date that is no date is undated, not a failed run
+        self.assertIsNone(indexer.parse_time("20261399"))
+        self.assertIsNone(indexer.parse_time("20260931123456"))
         self.assertEqual(indexer.wayback_date(datetime(2026, 9, 1, 12, 0, 5, tzinfo=utc)), 20260901120005)
+
+    def test_a_url_with_no_shape_to_normalise_is_kept_as_it_is(self):
+        self.assertEqual(indexer.normalise_url("http://host:80abc/x"), "http://host:80abc/x")
+        self.assertEqual(indexer.normalise_url("http://host:99999/"), "http://host:99999/")
 
 
 class SchemaTests(unittest.TestCase):

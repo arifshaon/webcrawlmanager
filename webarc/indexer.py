@@ -158,15 +158,15 @@ def parse_time(value: object) -> Optional[datetime]:
         except (OverflowError, OSError, ValueError):
             return None
     text = str(value).strip()
-    if re.fullmatch(r"\d{14}", text):
-        return datetime.strptime(text, _WAYBACK).replace(tzinfo=timezone.utc)
-    if re.fullmatch(r"\d{9,11}", text):
-        return datetime.fromtimestamp(int(text), tz=timezone.utc)
-    if re.fullmatch(r"\d{8}", text):                     # yt-dlp upload_date
-        return datetime.strptime(text, "%Y%m%d").replace(tzinfo=timezone.utc)
     try:
+        if re.fullmatch(r"\d{14}", text):
+            return datetime.strptime(text, _WAYBACK).replace(tzinfo=timezone.utc)
+        if re.fullmatch(r"\d{9,11}", text):
+            return datetime.fromtimestamp(int(text), tz=timezone.utc)
+        if re.fullmatch(r"\d{8}", text):                     # yt-dlp upload_date
+            return datetime.strptime(text, "%Y%m%d").replace(tzinfo=timezone.utc)
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
+    except (ValueError, OverflowError, OSError):        # a date that is no date: undated
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
@@ -190,10 +190,14 @@ def normalise_url(url: str) -> str:
     fragment, no trailing slash on a path. Used for the documents' own
     ``url_norm`` and for matching records in the WARC, so both sides agree
     even where this differs from the Java code in a corner."""
-    parts = urlsplit(str(url).strip())
+    text = str(url).strip()
+    try:
+        parts = urlsplit(text)
+        port = parts.port
+    except ValueError:                  # "http://h:80abc/": no shape to normalise
+        return text
     host = (parts.hostname or "").lower()
     host = _WWW.sub("", host)
-    port = parts.port
     if port and port not in (80, 443):
         host = f"{host}:{port}"
     path = parts.path or "/"

@@ -62,6 +62,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from . import collections as colls
 from . import metadata as md
 from . import resources
+from .procs import pid_alive
 from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
                     KIND_INSTAGRAM, KIND_RECORDING, KIND_X, KIND_YOUTUBE, PAUSED, PENDING,
                     RUNNING,
@@ -278,6 +279,23 @@ def _theme_ai_capability() -> dict:
     return ai_capability(_store().get_setting)
 
 
+# Jobs whose WARCs are being indexed by this server, claimed before the
+# runner thread starts: the manifest that says "running" is only written
+# once the jar is up, and two clicks in that gap must not start two jars.
+_WARC_INDEX_RUNS: set[int] = set()
+_WARC_INDEX_LOCK = __import__("threading").Lock()
+
+
+def _warc_indexing(crawl_id: int, crawl_dir: Path) -> bool:
+    """Whether a warc-indexer run is under way for this job: claimed here,
+    or recorded as running by a manifest a runner is still updating."""
+    from . import warc_indexer
+    with _WARC_INDEX_LOCK:
+        if crawl_id in _WARC_INDEX_RUNS:
+            return True
+    return warc_indexer.is_running(crawl_dir)
+
+
 def _warc_indexer_capability() -> dict:
     """Whether the warc-indexer jar can be run here: Java and a built jar,
     found through the Indexer settings, the environment, or the repository."""
@@ -426,24 +444,7 @@ def _dir_size(path: Path) -> int:
 
 
 def _pid_alive(pid: int | None) -> bool:
-    if not pid:
-        return False
-    if os.name == "nt":
-        import ctypes
-        PROCESS_QUERY_LIMITED = 0x1000
-        h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED, False, pid)
-        if h:
-            # distinguish a still-running process from a not-yet-reaped zombie
-            exit_code = ctypes.c_ulong()
-            ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code))
-            ctypes.windll.kernel32.CloseHandle(h)
-            return exit_code.value == 259  # STILL_ACTIVE
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
+    return pid_alive(pid)
 
 
 def _pid_is_worker(pid: int) -> bool:
@@ -1755,6 +1756,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                     409, "crawl is still running; stop it first, or delete "
                          "with force to end its worker")
             _terminate(row["pid"])
+        if _warc_indexing(crawl_id, _crawl_dir(row)):
+            raise HTTPException(
+                409, "this job's WARCs are being indexed; wait for the run to finish")
         collection = _collection_of(row)
         # The collection's index forgets the job before anything is removed:
         # were the index left holding this job's originals, later jobs would
@@ -1950,7 +1954,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         if _pid_alive(row.get("pid")):
             raise HTTPException(409, "Stop the job before indexing its WARCs.")
         crawl_dir = _crawl_dir(row)
-        if warc_indexer.is_running(crawl_dir):
+        if _warc_indexing(crawl_id, crawl_dir):
             raise HTTPException(409, "This job's WARCs are being indexed already.")
         get_setting = _store().get_setting
         cap = warc_indexer.capability(get_setting)
@@ -1970,16 +1974,29 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         if chosen and not any(w.name == chosen[0] for w in warcs):
             raise HTTPException(404, f"{chosen[0]} is not one of this job's WARC files")
 
+        with _WARC_INDEX_LOCK:
+            if crawl_id in _WARC_INDEX_RUNS:
+                raise HTTPException(409, "This job's WARCs are being indexed already.")
+            _WARC_INDEX_RUNS.add(crawl_id)
+
         def run():
             try:
                 warc_indexer.index_warcs(crawl_dir, warcs=chosen, collection=collection,
                                          get_setting=get_setting)
             except Exception as exc:                    # noqa: BLE001 - recorded for the card
                 log.warning("warc-indexer run for %d failed: %s", crawl_id, exc)
-                warc_indexer._write_manifest(crawl_dir, {
-                    "schema": "swm-warc-index-run/1", "status": warc_indexer.STATUS_FAILED,
-                    "error": str(exc), "finished_at": warc_indexer._iso_now(),
-                    "warcs": chosen or [w.name for w in warcs], "outputs": [], "documents": 0})
+                try:
+                    warc_indexer._write_manifest(crawl_dir, {
+                        "schema": "swm-warc-index-run/1", "status": warc_indexer.STATUS_FAILED,
+                        "error": str(exc), "finished_at": warc_indexer._iso_now(),
+                        "warcs": chosen or [w.name for w in warcs], "outputs": [],
+                        "documents": 0})
+                except OSError:                         # the folder itself is gone
+                    log.warning("warc-indexer run for %d: no folder to record the failure in",
+                                crawl_id)
+            finally:
+                with _WARC_INDEX_LOCK:
+                    _WARC_INDEX_RUNS.discard(crawl_id)
 
         threading.Thread(target=run, name=f"warc-index-{crawl_id}", daemon=True).start()
         return {"status": warc_indexer.STATUS_RUNNING, "warcs": chosen or [w.name for w in warcs],

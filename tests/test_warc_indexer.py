@@ -79,7 +79,7 @@ class FindingTests(unittest.TestCase):
             cap = warc_indexer.capability()
         self.assertFalse(cap["available"])
         self.assertIn("Java was not found", cap["reason"])
-        self.assertIn("warc-indexer jar was not found", cap["reason"])
+        self.assertIn("/nowhere/x.jar", cap["reason"])           # the set path, dangling
         with self.assertRaises(warc_indexer.WarcIndexerUnavailable):
             with mock.patch.dict(os.environ, {warc_indexer.CMD_ENV: "", warc_indexer.JAR_ENV: "/nowhere/x.jar",
                                               warc_indexer.JAVA_ENV: "", "JAVA_HOME": ""}), \
@@ -384,9 +384,104 @@ class ServerTests(FakeJarTestCase):
                 mock.patch("webarc.warc_indexer.shutil.which", return_value=None):
             missing = self.client.post(f"/api/crawls/{made['id']}/warc-index")
             self.assertEqual(missing.status_code, 409)
-            self.assertIn("jar was not found", missing.json()["detail"])
+            self.assertIn("/nowhere.jar", missing.json()["detail"])
             self.assertFalse(self.client.get("/api/capabilities").json()["warc_indexer"]["available"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixTests(FakeJarTestCase):
+    """The run guard holds before the manifest exists, a job is not purged
+    under its indexer, a dangling configured path is named, the Java probe
+    is not repeated, staleness does not trust a reused pid, and only the
+    job's own WARCs are run."""
+
+    def test_two_starts_in_the_same_instant_run_one_jar(self):
+        app = srv.create_app(str(self.tmp / "swm.db"), str(self.tmp / "warcs"),
+                             simulate=True, replay_root=str(self.tmp / "replay"),
+                             monitor_resources=False)
+        client = TestClient(app)
+        made = client.post("/api/crawls", json={
+            "name": "demo", "start": "wait", "config": {"seeds": [{"url": "https://a.example/"}]}})
+        out_dir = Path(made.json()["output_dir"])
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "demo-00001.warc.gz").write_bytes(b"\x1f\x8bxx")
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_SLOW": "0.5"}):
+            first = client.post(f"/api/crawls/{made.json()['id']}/warc-index")
+            second = client.post(f"/api/crawls/{made.json()['id']}/warc-index")
+            purge = client.delete(f"/api/crawls/{made.json()['id']}?purge=true")
+        self.assertEqual(first.status_code, 202, first.text)
+        self.assertEqual(second.status_code, 409, second.text)
+        self.assertEqual(purge.status_code, 409, purge.text)
+        self.assertIn("being indexed", purge.json()["detail"])
+        for _ in range(100):
+            view = client.get(f"/api/crawls/{made.json()['id']}").json()
+            if view["warc_index"]["status"] != "running":
+                break
+            time.sleep(0.05)
+        self.assertEqual(view["warc_index"]["status"], "done")
+        self.assertEqual(client.delete(f"/api/crawls/{made.json()['id']}?purge=true").status_code, 200)
+
+    def test_a_configured_jar_that_is_gone_is_named_not_hidden(self):
+        with mock.patch.dict(os.environ, {warc_indexer.CMD_ENV: "", warc_indexer.JAR_ENV: "/nowhere/x.jar",
+                                          warc_indexer.JAVA_ENV: "", "JAVA_HOME": ""}), \
+                mock.patch("webarc.warc_indexer.shutil.which", return_value=None):
+            cap = warc_indexer.capability()
+        self.assertIn("/nowhere/x.jar", cap["reason"])
+        self.assertIn("is not there", cap["reason"])
+
+    def test_java_is_asked_its_version_once(self):
+        warc_indexer._JAVA_VERSIONS.clear()
+        java = self.tmp / "java"
+        java.write_text("", encoding="utf-8")
+        done = mock.Mock(stderr='openjdk version "17.0.2"', stdout="")
+        with mock.patch("webarc.warc_indexer.subprocess.run", return_value=done) as run:
+            self.assertEqual(warc_indexer.java_version(str(java)), 'openjdk version "17.0.2"')
+            self.assertEqual(warc_indexer.java_version(str(java)), 'openjdk version "17.0.2"')
+            self.assertEqual(run.call_count, 1)
+        with mock.patch("webarc.warc_indexer.subprocess.run", side_effect=OSError("no")) as run:
+            self.assertIsNone(warc_indexer.java_version(str(self.tmp / "other")))
+            self.assertIsNone(warc_indexer.java_version(str(self.tmp / "other")))
+            self.assertEqual(run.call_count, 2)             # a failure is retried
+
+    def test_a_running_manifest_nobody_updates_is_a_dead_run_whatever_holds_the_pid(self):
+        job = self.job_dir()
+        manifest = {"schema": "swm-warc-index-run/1", "status": "running",
+                    "pid": os.getpid(), "warcs": ["a-00001.warc.gz"], "started_at": "x"}
+        warc_indexer._write_manifest(job, manifest)
+        self.assertTrue(warc_indexer.is_running(job))          # fresh: a run in its first seconds
+        old = time.time() - warc_indexer.STALE_WITH_PID_SECONDS - 5
+        os.utime(job / warc_indexer.MANIFEST_NAME, (old, old))
+        self.assertFalse(warc_indexer.is_running(job))         # our pid is alive, the run is not
+        self.assertEqual(warc_indexer.summary(job)["status"], "failed")
+
+    def test_only_the_jobs_own_warcs_are_run(self):
+        job = self.job_dir()
+        elsewhere = self.tmp / "other"
+        elsewhere.mkdir()
+        foreign = elsewhere / "big.warc.gz"
+        foreign.write_bytes(b"\x1f\x8bxx")
+        (elsewhere / "big.warc.gz.jsonl").write_text("someone else's\n", encoding="utf-8")
+        with self.assertRaises(warc_indexer.WarcIndexerUnavailable):
+            warc_indexer.index_warcs(job, warcs=[foreign])
+        self.assertEqual((elsewhere / "big.warc.gz.jsonl").read_text(encoding="utf-8"),
+                         "someone else's\n")
+        manifest = warc_indexer.index_warcs(job, warcs=[job / "a-00001.warc.gz"])
+        self.assertEqual(manifest["status"], "done")
+
+    def test_progress_is_read_incrementally(self):
+        job = self.job_dir(warcs=("a-00001.warc.gz",))
+        out = warc_indexer.index_path_for(job / "a-00001.warc.gz")
+        progress = warc_indexer._Progress(job, [job / "a-00001.warc.gz"], time.monotonic())
+        (job / warc_indexer.LOG_NAME).write_text("Parsing Archive File [1/1]:/x/a-00001.warc.gz\n")
+        out.write_text('{"a":1}\n{"a":2}\n', encoding="utf-8")
+        self.assertEqual(progress.read()["documents"], 2)
+        with out.open("a", encoding="utf-8") as handle:
+            handle.write('{"a":3}\n{"a":4')                   # the last line still being written
+        self.assertEqual(progress.read()["documents"], 3)
+        with out.open("a", encoding="utf-8") as handle:
+            handle.write('}\n')
+        self.assertEqual(progress.read()["documents"], 4)
+        self.assertEqual(progress.read()["current_warc"], "a-00001.warc.gz")

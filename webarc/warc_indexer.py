@@ -120,24 +120,52 @@ def find_java(get_setting: GetSetting = None) -> Optional[str]:
     return shutil.which("java")
 
 
+_JAVA_VERSIONS: dict[tuple[str, Optional[float]], Optional[str]] = {}
+
+
 def java_version(java: Optional[str] = None) -> Optional[str]:
-    """The version line ``java -version`` prints, or None when it cannot run."""
+    """The version line ``java -version`` prints, or None when it cannot run.
+
+    Remembered per executable (and its modification time, so an upgrade or
+    a swapped path is noticed): the dashboard asks for the settings every
+    two seconds, and a JVM must not be started on each of them."""
     if not java:
         return None
     try:
+        stamp: Optional[float] = Path(java).stat().st_mtime
+    except OSError:
+        stamp = None
+    key = (str(java), stamp)
+    if key in _JAVA_VERSIONS:
+        return _JAVA_VERSIONS[key]
+    try:
         done = subprocess.run([java, "-version"], capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None                       # asked again next time
     lines = [l.strip() for l in (done.stderr or done.stdout or "").splitlines() if l.strip()]
     # the version line proper; a JVM may print JAVA_TOOL_OPTIONS first
-    return next((l for l in lines if "version" in l.lower()), lines[0] if lines else None)
+    version = next((l for l in lines if "version" in l.lower()), lines[0] if lines else None)
+    if version:                       # a failure is asked again next time
+        _JAVA_VERSIONS[key] = version
+    return version
+
+
+def configured_path(kind: str, get_setting: GetSetting = None) -> Optional[Path]:
+    """The jar or config path the curator set (Settings, else the
+    environment), whether or not it exists; None when nothing is set."""
+    env = {"jar": JAR_ENV, "config": CONF_ENV}[kind]
+    for candidate in (_setting(get_setting, kind), os.environ.get(env, "")):
+        if candidate:
+            return Path(candidate).expanduser()
+    return None
 
 
 def find_jar(get_setting: GetSetting = None) -> Optional[Path]:
-    for candidate in (_setting(get_setting, "jar"), os.environ.get(JAR_ENV, "")):
-        if candidate:
-            path = Path(candidate).expanduser()
-            return path if path.is_file() else None
+    """A set path wins, even when it dangles: capability() then says so
+    rather than silently running whatever jar the repository holds."""
+    configured = configured_path("jar", get_setting)
+    if configured is not None:
+        return configured if configured.is_file() else None
     target = _repo_root() / "warc-indexer" / "target"
     jars = sorted(target.glob("warc-indexer-*-jar-with-dependencies.jar"),
                   key=lambda p: p.stat().st_mtime, reverse=True)
@@ -145,10 +173,9 @@ def find_jar(get_setting: GetSetting = None) -> Optional[Path]:
 
 
 def find_config(jar: Optional[Path] = None, get_setting: GetSetting = None) -> Optional[Path]:
-    for candidate in (_setting(get_setting, "config"), os.environ.get(CONF_ENV, "")):
-        if candidate:
-            path = Path(candidate).expanduser()
-            return path if path.is_file() else None
+    configured = configured_path("config", get_setting)
+    if configured is not None:
+        return configured if configured.is_file() else None
     candidates = []
     if jar:
         candidates.append(jar.resolve().parent.parent / "config" / "swm-indexer.conf")
@@ -220,17 +247,26 @@ def capability(get_setting: GetSetting = None) -> dict:
         problems.append("Java was not found. Install Java 11 or newer, or set the Java path "
                         "(JAVA_HOME or the java executable) under Settings › Indexer.")
     if not jar:
-        problems.append("The warc-indexer jar was not found. Build it with "
-                        "`mvnw -DskipTests package` in the repository's warc-indexer folder, "
-                        "or set its path under Settings › Indexer.")
+        dangling = configured_path("jar", get_setting)
+        if dangling is not None:
+            problems.append(f"The warc-indexer jar set under Settings › Indexer (or "
+                            f"{JAR_ENV}) is not there: {dangling}. Correct the path, or "
+                            "clear it to use the repository's own build.")
+        else:
+            problems.append("The warc-indexer jar was not found. Build it with "
+                            "`mvnw -DskipTests package` in the repository's warc-indexer "
+                            "folder, or set its path under Settings › Indexer.")
     version = java_version(java) if java else None
     if java and not version:
         problems.append(f"Java at {java} could not be run.")
     note = None
     if jar and not config:
-        note = ("config/swm-indexer.conf was not found beside the jar; the jar's built-in "
-                "defaults would be used, which index request records too. Set the "
-                "configuration path under Settings › Indexer.")
+        dangling = configured_path("config", get_setting)
+        note = ((f"The configuration set under Settings › Indexer (or {CONF_ENV}) is not "
+                 f"there: {dangling}. ") if dangling is not None else
+                "config/swm-indexer.conf was not found beside the jar. ") + (
+                "The jar's built-in defaults would be used, which index request records "
+                "too. Set the configuration path under Settings › Indexer.")
     return {"available": bool(java and jar and version), "reason": " ".join(problems) or None,
             "note": note, "jar": str(jar) if jar else None, "java": java,
             "java_version": version, "config": str(config) if config else None,
@@ -289,20 +325,13 @@ def _write_manifest(crawl_dir: Path, manifest: dict) -> None:
     os.replace(tmp, path)
 
 
-def _pid_alive(pid: Optional[int]) -> bool:
-    if not pid:
-        return False
-    try:
-        import psutil
-        return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-    except Exception:                                   # noqa: BLE001
-        return False
+from .procs import pid_alive as _pid_alive  # noqa: E402 - one liveness answer
 
 
 def is_running(crawl_dir: Path) -> bool:
     manifest = read_manifest(crawl_dir)
     return bool(manifest and manifest.get("status") == STATUS_RUNNING
-                and _pid_alive(manifest.get("pid")))
+                and not _run_died(manifest, crawl_dir))
 
 
 def _count_lines(path: Path) -> int:
@@ -346,21 +375,66 @@ def _explain(exit_code: Optional[int], tail: str) -> str:
     return "The indexer failed."
 
 
-def _progress(crawl_dir: Path, chosen: list[Path], started: float) -> dict:
-    files_total = len(chosen)
-    file_index, current = 0, None
-    path = crawl_dir / LOG_NAME
-    try:
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            m = _PARSING.search(line)
+class _Progress:
+    """Progress of one run, read incrementally: each poll reads only what
+    the jar appended to its log and its outputs since the last one, so a
+    long run with large outputs costs the same per poll at its end as at
+    its start."""
+
+    def __init__(self, crawl_dir: Path, chosen: list[Path], started: float):
+        self.crawl_dir, self.chosen, self.started = crawl_dir, chosen, started
+        self.file_index, self.files_total, self.current = 0, len(chosen), None
+        self._log_offset = 0
+        self._log_rest = b""
+        self._counted: dict[Path, tuple[int, int]] = {}      # output -> (offset, lines)
+
+    def _read_log(self) -> None:
+        path = self.crawl_dir / LOG_NAME
+        try:
+            with path.open("rb") as handle:
+                handle.seek(self._log_offset)
+                chunk = handle.read()
+        except OSError:
+            return
+        self._log_offset += len(chunk)
+        data = self._log_rest + chunk
+        lines = data.split(b"\n")
+        self._log_rest = lines.pop()                       # a line still being written
+        for raw in lines:
+            m = _PARSING.search(raw.decode("utf-8", "replace"))
             if m:
-                file_index, files_total = int(m.group(1)), int(m.group(2))
-                current = Path(m.group(3).strip()).name
-    except OSError:
-        pass
-    documents = sum(_count_lines(index_path_for(w)) for w in chosen)
-    return {"file_index": file_index, "files_total": files_total, "current_warc": current,
-            "documents": documents, "elapsed_seconds": round(time.monotonic() - started)}
+                self.file_index, self.files_total = int(m.group(1)), int(m.group(2))
+                self.current = Path(m.group(3).strip()).name
+
+    def _documents(self) -> int:
+        total = 0
+        for warc in self.chosen:
+            out = index_path_for(warc)
+            offset, lines = self._counted.get(out, (0, 0))
+            try:
+                with out.open("rb") as handle:
+                    handle.seek(offset)
+                    for line in handle:
+                        if line.endswith(b"\n"):
+                            offset += len(line)
+                            if line.strip():
+                                lines += 1
+            except OSError:
+                pass
+            self._counted[out] = (offset, lines)
+            total += lines
+        return total
+
+    def read(self) -> dict:
+        self._read_log()
+        return {"file_index": self.file_index, "files_total": self.files_total,
+                "current_warc": self.current, "documents": self._documents(),
+                "elapsed_seconds": round(time.monotonic() - self.started)}
+
+
+def _progress(crawl_dir: Path, chosen: list[Path], started: float) -> dict:
+    """One full read, for the final tally."""
+    return _Progress(crawl_dir, chosen, started).read()
 
 
 def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None,
@@ -385,7 +459,9 @@ def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None
             if not path.is_absolute():
                 path = crawl_dir / path
             path = path.resolve()
-            if not path.is_file():
+            # only the job's own files: the outputs go beside the WARC, and a
+            # run must never write beside, or delete beside, someone else's
+            if path.parent != crawl_dir or not path.is_file():
                 raise WarcIndexerUnavailable(f"{path.name} is not a WARC file in this job's folder")
             chosen.append(path)
     else:
@@ -415,6 +491,7 @@ def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None
     }
     log_path = crawl_dir / LOG_NAME
     started = time.monotonic()
+    progress = _Progress(crawl_dir, chosen, started)
     with log_path.open("wb") as log_file:
         try:
             proc = subprocess.Popen(command, stdout=log_file, stderr=subprocess.STDOUT,
@@ -442,7 +519,7 @@ def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None
                     manifest.pop("pid", None)
                     _write_manifest(crawl_dir, manifest)
                     return manifest
-                manifest["progress"] = _progress(crawl_dir, chosen, started)
+                manifest["progress"] = progress.read()
                 _write_manifest(crawl_dir, manifest)
                 if on_progress:
                     on_progress(manifest["progress"])
@@ -474,16 +551,30 @@ def index_warcs(crawl_dir: Path, *, warcs: Optional[Iterable[str | Path]] = None
 
 
 STALE_SECONDS = 3 * POLL_SECONDS
+# With the pid apparently alive the manifest may still go stale: after a
+# server restart the runner thread that wrote it is gone, and the number may
+# by now belong to another process. A live run rewrites the manifest every
+# poll; one untouched this long has no runner behind it.
+STALE_WITH_PID_SECONDS = 60.0
 
 
-def _stale(crawl_dir: Path) -> bool:
+def _stale(crawl_dir: Path, limit: float = STALE_SECONDS) -> bool:
     """Whether the manifest has not been touched for longer than the
     runner's own polling would allow while a run is alive."""
     try:
         age = time.time() - (Path(crawl_dir) / MANIFEST_NAME).stat().st_mtime
     except OSError:
         return True
-    return age > STALE_SECONDS
+    return age > limit
+
+
+def _run_died(manifest: dict, crawl_dir: Path) -> bool:
+    """A manifest that says running, with no runner behind it any more."""
+    if manifest.get("status") != STATUS_RUNNING:
+        return False
+    if not _pid_alive(manifest.get("pid")):
+        return _stale(crawl_dir)
+    return _stale(crawl_dir, STALE_WITH_PID_SECONDS)
 
 
 def summary(crawl_dir: Path) -> Optional[dict]:
@@ -493,7 +584,7 @@ def summary(crawl_dir: Path) -> Optional[dict]:
         return None
     status = manifest.get("status")
     error = manifest.get("error")
-    if status == STATUS_RUNNING and not _pid_alive(manifest.get("pid")) and _stale(crawl_dir):
+    if _run_died(manifest, crawl_dir):
         # the process went away without the run being finished off: the
         # server restarted or the runner died. A manifest written moments
         # ago is just the gap between the jar exiting and its outcome being

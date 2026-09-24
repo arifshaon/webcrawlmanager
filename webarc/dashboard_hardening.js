@@ -179,7 +179,7 @@ function crawlRow(c) {
       })()}
       ${c.has_selection ? `<button class="act replay" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
       <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
-      <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
+      <button class="act danger" onclick="del(${id})" ${(running || paused || blocked || (c.warc_index && c.warc_index.status === "running")) ? "disabled" : ""} ${c.warc_index && c.warc_index.status === "running" ? 'title="Wait for the indexer to finish"' : ""}>Delete</button>
     </div>
     <div class="seeds">${seedRows}</div>
   </div>`;
