@@ -18,9 +18,11 @@ that holds the original; delete that job and the revisit's page replays
 without its content. The index counts those references before a deletion,
 and afterwards marks them orphaned so they can be listed and re-crawled.
 
-Concurrency: jobs of one collection may run at once. Writes go through
-SQLite's own locking (WAL, a generous busy timeout) and a duplicate original
-written by two jobs in the same instant is merely stored twice, never lost.
+Concurrency: jobs of one collection may run at once. Every write is its
+own short transaction, so the file is never locked between two captures:
+a sibling job, or the dashboard reading the collection's counts, waits at
+most for one row. A duplicate original written by two jobs in the same
+instant is merely stored twice, never lost.
 """
 
 from __future__ import annotations
@@ -75,16 +77,16 @@ def url_key(url: str) -> str:
     host, no fragment, no tracking parameters, query sorted."""
     try:
         parts = urlsplit(str(url or "").strip())
+        port = parts.port
     except ValueError:
         return str(url or "").strip()
     query = sorted(
         (k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
         if not k.lower().startswith(_TRACKING_PARAMS))
     host = (parts.hostname or "").lower()
-    if parts.port and not (
-            (parts.scheme == "http" and parts.port == 80)
-            or (parts.scheme == "https" and parts.port == 443)):
-        host = f"{host}:{parts.port}"
+    if port and not ((parts.scheme == "http" and port == 80)
+                     or (parts.scheme == "https" and port == 443)):
+        host = f"{host}:{port}"
     path = parts.path or "/"
     return urlunsplit((parts.scheme.lower(), host, path, urlencode(query), ""))
 
@@ -96,27 +98,32 @@ def _now() -> str:
 class CollectionIndex:
     """The durable payload table of one collection."""
 
-    # Writes are committed in batches: a lookup from the same job sees its
-    # own uncommitted rows, another job sees them a moment later, and a
-    # crash costs at most one batch, which only means a payload is stored
-    # again rather than referred to.
-    COMMIT_EVERY = 25
-
+    # Each write is one transaction (autocommit mode, BEGIN IMMEDIATE around
+    # the statements of a write). With WAL and synchronous=NORMAL that is
+    # cheap, and nothing holds the file's write lock between captures.
     def __init__(self, path: Path | str):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path), timeout=30,
-                                     check_same_thread=False)
+                                     check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA busy_timeout=30000")
-        self._conn.executescript(_SCHEMA)
-        self._conn.execute(
-            "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)",
-            (str(SCHEMA_VERSION),))
-        self._conn.commit()
-        self._pending = 0
+        if not self._has_schema():
+            # Only a new file is written to on open: opening an index a
+            # sibling job is writing to must never need its lock.
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            with self._transaction() as c:
+                for statement in _SCHEMA.split(";"):
+                    if statement.strip():
+                        c.execute(statement)
+                c.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)",
+                          (str(SCHEMA_VERSION),))
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+
+    def _has_schema(self) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+        return row is not None
 
     @classmethod
     def for_collection(cls, root_dir: Path | str) -> "CollectionIndex":
@@ -128,13 +135,14 @@ class CollectionIndex:
 
     # -- lifecycle -----------------------------------------------------------
     def commit(self) -> None:
-        if self._pending:
+        """Every write has already been committed; kept for callers that
+        flush before reading."""
+        if self._conn.in_transaction:            # pragma: no cover - defensive
             self._conn.commit()
-            self._pending = 0
 
     def close(self) -> None:
         try:
-            self._conn.commit()
+            self.commit()
         finally:
             self._conn.close()
 
@@ -143,11 +151,6 @@ class CollectionIndex:
 
     def __exit__(self, *_exc) -> None:
         self.close()
-
-    def _wrote(self) -> None:
-        self._pending += 1
-        if self._pending >= self.COMMIT_EVERY:
-            self.commit()
 
     # -- what is held ---------------------------------------------------------
     def lookup(self, digest: str) -> Optional[dict]:
@@ -164,31 +167,39 @@ class CollectionIndex:
                         status: Optional[int] = None, mime: Optional[str] = None,
                         length: int = 0) -> None:
         key = url_key(url)
-        self._conn.execute(
-            "INSERT INTO captures (crawl_id, url, url_key, warc_date, digest, record_id, "
-            "record_type, status, mime, length, warc_file) "
-            "VALUES (?,?,?,?,?,?,'response',?,?,?,?)",
-            (crawl_id, url, key, warc_date, digest, record_id,
-             status, mime, int(length), warc_file))
-        # A page stored again in full is no longer missing its original.
-        self._conn.execute(
-            "UPDATE captures SET orphaned=0 WHERE orphaned=1 AND url_key=?", (key,))
-        self._wrote()
+        with self._transaction() as c:
+            c.execute(
+                "INSERT INTO captures (crawl_id, url, url_key, warc_date, digest, record_id, "
+                "record_type, status, mime, length, warc_file) "
+                "VALUES (?,?,?,?,?,?,'response',?,?,?,?)",
+                (crawl_id, url, key, warc_date, digest, record_id,
+                 status, mime, int(length), warc_file))
+            # A page stored again in full is no longer missing its original.
+            c.execute("UPDATE captures SET orphaned=0 WHERE orphaned=1 AND url_key=?", (key,))
 
     def record_revisit(self, *, crawl_id: Optional[int], url: str, warc_date: str,
                        digest: str, record_id: str, warc_file: str,
                        refers_to: dict, status: Optional[int] = None,
                        mime: Optional[str] = None, length: int = 0) -> None:
-        self._conn.execute(
-            "INSERT INTO captures (crawl_id, url, url_key, warc_date, digest, record_id, "
-            "record_type, status, mime, length, warc_file, refers_to_crawl_id, "
-            "refers_to_record_id, refers_to_url, refers_to_date) "
-            "VALUES (?,?,?,?,?,?,'revisit',?,?,?,?,?,?,?,?)",
-            (crawl_id, url, url_key(url), warc_date, digest, record_id,
-             status, mime, int(length), warc_file,
-             refers_to.get("crawl_id"), refers_to.get("record_id"),
-             refers_to.get("url"), refers_to.get("warc_date")))
-        self._wrote()
+        # A revisit into a job that has since been deleted is orphaned from
+        # the start: its page has no original to replay from.
+        with self._transaction() as c:
+            c.execute(
+                "INSERT INTO captures (crawl_id, url, url_key, warc_date, digest, record_id, "
+                "record_type, status, mime, length, warc_file, refers_to_crawl_id, "
+                "refers_to_record_id, refers_to_url, refers_to_date, orphaned) "
+                "VALUES (?,?,?,?,?,?,'revisit',?,?,?,?,?,?,?,?,"
+                "EXISTS(SELECT 1 FROM jobs_removed WHERE crawl_id=?))",
+                (crawl_id, url, url_key(url), warc_date, digest, record_id,
+                 status, mime, int(length), warc_file,
+                 refers_to.get("crawl_id"), refers_to.get("record_id"),
+                 refers_to.get("url"), refers_to.get("warc_date"),
+                 refers_to.get("crawl_id")))
+
+    def removed_jobs(self) -> set[int]:
+        """Jobs whose originals were deleted; nothing may refer into them."""
+        rows = self._conn.execute("SELECT crawl_id FROM jobs_removed").fetchall()
+        return {int(r["crawl_id"]) for r in rows}
 
     # -- history -------------------------------------------------------------
     def last_seen(self, url: str) -> Optional[dict]:
@@ -307,10 +318,12 @@ class CollectionIndex:
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
-        self.commit()
+        """One write: takes the lock, applies, releases. BEGIN IMMEDIATE
+        waits for a sibling's write (busy_timeout) rather than failing."""
+        self._conn.execute("BEGIN IMMEDIATE")
         try:
             yield self._conn
-            self._conn.commit()
+            self._conn.execute("COMMIT")
         except Exception:
-            self._conn.rollback()
+            self._conn.execute("ROLLBACK")
             raise

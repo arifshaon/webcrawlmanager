@@ -916,8 +916,13 @@ Collections page sets them up as the seeds of a new crawl in the same
 collection; once stored again they leave the list. Deleting a collection
 removes its jobs from the dashboard; with `--purge` (or the dashboard's
 second prompt) their files are deleted from disk as well, otherwise the files
-stay where they are. A collection is not deleted while one of its jobs is
-running unless the deletion is forced.
+stay where they are (the index does not: it describes jobs that no longer
+exist, and a collection made later under the same name starts its own). A
+collection is not deleted while one of its jobs is running unless the
+deletion is forced. Jobs of one collection can run at the same time, from
+the dashboard or the command line; the index is written one capture at a
+time, so nobody waits on anybody. A collection's directory is recorded as an
+absolute path, so a command-line job finds it from any working directory.
 
 ## Browser modes
 

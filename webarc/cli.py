@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from .config import load_config
@@ -342,6 +343,10 @@ def _register_job_in_collection(args, name: str, kind: str, config: dict,
     config["output_dir"] = str(job_dir)
     store.finalize_config(crawl_id, config, str(job_dir))
     store.set_status(crawl_id, RUNNING)
+    # This process is the job's worker: with its pid on record a running
+    # dashboard sees the job alive, rather than settling it as lost after a
+    # minute and offering to delete the directory being written to.
+    store.set_pid(crawl_id, os.getpid())
     _refresh_collection_document(store, collection)
     return (store, crawl_id), collection, job_dir
 
@@ -353,7 +358,7 @@ def _settle_registered_job(registered, outcome: str) -> None:
     store, crawl_id = registered
     status = {"completed": COMPLETED, "failed": FAILED}.get(outcome, STOPPED)
     try:
-        store.set_status(crawl_id, status)
+        store.set_status(crawl_id, status, "")       # any lost-worker note is void
         row = store.get_crawl(crawl_id)
         _refresh_collection_document(store, store.get_collection(
             (row or {}).get("collection_id")))
@@ -381,10 +386,25 @@ def _create_collection_row(store, name: str, description: str,
     if store.find_collection(slug):
         raise ValueError(f"A collection with the identifier '{slug}' already exists.")
     root = colls.collection_root(_P(storage_dir) if storage_dir else _P(base), slug)
+    try:
+        root = root.expanduser().resolve()   # stored absolute: the same place from any cwd
+    except OSError:
+        pass
+    leftover = colls.index_leftover(root)
+    if leftover:
+        raise ValueError(f"{leftover} belongs to an earlier collection of this name; move "
+                         "or remove it, or choose another name or --storage-dir.")
+    policy = policy or dict(colls.DEFAULT_POLICY)
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        colls.write_document(root, colls.document(
+            {"id": None, "slug": slug, "name": name, "description": description,
+             "root_dir": str(root), "metadata": metadata, "policy": policy}, []))
+    except OSError as exc:
+        raise ValueError(f"Could not create the collection's directory {root}: {exc}") from exc
     collection_id = store.create_collection(slug, name, description, str(root), metadata,
-                                            policy or dict(colls.DEFAULT_POLICY))
+                                            policy)
     row = store.get_collection(collection_id)
-    root.mkdir(parents=True, exist_ok=True)
     colls.write_document(root, colls.document(row, []))
     return row
 
@@ -506,6 +526,7 @@ def _cmd_collection(args) -> int:
         if args.purge:
             import shutil
             shutil.rmtree(root, ignore_errors=True)
+        colls.remove_index(root)          # never inherited by a namesake
         print(f"Deleted collection '{row['name']}' and {len(removed)} job record(s)"
               f"{'; files removed from disk' if args.purge else '; files kept on disk'}.")
         return 0

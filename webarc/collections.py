@@ -60,7 +60,16 @@ def slugify(name: str) -> str:
     text = re.sub(r"[^\w]+", "-", text, flags=re.UNICODE)
     text = re.sub(r"-{2,}", "-", text).strip("-_")
     text = text[:MAX_SLUG].rstrip("-_")
+    if text.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+        text = f"c-{text}"                      # "con", "nul", "com1": not a directory on Windows
     return text or "collection"
+
+
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 
 
 def validate_name(name: object) -> str:
@@ -128,6 +137,28 @@ def open_index(collection: Optional[dict]):
         return CollectionIndex.for_collection(collection["root_dir"])
     except Exception:
         return None
+
+
+def index_leftover(root_dir: Path | str) -> Optional[Path]:
+    """An index file already at a would-be collection's root: the remains
+    of a collection deleted without purge, or of one made from another
+    database. A new collection must not inherit it, or its jobs would refer
+    to originals no job of theirs holds."""
+    from .dedup_index import CollectionIndex
+    path = CollectionIndex.path_for(root_dir)
+    return path if path.exists() else None
+
+
+def remove_index(root_dir: Path | str) -> None:
+    """Delete a collection's index file and its journal, if present."""
+    from .dedup_index import CollectionIndex
+    path = CollectionIndex.path_for(root_dir)
+    for candidate in (path, path.with_name(path.name + "-wal"),
+                      path.with_name(path.name + "-shm")):
+        try:
+            candidate.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def read_index(collection: Optional[dict]):

@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import tempfile
+import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -595,3 +596,99 @@ class CommandLineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CreationSafetyTests(unittest.TestCase):
+    """A collection exists in the store only once its directory does, its
+    root is stored absolute, and its slug is a directory name everywhere."""
+
+    def test_reserved_windows_names_are_not_used_as_directories(self):
+        for name in ("con", "NUL", "com1", "Lpt9", "aux.txt"):
+            self.assertNotIn(colls.slugify(name).split(".", 1)[0].upper(),
+                             colls._WINDOWS_RESERVED, name)
+        self.assertEqual(colls.slugify("con"), "c-con")
+        self.assertEqual(colls.slugify("Console"), "console")
+
+    def test_a_directory_that_cannot_be_made_leaves_no_row(self):
+        from fastapi.testclient import TestClient
+        from webarc import server as srv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = srv.create_app(str(Path(tmp) / "swm.db"), str(Path(tmp) / "warcs"),
+                                 simulate=True, replay_root=str(Path(tmp) / "replay"),
+                                 monitor_resources=False)
+            client = TestClient(app)
+            with mock.patch.object(Path, "mkdir", side_effect=OSError("read-only")):
+                refused = client.post("/api/collections", json={"name": "QNL"})
+            self.assertEqual(refused.status_code, 400, refused.text)
+            self.assertEqual(client.get("/api/collections").json(), [])
+            made = client.post("/api/collections", json={"name": "QNL"})
+            self.assertEqual(made.status_code, 201, made.text)
+            self.assertTrue(Path(made.json()["root_dir"]).is_absolute())
+            self.assertTrue((Path(made.json()["root_dir"]) / "collection.json").exists())
+
+    def test_the_command_line_stores_an_absolute_root_and_refuses_a_bad_one(self):
+        from webarc.cli import _create_collection_row
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                row = _create_collection_row(store, "QNL", "", [], Path("warcs"))
+            finally:
+                os.chdir(cwd)
+            self.assertTrue(Path(row["root_dir"]).is_absolute())
+            self.assertEqual(Path(row["root_dir"]).resolve(),
+                             (Path(tmp) / "warcs" / "collections" / "qnl").resolve())
+            with mock.patch.object(Path, "mkdir", side_effect=OSError("read-only")):
+                with self.assertRaises(ValueError):
+                    _create_collection_row(store, "Other", "", [], Path(tmp) / "w")
+            self.assertIsNone(store.find_collection("other"))
+
+
+class CommandLineJobLivenessTests(unittest.TestCase):
+    """A job the command line runs in a collection is alive to the dashboard
+    while it runs, and ends without a lost-worker note."""
+
+    def test_the_registering_process_is_the_jobs_worker(self):
+        from types import SimpleNamespace
+        from webarc.cli import _register_job_in_collection, _settle_registered_job
+        from webarc import server as srv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            root = Path(tmp) / "collections" / "c"
+            cid = store.create_collection("c", "C", "", str(root))
+            args = SimpleNamespace(db=str(Path(tmp) / "swm.db"), collection="c",
+                                   create_collection=False, warc_root=str(Path(tmp)))
+            (store, job), _collection, _dir = _register_job_in_collection(
+                args, "j", "crawl", {"seeds": []}, seeds_total=0)
+            row = store.get_crawl(job)
+            self.assertEqual(row["pid"], os.getpid())
+            # The test runner's own command line names neither webarc nor
+            # swm; a job run as "swm crawl ..." or "python -m webarc.cli" does.
+            with mock.patch.object(srv, "_store", return_value=store), \
+                    mock.patch.object(srv, "_pid_is_worker", return_value=True):
+                self.assertTrue(srv._worker_alive(row))
+                # Long idle, still alive: not settled as lost.
+                self.assertEqual(srv._reconcile({**row, "updated_at": "2000-01-01T00:00:00+00:00"})
+                                 ["status"], row["status"])
+            store.set_status(job, "running", "The worker process is not running")
+            _settle_registered_job((store, job), "completed")
+            self.assertEqual(store.get_crawl(job)["status"], "completed")
+            self.assertFalse(store.get_crawl(job)["error"])
+
+    @unittest.skipIf(os.name == "nt", "the /proc command line is read on POSIX only")
+    def test_the_swm_command_counts_as_a_worker(self):
+        from webarc import server as srv
+
+        def cmdline(argv):
+            return mock.patch.multiple(Path, exists=lambda self: True,
+                                       read_bytes=lambda self: b"\0".join(argv))
+        with cmdline([b"/venv/bin/python", b"/venv/bin/swm", b"crawl", b"cfg.yaml"]):
+            self.assertTrue(srv._pid_is_worker(os.getpid()))
+        with cmdline([b"/venv/bin/python", b"-m", b"webarc.worker", b"--crawl-id", b"3"]):
+            self.assertTrue(srv._pid_is_worker(os.getpid()))
+        with cmdline([b"/usr/bin/python", b"-m", b"http.server"]):
+            self.assertFalse(srv._pid_is_worker(os.getpid()))

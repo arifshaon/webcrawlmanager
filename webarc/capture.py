@@ -172,7 +172,6 @@ class WarcSession:
         self.crawl_id = crawl_id
         # originals found in the index, remembered for the session so a
         # stylesheet every page shares is looked up once
-        self._foreign: dict[str, tuple[str, str, str, int | None]] = {}
         self.dedup_stats = {"responses": 0, "revisits_within_job": 0,
                             "revisits_across_jobs": 0, "bytes_saved": 0,
                             "bytes_saved_across_jobs": 0, "refers_to_jobs": {}}
@@ -274,14 +273,13 @@ class WarcSession:
             own = self._digests.get(digest)
             if own is not None:
                 held = (*own, self.crawl_id)
-            elif digest in self._foreign:
-                held = self._foreign[digest]
             elif self._index is not None:
+                # Asked every time, not cached: an original whose job is
+                # deleted while this one runs must not be referred to again.
                 found = self._index_lookup(digest)
                 if found:
                     held = (found["url"], found["warc_date"], found["record_id"],
                             found["crawl_id"])
-                    self._foreign[digest] = held
         mime = _content_type(resp_hlist)
         if held is not None:
             orig_uri, orig_date, orig_id, orig_job = held
@@ -306,14 +304,8 @@ class WarcSession:
                 warc_content_type="application/http; msgtype=response",
             )
             self.dedup_stats["responses"] += 1
-            if self.cfg.dedup and body:
-                self._digests[digest] = (
-                    url, date, record.rec_headers.get_header("WARC-Record-ID"))
 
         record.rec_headers.replace_header("WARC-Date", date)
-        if self._index is not None:
-            self._index_record(record, url, date, digest, status, mime, len(body),
-                               held)
         # link request to response
         req_record.rec_headers.add_header(
             "WARC-Concurrent-To",
@@ -321,6 +313,16 @@ class WarcSession:
 
         self._writer.write_record(record)
         self._writer.write_record(req_record)
+        # Only a record that is on disk is one to refer to: the digest table
+        # and the collection index are told after the write, so a failed
+        # write (disk full) leaves nothing pointing at a record that is not
+        # there.
+        if held is None and self.cfg.dedup and body:
+            self._digests[digest] = (
+                url, date, record.rec_headers.get_header("WARC-Record-ID"))
+        if self._index is not None:
+            self._index_record(record, url, date, digest, status, mime, len(body),
+                               held)
         self._maybe_rotate()
 
     # -- the collection index --------------------------------------------------

@@ -468,8 +468,10 @@ def _pid_is_worker(pid: int) -> bool:
             return True
         cmdline = Path(f"/proc/{pid}/cmdline")
         if cmdline.exists():
-            text = cmdline.read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
-            return "webarc" in text
+            args = cmdline.read_bytes().split(b"\0")
+            # a worker process, or the swm command running a job itself
+            return any(b"webarc" in a or Path(a.decode("utf-8", "replace")).name == "swm"
+                       for a in args)
     except Exception:
         pass
     return True
@@ -706,16 +708,30 @@ def _create_collection(payload: dict) -> dict:
                                  "exists; choose another name")
     root = colls.collection_root(_storage_root_for(payload.get("storage_dir")), slug)
     try:
+        root = root.resolve()          # stored absolute: the same place from any cwd
+    except OSError:
+        pass
+    leftover = colls.index_leftover(root)
+    if leftover:
+        raise HTTPException(
+            409, f"{leftover} belongs to an earlier collection of this name; move or "
+                 "remove it, or choose another name or storage location")
+    # The directory and its document first: a collection that cannot be
+    # written to is refused before it is listed anywhere.
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        colls.write_document(root, colls.document(
+            {"id": None, "slug": slug, "name": name, "description": description,
+             "root_dir": str(root), "metadata": metadata, "policy": policy}, []))
+    except OSError as exc:
+        raise HTTPException(400, f"could not create the collection's directory: {exc}") from exc
+    try:
         collection_id = _store().create_collection(slug, name, description,
                                                    str(root), metadata, policy)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     row = _store().get_collection(collection_id)
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        colls.write_document(root, colls.document(row, []))
-    except OSError as exc:
-        raise HTTPException(500, f"could not create the collection's directory: {exc}") from exc
+    colls.write_document(root, colls.document(row, []))
     return row
 
 
@@ -1740,17 +1756,29 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                          "with force to end its worker")
             _terminate(row["pid"])
         collection = _collection_of(row)
-        if purge:
-            shutil.rmtree(_crawl_dir(row), ignore_errors=True)
-        _store().delete_crawl(crawl_id)
-        _refresh_collection_document(collection)
+        # The collection's index forgets the job before anything is removed:
+        # were the index left holding this job's originals, later jobs would
+        # refer to WARCs that no longer exist. If it cannot be updated,
+        # nothing is deleted.
         orphaned = 0
         index = colls.read_index(collection)
         if index is not None:
             try:
                 orphaned = index.forget_job(crawl_id)
+            except Exception as exc:
+                raise HTTPException(
+                    503, f"the collection's index could not be updated ({exc}); "
+                         "nothing was deleted, try again shortly") from exc
             finally:
                 index.close()
+        elif collection is not None and colls.index_leftover(collection["root_dir"]):
+            raise HTTPException(
+                503, "the collection's index could not be opened; nothing was deleted, "
+                     "try again shortly")
+        if purge:
+            shutil.rmtree(_crawl_dir(row), ignore_errors=True)
+        _store().delete_crawl(crawl_id)
+        _refresh_collection_document(collection)
         return {"ok": True, "purged": purge, "forced": force,
                 "orphaned_records": orphaned}
 
@@ -2232,6 +2260,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         removed = _store().delete_collection(collection_id)
         if purge:
             shutil.rmtree(Path(row["root_dir"]), ignore_errors=True)
+        # The WARCs may stay on disk; the index is bookkeeping about jobs
+        # that no longer exist and must not be inherited by a namesake.
+        colls.remove_index(row["root_dir"])
         return {"ok": True, "purged": purge, "forced": force,
                 "jobs_removed": removed}
 

@@ -399,3 +399,129 @@ class CommandLineTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConcurrencyTests(unittest.TestCase):
+    """Two jobs of one collection at once, and the dashboard reading while
+    they run: nobody waits on anybody's unfinished batch."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_a_sibling_opens_and_writes_while_another_job_is_mid_run(self):
+        import time
+        first = CollectionIndex.for_collection(self.root)
+        self.addCleanup(first.close)
+        first.record_response(crawl_id=1, url="https://s/a.css", warc_date="2026-09-01T00:00:00Z",
+                              digest="sha1:aaa", record_id="<urn:a>", warc_file="a.warc.gz")
+        started = time.monotonic()
+        second = CollectionIndex.for_collection(self.root)      # opens without a write lock
+        self.addCleanup(second.close)
+        second.record_response(crawl_id=2, url="https://s/b.css", warc_date="2026-09-01T00:00:01Z",
+                               digest="sha1:bbb", record_id="<urn:b>", warc_file="b.warc.gz")
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(first.lookup("sha1:bbb")["crawl_id"], 2)   # sees it at once
+        self.assertEqual(second.lookup("sha1:aaa")["crawl_id"], 1)
+        self.assertEqual(second.counts()["records"], 2)
+
+    def test_a_revisit_into_a_job_deleted_meanwhile_is_orphaned_from_the_start(self):
+        index = CollectionIndex.for_collection(self.root)
+        self.addCleanup(index.close)
+        index.record_response(crawl_id=1, url="https://s/a.css", warc_date="2026-09-01T00:00:00Z",
+                              digest="sha1:aaa", record_id="<urn:a>", warc_file="a.warc.gz")
+        index.forget_job(1)
+        index.record_revisit(crawl_id=2, url="https://s/x/a.css", warc_date="2026-09-01T00:00:01Z",
+                             digest="sha1:aaa", record_id="<urn:r>", warc_file="b.warc.gz",
+                             refers_to={"crawl_id": 1, "record_id": "<urn:a>",
+                                        "url": "https://s/a.css",
+                                        "warc_date": "2026-09-01T00:00:00Z"})
+        self.assertEqual(index.counts()["orphaned"], 1)
+        self.assertEqual(index.orphan_urls(), ["https://s/x/a.css"])
+        self.assertEqual(index.removed_jobs(), {1})
+
+    def test_url_key_survives_a_port_that_is_not_a_number(self):
+        self.assertEqual(url_key("http://h:abc/x"), "http://h:abc/x")
+
+
+class WriterSafetyTests(WriterTests):
+    """What the writer tells the index describes records that exist."""
+
+    def test_a_failed_warc_write_leaves_no_index_row_and_no_digest_to_refer_to(self):
+        session = self.session(1)
+        with mock.patch.object(session._writer, "write_record", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.write(session, "https://s/style.css", CSS)
+        self.assertIsNone(self.index.lookup(DIGEST))
+        self.assertEqual(self.index.counts()["records"], 0)
+        # The next attempt stores the payload, as no record holds it.
+        self.write(session, "https://s/style.css", CSS)
+        session.close()
+        self.assertEqual([r["type"] for r in records_of(self.root / "jobs" / "1")], ["response"])
+        self.assertEqual(self.index.lookup(DIGEST)["crawl_id"], 1)
+
+    def test_an_original_deleted_during_the_run_is_not_referred_to_again(self):
+        first = self.session(1)
+        self.write(first, "https://s/style.css", CSS)
+        first.close()
+        second = self.session(2)
+        self.write(second, "https://s/one/style.css", CSS)        # a revisit into job 1
+        self.index.forget_job(1)                                    # job 1 deleted meanwhile
+        self.write(second, "https://s/two/style.css", CSS)        # stored: nothing holds it now
+        second.close()
+        kinds = [r["type"] for r in records_of(self.root / "jobs" / "2")]
+        self.assertEqual(kinds, ["revisit", "response"])
+        self.assertEqual(self.index.counts()["orphaned"], 1)
+        self.assertEqual(self.index.lookup(DIGEST)["crawl_id"], 2)
+
+
+class DeletionOrderTests(ServerTestCase):
+    """Deleting a job updates the index before anything is removed, and a
+    collection deleted without purge leaves no index for a namesake."""
+
+    def test_job_delete_forgets_the_job_in_the_index_before_removing_it(self):
+        coll = self.collection()
+        first, second = self.job(coll, "first"), self.job(coll, "second")
+        self.write(coll, first, [("https://s/style.css", CSS)])
+        self.write(coll, second, [("https://s/p/style.css", CSS)])
+        with mock.patch.object(CollectionIndex, "forget_job", side_effect=RuntimeError("locked")):
+            refused = self.client.delete(f"/api/crawls/{first['id']}?purge=true")
+        self.assertEqual(refused.status_code, 503, refused.text)
+        self.assertIn("nothing was deleted", refused.json()["detail"])
+        self.assertTrue(Path(first["output_dir"]).exists())
+        self.assertEqual(self.client.get(f"/api/crawls/{first['id']}").status_code, 200)
+
+        done = self.client.delete(f"/api/crawls/{first['id']}?purge=true")
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertEqual(done.json()["orphaned_records"], 1)
+        self.assertFalse(Path(first["output_dir"]).exists())
+        index = colls.read_index(coll)
+        try:
+            self.assertIsNone(index.lookup(DIGEST))
+            self.assertEqual(index.counts()["orphaned"], 1)
+        finally:
+            index.close()
+
+    def test_a_collection_deleted_without_purge_leaves_no_index_behind(self):
+        coll = self.collection()
+        job = self.job(coll)
+        self.write(coll, job, [("https://s/style.css", CSS)])
+        root = Path(coll["root_dir"])
+        self.assertTrue((root / "index.sqlite").exists())
+        gone = self.client.delete(f"/api/collections/{coll['id']}")
+        self.assertEqual(gone.status_code, 200, gone.text)
+        self.assertTrue(Path(job["output_dir"]).exists())          # the WARCs stay
+        self.assertFalse((root / "index.sqlite").exists())
+        self.assertFalse((root / "index.sqlite-wal").exists())
+        again = self.client.post("/api/collections", json={"name": "QNL"})
+        self.assertEqual(again.status_code, 201, again.text)    # a namesake starts clean
+
+    def test_a_leftover_index_at_the_target_root_refuses_the_new_collection(self):
+        root = self.tmp / "warcs" / "collections" / "qnl"
+        root.mkdir(parents=True)
+        CollectionIndex.for_collection(root).close()
+        refused = self.client.post("/api/collections", json={"name": "QNL"})
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn("earlier collection", refused.json()["detail"])
+        self.assertEqual(self.client.get("/api/collections").json(), [])
