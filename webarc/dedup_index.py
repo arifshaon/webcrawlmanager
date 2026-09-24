@@ -69,6 +69,23 @@ CREATE TABLE IF NOT EXISTS jobs_removed (
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
+# Added after the first indexes were written: created on open when missing.
+_PAGES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS pages (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    crawl_id          INTEGER,
+    url               TEXT NOT NULL,
+    url_key           TEXT NOT NULL,
+    warc_date         TEXT NOT NULL,
+    status            INTEGER,
+    fingerprint       TEXT,
+    change            TEXT,
+    previous_crawl_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS pages_url ON pages(url_key, warc_date);
+CREATE INDEX IF NOT EXISTS pages_crawl ON pages(crawl_id, change);
+"""
+
 _TRACKING_PARAMS = ("utm_", "fbclid", "gclid", "mc_cid", "mc_eid", "_ga")
 
 
@@ -108,21 +125,26 @@ class CollectionIndex:
                                      check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA busy_timeout=30000")
-        if not self._has_schema():
+        if not self._has_table("meta"):
             # Only a new file is written to on open: opening an index a
             # sibling job is writing to must never need its lock.
             self._conn.execute("PRAGMA journal_mode=WAL")
             with self._transaction() as c:
-                for statement in _SCHEMA.split(";"):
+                for statement in (_SCHEMA + _PAGES_SCHEMA).split(";"):
                     if statement.strip():
                         c.execute(statement)
                 c.execute("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', ?)",
                           (str(SCHEMA_VERSION),))
+        elif not self._has_table("pages"):            # an index from before page changes
+            with self._transaction() as c:
+                for statement in _PAGES_SCHEMA.split(";"):
+                    if statement.strip():
+                        c.execute(statement)
         self._conn.execute("PRAGMA synchronous=NORMAL")
 
-    def _has_schema(self) -> bool:
+    def _has_table(self, name: str) -> bool:
         row = self._conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
         return row is not None
 
     @classmethod
@@ -203,6 +225,14 @@ class CollectionIndex:
             "WHERE record_id=? LIMIT 1", (record_id,)).fetchone()
         return dict(row) if row else None
 
+    def find_page_fingerprint(self, record_id: str) -> Optional[str]:
+        """The fingerprint recorded for the page an original record holds."""
+        row = self._conn.execute(
+            "SELECT p.fingerprint FROM captures c JOIN pages p ON p.url_key=c.url_key "
+            "AND p.crawl_id=c.crawl_id AND p.warc_date=c.warc_date "
+            "WHERE c.record_id=? AND p.fingerprint IS NOT NULL LIMIT 1", (record_id,)).fetchone()
+        return row["fingerprint"] if row else None
+
     def mark_orphaned(self, record_id: str) -> None:
         with self._transaction() as c:
             c.execute("UPDATE captures SET orphaned=1 WHERE record_id=?", (record_id,))
@@ -254,6 +284,77 @@ class CollectionIndex:
             "AND refers_to_crawl_id<>?", (crawl_id, crawl_id)).fetchall()
         return sorted(int(r["refers_to_crawl_id"]) for r in rows)
 
+    # -- pages: what changed since the collection last saw them -----------------
+    def last_page(self, url: str, before_crawl_id: Optional[int] = None) -> Optional[dict]:
+        """The collection's latest capture of a page by an earlier job."""
+        query = ("SELECT crawl_id, warc_date, status, fingerprint FROM pages WHERE url_key=? "
+                 "AND status IN (200, 404, 410)")
+        args: list = [url_key(url)]
+        if before_crawl_id is not None:
+            query += " AND crawl_id<>?"
+            args.append(before_crawl_id)
+        row = self._conn.execute(query + " ORDER BY warc_date DESC, id DESC LIMIT 1",
+                                 args).fetchone()
+        return dict(row) if row else None
+
+    def record_page(self, *, crawl_id: Optional[int], url: str, warc_date: str,
+                    status: Optional[int], fingerprint: Optional[str], change: Optional[str],
+                    previous_crawl_id: Optional[int] = None) -> None:
+        with self._transaction() as c:
+            c.execute(
+                "INSERT INTO pages (crawl_id, url, url_key, warc_date, status, fingerprint, "
+                "change, previous_crawl_id) VALUES (?,?,?,?,?,?,?,?)",
+                (crawl_id, url, url_key(url), warc_date, status, fingerprint, change,
+                 previous_crawl_id))
+
+    def page_changes(self, crawl_id: int) -> dict[str, list[dict]]:
+        """A job's pages by what happened to them, one entry per page (its
+        last capture in the job)."""
+        out: dict[str, list[dict]] = {"new": [], "changed": [], "unchanged": [], "gone": []}
+        seen: set[str] = set()
+        rows = self._conn.execute(
+            "SELECT url, url_key, warc_date, status, change, previous_crawl_id FROM pages "
+            "WHERE crawl_id=? AND change IS NOT NULL ORDER BY warc_date DESC, id DESC",
+            (crawl_id,)).fetchall()
+        for row in rows:
+            if row["url_key"] in seen:
+                continue
+            seen.add(row["url_key"])
+            out[row["change"]].append({
+                "url": row["url"], "date": row["warc_date"], "status": row["status"],
+                "previous_job": row["previous_crawl_id"]})
+        for entries in out.values():
+            entries.sort(key=lambda e: e["url"])
+        return out
+
+    def pages_not_visited(self, crawl_id: int) -> list[dict]:
+        """Pages the collection's earlier jobs held (their latest capture a
+        200, not since found gone) that this job did not reach at all."""
+        visited = {r["url_key"] for r in self._conn.execute(
+            "SELECT DISTINCT url_key FROM pages WHERE crawl_id=?", (crawl_id,))}
+        rows = self._conn.execute(
+            "SELECT url, url_key, warc_date, status, crawl_id FROM pages WHERE crawl_id<>? "
+            "ORDER BY url_key, warc_date DESC, id DESC", (crawl_id,)).fetchall()
+        out, seen = [], set()
+        for row in rows:                       # the first row per page is its latest capture
+            if row["url_key"] in seen:
+                continue
+            seen.add(row["url_key"])
+            if row["status"] == 200 and row["url_key"] not in visited:
+                out.append({"url": row["url"], "last_seen": row["warc_date"],
+                            "last_job": row["crawl_id"]})
+        out.sort(key=lambda e: e["url"])
+        return out
+
+    def page_counts(self, crawl_id: int) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT change, COUNT(DISTINCT url_key) AS n FROM pages WHERE crawl_id=? "
+            "AND change IS NOT NULL GROUP BY change", (crawl_id,)).fetchall()
+        counts = {"new": 0, "changed": 0, "unchanged": 0, "gone": 0}
+        for row in rows:
+            counts[row["change"]] = int(row["n"])
+        return counts
+
     # -- deletion ---------------------------------------------------------------
     def referring_into(self, crawl_id: int) -> dict:
         """Which other jobs hold revisits that point into this job's
@@ -272,6 +373,7 @@ class CollectionIndex:
         the number of records orphaned."""
         with self._transaction() as c:
             c.execute("DELETE FROM captures WHERE crawl_id=?", (crawl_id,))
+            c.execute("DELETE FROM pages WHERE crawl_id=?", (crawl_id,))
             cur = c.execute(
                 "UPDATE captures SET orphaned=1 WHERE refers_to_crawl_id=? "
                 "AND record_type='revisit' AND orphaned=0", (crawl_id,))
@@ -354,11 +456,9 @@ def rebuild(root_dir: Path | str, jobs: list[tuple[int, Path | str]]) -> dict:
 
     Returns per-job counts and the totals.
     """
-    import hashlib
-    import json
     import os
 
-    from warcio.archiveiterator import ArchiveIterator
+    from . import changes
 
     root = Path(root_dir)
     final = CollectionIndex.path_for(root)
@@ -383,8 +483,10 @@ def rebuild(root_dir: Path | str, jobs: list[tuple[int, Path | str]]) -> dict:
                 except Exception as exc:              # noqa: BLE001 - one bad file, not the run
                     unreadable.append(f"{warc.name}: {exc}")
             summary = index.summary(int(crawl_id))
+            summary["pages"] = index.page_counts(int(crawl_id))
             per_job[int(crawl_id)] = summary
             _write_job_summary(job_dir, summary)
+            changes.write_report(index, int(crawl_id), job_dir)
         totals = index.counts()
     finally:
         index.close()
@@ -434,7 +536,15 @@ def _read_warc_into(index: "CollectionIndex", crawl_id: int, warc: Path) -> None
                     digest="sha1:" + hashlib.sha1(body).hexdigest(),
                     record_id=record_id, warc_file=warc.name,
                     status=status, mime=mime, length=len(body))
+                note_page(index, crawl_id, url, date, status, mime, body,
+                          record.http_headers.get_header("Content-Type") if record.http_headers else None)
                 continue
+            if record.rec_type == "revisit" and status == 200 and mime in ("text/html", "application/xhtml+xml"):
+                # the same bytes as the original: the same page content
+                original_page = index.find_page_fingerprint(h.get_header("WARC-Refers-To") or "")
+                if original_page:
+                    note_page(index, crawl_id, url, date, status, mime, None, None,
+                              fingerprint=original_page)
             refers_id = h.get_header("WARC-Refers-To") or ""
             original = index.find_record(refers_id) if refers_id else None
             index.record_revisit(
@@ -463,3 +573,26 @@ def _write_job_summary(job_dir: Path, summary: dict) -> None:
         path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError:
         pass
+
+
+def note_page(index: "CollectionIndex", crawl_id: Optional[int], url: str, date: str,
+              status: Optional[int], mime: Optional[str], body: Optional[bytes],
+              content_type: Optional[str], fingerprint: Optional[str] = None) -> Optional[str]:
+    """Classify one captured page against the collection's last capture of
+    it and record the outcome. Returns the change, or None when the
+    response is not a page event (not HTML, a redirect, a server error)."""
+    from . import changes
+
+    # a 404/410 counts whatever it is served as; anything else must be HTML
+    if status not in changes.GONE_STATUSES and not changes.is_page(status, mime):
+        return None
+    if fingerprint is None and status == 200:
+        fingerprint = changes.page_fingerprint(body or b"", changes.charset_of(content_type))
+    previous = index.last_page(url, before_crawl_id=crawl_id)
+    change = changes.classify(previous, fingerprint, status)
+    if change is None:                       # a 404 for a page never held: no event
+        return None
+    index.record_page(crawl_id=crawl_id, url=url, warc_date=date, status=status,
+                      fingerprint=fingerprint, change=change,
+                      previous_crawl_id=(previous or {}).get("crawl_id"))
+    return change

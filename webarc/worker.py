@@ -764,9 +764,11 @@ def main(argv: list[str] | None = None) -> int:
 def _note_job_end(store: Store, crawl_id: int) -> None:
     """The collection's document lists this job with the state it ended in."""
     try:
-        from .collections import refresh_document
+        from .collections import finish_job_report, refresh_document
         row = store.get_crawl(crawl_id)
-        refresh_document(store, store.get_collection((row or {}).get("collection_id")))
+        collection = store.get_collection((row or {}).get("collection_id"))
+        finish_job_report(collection, row)
+        refresh_document(store, collection)
     except Exception as exc:                        # pragma: no cover
         log.warning("Could not update collection.json: %s", exc)
 

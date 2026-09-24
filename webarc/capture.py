@@ -172,6 +172,7 @@ class WarcSession:
         self.crawl_id = crawl_id
         # originals found in the index, remembered for the session so a
         # stylesheet every page shares is looked up once
+        self.change_stats: dict[str, int] = {}
         self.dedup_stats = {"responses": 0, "revisits_within_job": 0,
                             "revisits_across_jobs": 0, "bytes_saved": 0,
                             "bytes_saved_across_jobs": 0, "refers_to_jobs": {}}
@@ -323,6 +324,7 @@ class WarcSession:
         if self._index is not None:
             self._index_record(record, url, date, digest, status, mime, len(body),
                                held)
+            self._note_page(url, date, status, mime, body, resp_hlist)
         self._maybe_rotate()
 
     # -- the collection index --------------------------------------------------
@@ -352,6 +354,20 @@ class WarcSession:
                                "url": orig_uri, "warc_date": orig_date})
         except Exception as exc:                       # pragma: no cover
             log.warning("Collection index write failed: %s", exc)
+
+    def _note_page(self, url: str, date: str, status: int, mime: str | None,
+                   body: bytes, resp_hlist: list) -> None:
+        """What changed on this page since the collection last saw it."""
+        from .dedup_index import note_page
+        try:
+            content_type = next((v for k, v in resp_hlist if k.lower() == "content-type"), None)
+            change = note_page(self._index, self.crawl_id, url, date, status, mime, body,
+                               content_type)
+        except Exception as exc:                       # pragma: no cover
+            log.warning("Page change note failed: %s", exc)
+            return
+        if change:
+            self.change_stats[change] = self.change_stats.get(change, 0) + 1
 
     def write_dedup_summary(self) -> None:
         """Merge this session's counts into dedup-summary.json beside the

@@ -69,9 +69,14 @@ function crawlRow(c) {
   const hasWarc = Number(c.warc_files) > 0;
   const dd = c.dedup && typeof c.dedup === "object" ? c.dedup : null;
   const reused = dd ? (Number(dd.revisits_within_job) || 0) + (Number(dd.revisits_across_jobs) || 0) : 0;
-  const dedupLine = reused
-    ? ` · ${reused} reused${Number(dd.revisits_across_jobs) ? ` (${Number(dd.revisits_across_jobs)} held by other jobs)` : ""}`
+  const ch = c.changes || null;
+  const changeParts = ch ? ["new", "changed", "unchanged", "gone"].filter(k => Number(ch[k])).map(k => `${Number(ch[k])} ${k}`) : [];
+  const changeLine = changeParts.length
+    ? ` · pages: <a href="/api/crawls/${id}/changes" target="_blank" rel="noopener" title="Compared by words and links with the collection's last capture of each page; opens the page-by-page report">${changeParts.join(", ")}${Number(ch.not_visited) ? `, ${Number(ch.not_visited)} not visited` : ""}</a>`
     : "";
+  const dedupLine = (reused
+    ? ` · ${reused} reused${Number(dd.revisits_across_jobs) ? ` (${Number(dd.revisits_across_jobs)} held by other jobs)` : ""}`
+    : "") + changeLine;
   const seeds = Array.isArray(c.seeds) ? c.seeds : [];
   const fb = isSocial && seeds[0] && seeds[0].details
     ? seeds[0].details : {};

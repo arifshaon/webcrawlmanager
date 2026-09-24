@@ -464,3 +464,18 @@ def rebuild_index(store, collection: dict) -> dict:
     result = rebuild(collection["root_dir"], jobs)
     refresh_document(store, collection)
     return result
+
+
+def finish_job_report(collection: Optional[dict], row: Optional[dict]) -> Optional[dict]:
+    """changes.json for a job that has ended: what it found new, changed,
+    unchanged and gone against the collection's earlier captures."""
+    if not collection or not row or not row.get("output_dir"):
+        return None
+    index = read_index(collection)
+    if index is None:
+        return None
+    from . import changes
+    try:
+        return changes.write_report(index, int(row["id"]), Path(row["output_dir"]))
+    finally:
+        index.close()

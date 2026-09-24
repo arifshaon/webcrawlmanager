@@ -354,14 +354,16 @@ def _register_job_in_collection(args, name: str, kind: str, config: dict,
 def _settle_registered_job(registered, outcome: str) -> None:
     if not registered:
         return
+    from . import collections as colls
     from .store import COMPLETED, FAILED, STOPPED
     store, crawl_id = registered
     status = {"completed": COMPLETED, "failed": FAILED}.get(outcome, STOPPED)
     try:
         store.set_status(crawl_id, status, "")       # any lost-worker note is void
         row = store.get_crawl(crawl_id)
-        _refresh_collection_document(store, store.get_collection(
-            (row or {}).get("collection_id")))
+        collection = store.get_collection((row or {}).get("collection_id"))
+        colls.finish_job_report(collection, row)
+        _refresh_collection_document(store, collection)
     except Exception as exc:                        # pragma: no cover
         logging.getLogger(__name__).warning("Could not record the job's end: %s", exc)
 

@@ -681,6 +681,13 @@ def _referenced_warcs(row: dict) -> list[Path]:
     return found
 
 
+def _page_changes(crawl_dir: Path) -> dict | None:
+    """The counts from a job's changes.json, for its row."""
+    from .changes import read_report
+    report = read_report(crawl_dir)
+    return dict(report.get("counts") or {}) if report else None
+
+
 def _dedup_summary(crawl_dir: Path) -> dict | None:
     """dedup-summary.json, written by the WARC writer, if the job has one."""
     import json
@@ -914,6 +921,7 @@ def _crawl_view(row: dict) -> dict:
         "theme": _theme_name_of(row),
         "collection": colls.brief(_collection_of(row)),
         "dedup": _dedup_summary(crawl_dir),
+        "changes": _page_changes(crawl_dir),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
                    "bytes": max(disk_bytes, reported)},
         "seeds": progress,
@@ -2426,6 +2434,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             _PYWB = server
         return {"collection": coll, "replay_url": _PYWB.replay_url(coll),
                 "warc_files": len(warcs)}
+
+    @app.get("/api/crawls/{crawl_id}/changes")
+    def crawl_changes(crawl_id: int):
+        """What this job found new, changed, unchanged and gone against the
+        collection's earlier captures, page by page."""
+        from .changes import read_report
+        row = _require(crawl_id)
+        report = read_report(_crawl_dir(row))
+        if report is None:
+            raise HTTPException(404, "no change report for this job: it is not in a "
+                                     "collection with an index, or it has not ended yet")
+        return report
 
     @app.get("/api/crawls/{crawl_id}/impact")
     def crawl_impact(crawl_id: int):

@@ -924,6 +924,19 @@ the dashboard or the command line; the index is written one capture at a
 time, so nobody waits on anybody. A collection's directory is recorded as an
 absolute path, so a command-line job finds it from any working directory.
 
+**What changed since last time.** Two captures of a page are seldom the
+same bytes (a cache stamp, a nonce, the menu item marked as current), so
+the index also keeps a fingerprint of each HTML page's *words and links*,
+with scripts, styles, comments and markup stripped. Against the
+collection's last capture of the page, a job's pages come out **new**,
+**changed** or **unchanged**, a page the collection held that now answers
+404 or 410 is **gone**, and pages the collection held that the job did not
+reach are listed as **not visited** (which says nothing about whether they
+still exist). The counts are on the job's row; `changes.json` in the job's
+folder (or `/api/crawls/<id>/changes`) lists every page with the job that
+last held it. Unchanged pages whose bytes differ are still stored, as WARC
+requires; the saving is in the assets around them.
+
 **Upkeep.** A collection's row has **Edit** (its name, description and the
 store-once policy; the identifier and the directory are fixed at creation),
 **Rebuild index** (`swm collection reindex NAME`), which reads every job's
