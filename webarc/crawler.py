@@ -551,6 +551,8 @@ def write_crawl_metadata(crawl: CrawlConfig, job_id=None) -> None:
     """metadata.json in the output folder, before the first seed runs."""
     from .metadata import document, read_document, write_document
     meta = getattr(crawl, "metadata", None) or {"job": [], "seeds": {}}
+    if job_id is None:                       # a registered job knows its number
+        job_id = getattr(crawl, "job_id", None)
     write_document(crawl.output_dir, document(
         job_id=job_id, kind="crawl", name=crawl.crawl_name,
         operator=crawl.operator, seeds=[{"url": s.url} for s in crawl.seeds],

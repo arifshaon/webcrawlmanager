@@ -230,6 +230,27 @@ class DocumentRefreshTests(unittest.TestCase):
 
             self.assertEqual(colls.read_document(root)["jobs"][0]["status"], "failed")
 
+    def test_a_job_metadata_document_carries_its_job_number(self):
+        """metadata.json in a job folder names the job it belongs to, whether
+        the worker or the command line wrote it."""
+        from webarc import worker
+        from webarc.crawler import write_crawl_metadata
+        from webarc.metadata import read_document
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            root = Path(tmp) / "collections" / "c"
+            cid = store.create_collection("c", "C", "", str(root))
+            job_dir = root / "jobs" / "1"
+            job = store.create_crawl("j", {"seeds": [{"url": "https://s/"}]},
+                                     str(job_dir), 1, collection_id=cid)
+            config = worker._config_from_row(store.get_crawl(job), store.get_collection(cid))
+            self.assertEqual(config.job_id, job)
+
+            write_crawl_metadata(config)
+
+            self.assertEqual(read_document(job_dir)["job_id"], job)
+
 
 class ServerTestCase(unittest.TestCase):
     def setUp(self):
