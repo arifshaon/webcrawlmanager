@@ -425,3 +425,42 @@ def describe_impact(impact: dict) -> str:
     else:
         parts.append(impact.get("note") or "")
     return " ".join(p for p in parts if p)
+
+
+# --- upkeep -------------------------------------------------------------------
+
+def absolutise_roots(store, base: Path | str | None = None) -> list[dict]:
+    """Collections recorded with a relative directory (made before roots
+    were stored absolute) are re-recorded against ``base``, the directory
+    such paths were relative to: the dashboard's working directory. Their
+    jobs' directories follow. Returns what was changed."""
+    base = Path(base) if base is not None else Path.cwd()
+    changed = []
+    for row in store.list_collections():
+        root = Path(row["root_dir"])
+        if root.is_absolute():
+            continue
+        resolved = (base / root).resolve()
+        store.set_collection_root(row["id"], str(resolved))
+        jobs = []
+        for job in store.crawls_in_collection(row["id"]):
+            out = Path(job.get("output_dir") or "")
+            if str(out) and not out.is_absolute():
+                store.set_output_dir(job["id"], str((base / out).resolve()))
+                jobs.append(job["id"])
+        changed.append({"id": row["id"], "slug": row["slug"], "from": str(root),
+                        "to": str(resolved), "jobs": jobs})
+        refresh_document(store, store.get_collection(row["id"]))
+    return changed
+
+
+def rebuild_index(store, collection: dict) -> dict:
+    """The collection's index made anew from its jobs' WARCs (see
+    dedup_index.rebuild); the collection's document is refreshed after."""
+    from .dedup_index import rebuild
+    jobs = [(int(job["id"]), Path(job["output_dir"]))
+            for job in store.crawls_in_collection(collection["id"])
+            if job.get("output_dir") and Path(job["output_dir"]).is_dir()]
+    result = rebuild(collection["root_dir"], jobs)
+    refresh_document(store, collection)
+    return result

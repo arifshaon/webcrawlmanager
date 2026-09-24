@@ -495,6 +495,76 @@ def _cmd_collection(args) -> int:
                   f"{job['name']}  {job['output_dir']}")
         return 0
 
+    if command == "reindex":
+        from .store import BLOCKED, PAUSED, RUNNING, STOPPING
+        active = [j["id"] for j in jobs if j.get("status") in (RUNNING, PAUSED, BLOCKED, STOPPING)]
+        if active:
+            print(f"Job(s) {', '.join(map(str, active))} are still running; rebuild the index "
+                  "once the collection is quiet.", file=sys.stderr)
+            return 2
+        try:
+            result = colls.rebuild_index(store, row)
+        except OSError as exc:
+            print(f"The index could not be rebuilt: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(_json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        print(f"Rebuilt the index of '{row['name']}' from {len(result['jobs'])} job(s): "
+              f"{result['originals']} original(s), {result['revisits']} revisit(s), "
+              f"{result['bytes_saved'] / (1024 * 1024):.1f} MB not stored twice.")
+        for crawl_id, summary in sorted(result["jobs"].items()):
+            print(f"  #{crawl_id:<4} {summary['responses']} stored, "
+                  f"{summary['revisits_within_job']} reused within, "
+                  f"{summary['revisits_across_jobs']} from other jobs")
+        if result["unresolved_revisits"]:
+            print(f"  {result['unresolved_revisits']} revisit(s) point at records no job holds "
+                  "any more; those pages are listed as missing their original.")
+        return 0
+
+    if command == "index-warc":
+        from . import warc_indexer
+        from .store import BLOCKED, PAUSED, RUNNING, STOPPING
+        active = [j["id"] for j in jobs if j.get("status") in (RUNNING, PAUSED, BLOCKED, STOPPING)]
+        if active:
+            print(f"Job(s) {', '.join(map(str, active))} are still running; index the collection "
+                  "once it is quiet.", file=sys.stderr)
+            return 2
+        cap = warc_indexer.capability(store.get_setting)
+        if not cap["available"]:
+            print(f"Cannot index: {cap['reason']}", file=sys.stderr)
+            return 1
+        with_warcs = [(int(j["id"]), _P(j["output_dir"])) for j in jobs
+                      if j.get("kind", "crawl") in ("crawl", "record")
+                      and j.get("output_dir") and warc_indexer.warc_files(_P(j["output_dir"]))]
+        if not with_warcs:
+            print("No WARC files in this collection yet.", file=sys.stderr)
+            return 1
+
+        def progress(m: dict) -> None:
+            if args.json:
+                return
+            current = m.get("current_job")
+            print(f"\r  job #{current}: {m.get('documents', 0)} documents so far"
+                  if current else "\r  finishing", end="", file=sys.stderr, flush=True)
+
+        manifest = warc_indexer.index_collection(
+            _P(row["root_dir"]), with_warcs, collection=row["name"], memory=args.memory,
+            get_setting=store.get_setting, on_progress=progress)
+        if not args.json:
+            print(file=sys.stderr)
+        if args.json:
+            print(_json.dumps(manifest, ensure_ascii=False, indent=2))
+            return 0 if manifest["status"] == warc_indexer.STATUS_DONE else 1
+        for entry in manifest["jobs"]:
+            line = f"  #{entry['id']:<4} {entry['status']:<8} {entry.get('documents', 0)} document(s)"
+            if entry.get("error"):
+                line += f"  {entry['error']}"
+            print(line)
+        print(f"{manifest['documents']} document(s) from {len(manifest['jobs'])} job(s), each "
+              f"carrying the collection '{row['name']}'; outputs are beside each WARC.")
+        return 0 if manifest["status"] == warc_indexer.STATUS_DONE else 1
+
     if command == "delete":
         root = _P(row["root_dir"])
         size = 0
@@ -816,6 +886,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, text in (("create", "Make a collection with a directory of its own"),
                        ("list", "List the collections and how many jobs each holds"),
                        ("show", "Describe one collection and list its jobs"),
+                       ("reindex", "Rebuild the collection's payload index from its WARC files"),
+                       ("index-warc", "Run the warc-indexer jar over every job's WARC files"),
                        ("delete", "Delete a collection and its jobs, after saying what that means")):
         sp = coll_sub.add_parser(name, help=text)
         sp.add_argument("--db", default="./webarc-state/webarc.db",
@@ -843,9 +915,12 @@ def main(argv: list[str] | None = None) -> int:
                             help="print the collections as JSON")
         else:
             sp.add_argument("collection", help="the collection's name, identifier or id")
-            if name == "show":
+            if name in ("show", "reindex", "index-warc"):
                 sp.add_argument("--json", action="store_true",
                                 help="print the collection as JSON")
+            if name == "index-warc":
+                sp.add_argument("--memory", help="Java heap for the jar (default: the Indexer "
+                                                 "setting, else 2g)")
             else:
                 sp.add_argument("--purge", action="store_true",
                                 help="also delete the collection's files from disk")

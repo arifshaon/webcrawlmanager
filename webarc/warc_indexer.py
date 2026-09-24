@@ -603,3 +603,112 @@ def summary(crawl_dir: Path) -> Optional[dict]:
 if __name__ == "__main__":                              # pragma: no cover
     print(json.dumps(capability(), indent=2))
     sys.exit(0)
+
+
+# --- a whole collection ---------------------------------------------------------
+
+COLLECTION_MANIFEST_NAME = "warc-index-manifest.json"     # in the collection's root
+
+
+def index_collection(root_dir: Path, jobs: list[tuple[int, Path]], *, collection: str,
+                     memory: Optional[str] = None, get_setting: GetSetting = None,
+                     on_progress: Optional[Callable[[dict], None]] = None,
+                     poll: Optional[float] = None) -> dict:
+    """Run the jar over every job of a collection in turn, each job's
+    outputs beside its own WARCs and every document carrying the
+    collection's name. A job without WARC files is skipped. The record of
+    the run is a manifest in the collection's root; each job keeps its own
+    as well. Blocks until the last job is done; the dashboard calls this
+    on a thread."""
+    root = Path(root_dir).resolve()
+    manifest = {
+        "schema": "swm-warc-index-collection-run/1",
+        "status": STATUS_RUNNING,
+        "collection": collection,
+        "started_at": _iso_now(),
+        "jobs": [{"id": int(crawl_id), "status": "pending", "documents": 0}
+                 for crawl_id, _dir in jobs],
+        "current_job": None,
+        "documents": 0,
+        "pid": os.getpid(),
+    }
+    _write_collection_manifest(root, manifest)
+
+    def note(entry: dict, **fields) -> None:
+        entry.update(fields)
+        manifest["documents"] = sum(int(j.get("documents") or 0) for j in manifest["jobs"])
+        _write_collection_manifest(root, manifest)
+        if on_progress:
+            on_progress(dict(manifest))
+
+    for entry, (crawl_id, crawl_dir) in zip(manifest["jobs"], jobs):
+        crawl_dir = Path(crawl_dir)
+        if not warc_files(crawl_dir):
+            note(entry, status="skipped", note="no WARC files")
+            continue
+        manifest["current_job"] = int(crawl_id)
+        note(entry, status=STATUS_RUNNING)
+        try:
+            result = index_warcs(crawl_dir, collection=collection, memory=memory,
+                                 get_setting=get_setting, poll=poll,
+                                 on_progress=(lambda p, e=entry: note(e, progress=p))
+                                 if on_progress else None)
+        except Exception as exc:                          # noqa: BLE001 - recorded, run goes on
+            note(entry, status=STATUS_FAILED, error=str(exc))
+            continue
+        note(entry, status=result["status"], documents=result.get("documents") or 0,
+             error=result.get("error"), warcs=len(result.get("warcs") or []))
+    manifest["current_job"] = None
+    failed = [j["id"] for j in manifest["jobs"] if j["status"] == STATUS_FAILED]
+    manifest["status"] = STATUS_FAILED if failed else STATUS_DONE
+    if failed:
+        manifest["error"] = f"indexing failed for job(s) {', '.join(map(str, failed))}"
+    manifest["finished_at"] = _iso_now()
+    manifest.pop("pid", None)
+    _write_collection_manifest(root, manifest)
+    return manifest
+
+
+def _write_collection_manifest(root: Path, manifest: dict) -> None:
+    path = Path(root) / COLLECTION_MANIFEST_NAME
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def read_collection_manifest(root: Path) -> Optional[dict]:
+    path = Path(root) / COLLECTION_MANIFEST_NAME
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def collection_summary(root: Path) -> Optional[dict]:
+    """What the collection's row shows about its last run."""
+    manifest = read_collection_manifest(root)
+    if not manifest:
+        return None
+    status = manifest.get("status")
+    error = manifest.get("error")
+    if status == STATUS_RUNNING:
+        try:
+            age = time.time() - (Path(root) / COLLECTION_MANIFEST_NAME).stat().st_mtime
+        except OSError:
+            age = STALE_WITH_PID_SECONDS + 1
+        alive = _pid_alive(manifest.get("pid"))
+        if (not alive and age > STALE_SECONDS) or age > STALE_WITH_PID_SECONDS:
+            status = STATUS_FAILED
+            error = error or "The indexer stopped without finishing (the server may have restarted)."
+    jobs = manifest.get("jobs") or []
+    return {"status": status, "documents": manifest.get("documents"),
+            "jobs": len(jobs), "jobs_done": sum(1 for j in jobs if j.get("status") == STATUS_DONE),
+            "jobs_failed": sum(1 for j in jobs if j.get("status") == STATUS_FAILED),
+            "current_job": manifest.get("current_job"),
+            "started_at": manifest.get("started_at"), "finished_at": manifest.get("finished_at"),
+            "error": error, "collection": manifest.get("collection")}
+
+
+def collection_is_running(root: Path) -> bool:
+    summary = collection_summary(root)
+    return bool(summary and summary["status"] == STATUS_RUNNING)

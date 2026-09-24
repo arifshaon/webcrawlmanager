@@ -692,3 +692,68 @@ class CommandLineJobLivenessTests(unittest.TestCase):
             self.assertTrue(srv._pid_is_worker(os.getpid()))
         with cmdline([b"/usr/bin/python", b"-m", b"http.server"]):
             self.assertFalse(srv._pid_is_worker(os.getpid()))
+
+
+class RelativeRootTests(unittest.TestCase):
+    """Collections recorded with a relative directory are re-recorded
+    absolute when the dashboard starts, jobs included."""
+
+    def test_relative_roots_are_resolved_once_against_the_dashboards_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            cid = store.create_collection("t", "T", "", "warcs/collections/t")
+            job = store.create_crawl("j", {"seeds": []}, "warcs/collections/t/jobs/1", 0,
+                                     collection_id=cid)
+            other = store.create_collection("abs", "Abs", "", str(Path(tmp) / "abs"))
+
+            changed = colls.absolutise_roots(store, base=tmp)
+
+            self.assertEqual([c["slug"] for c in changed], ["t"])
+            self.assertEqual(changed[0]["jobs"], [job])
+            root = Path(store.get_collection(cid)["root_dir"])
+            self.assertTrue(root.is_absolute())
+            self.assertEqual(root, (Path(tmp) / "warcs" / "collections" / "t").resolve())
+            self.assertEqual(Path(store.get_crawl(job)["output_dir"]),
+                             (Path(tmp) / "warcs" / "collections" / "t" / "jobs" / "1").resolve())
+            self.assertEqual(store.get_collection(other)["root_dir"], str(Path(tmp) / "abs"))
+            self.assertEqual(colls.absolutise_roots(store, base=tmp), [])     # once is enough
+            self.assertEqual(colls.read_document(root)["root_dir"], str(root))
+
+    def test_the_dashboard_does_it_at_start(self):
+        from fastapi.testclient import TestClient
+        from webarc import server as srv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            store.create_collection("t", "T", "", "warcs/collections/t")
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                app = srv.create_app(str(Path(tmp) / "swm.db"), "warcs", simulate=True,
+                                     replay_root=str(Path(tmp) / "replay"), monitor_resources=False)
+                listed = TestClient(app).get("/api/collections").json()
+            finally:
+                os.chdir(cwd)
+            self.assertEqual(Path(listed[0]["root_dir"]),
+                             (Path(tmp) / "warcs" / "collections" / "t").resolve())
+
+
+class EditTests(unittest.TestCase):
+    def test_name_description_and_policy_change_in_one_put(self):
+        from fastapi.testclient import TestClient
+        from webarc import server as srv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = srv.create_app(str(Path(tmp) / "swm.db"), str(Path(tmp) / "warcs"),
+                                 simulate=True, replay_root=str(Path(tmp) / "replay"),
+                                 monitor_resources=False)
+            client = TestClient(app)
+            made = client.post("/api/collections", json={"name": "QNL"}).json()
+            changed = client.put(f"/api/collections/{made['id']}", json={
+                "name": "QNL 2026", "description": "News sites", "dedup_across_jobs": False})
+            self.assertEqual(changed.status_code, 200, changed.text)
+            view = client.get(f"/api/collections/{made['id']}").json()
+            self.assertEqual((view["name"], view["description"], view["slug"]),
+                             ("QNL 2026", "News sites", "qnl"))
+            self.assertFalse(view["policy"]["dedup_across_jobs"])
+            self.assertEqual(colls.read_document(Path(made["root_dir"]))["name"], "QNL 2026")

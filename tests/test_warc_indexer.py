@@ -485,3 +485,110 @@ class ReviewFixTests(FakeJarTestCase):
             handle.write('}\n')
         self.assertEqual(progress.read()["documents"], 4)
         self.assertEqual(progress.read()["current_warc"], "a-00001.warc.gz")
+
+
+class CollectionRunTests(FakeJarTestCase):
+    """One run over every job of a collection, each document carrying the
+    collection's name; a job in a collection indexed alone is labelled the
+    same way."""
+
+    def setUp(self):
+        super().setUp()
+        self.app = srv.create_app(str(self.tmp / "swm.db"), str(self.tmp / "warcs"),
+                                  simulate=True, replay_root=str(self.tmp / "replay"),
+                                  monitor_resources=False)
+        self.client = TestClient(self.app)
+        self.coll = self.client.post("/api/collections", json={"name": "QNL 2026"}).json()
+
+    def job(self, name, warcs=1):
+        made = self.client.post("/api/crawls", json={
+            "name": name, "start": "wait", "collection_id": self.coll["id"],
+            "config": {"seeds": [{"url": "https://a.example/"}]}}).json()
+        out = Path(made["output_dir"])
+        out.mkdir(parents=True, exist_ok=True)
+        for n in range(warcs):
+            (out / f"{name}-0000{n + 1}.warc.gz").write_bytes(b"\x1f\x8bxx")
+        return made
+
+    def wait(self, url, key="warc_index"):
+        for _ in range(200):
+            view = self.client.get(url).json()
+            if view[key] and view[key]["status"] != "running":
+                return view
+            time.sleep(0.05)
+        self.fail("the run did not finish")
+
+    def test_every_job_is_indexed_in_turn_under_the_collections_name(self):
+        first, second = self.job("first", 2), self.job("second", 1)
+        empty = self.client.post("/api/crawls", json={
+            "name": "empty", "start": "wait", "collection_id": self.coll["id"],
+            "config": {"seeds": [{"url": "https://a.example/"}]}}).json()
+
+        started = self.client.post(f"/api/collections/{self.coll['id']}/warc-index")
+
+        self.assertEqual(started.status_code, 202, started.text)
+        self.assertEqual(started.json()["collection"], "QNL 2026")
+        self.assertEqual(started.json()["jobs"], [first["id"], second["id"]])
+        again = self.client.post(f"/api/collections/{self.coll['id']}/warc-index")
+        self.assertEqual(again.status_code, 409, again.text)
+        view = self.wait(f"/api/collections/{self.coll['id']}")
+        self.assertEqual(view["warc_index"]["status"], "done")
+        self.assertEqual(view["warc_index"]["documents"], 6)
+        self.assertEqual(view["warc_index"]["jobs_done"], 2)
+        for job in (first, second):
+            out = Path(job["output_dir"])
+            for produced in out.glob("*.jsonl"):
+                for line in produced.read_text(encoding="utf-8").splitlines():
+                    self.assertEqual(json.loads(line)["collection"], "QNL 2026")
+            job_view = self.client.get(f"/api/crawls/{job['id']}").json()
+            self.assertEqual(job_view["warc_index"]["status"], "done")
+        self.assertIsNone(self.client.get(f"/api/crawls/{empty['id']}").json()["warc_index"])
+        status = self.client.get(f"/api/collections/{self.coll['id']}/warc-index")
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual([j["status"] for j in status.json()["jobs"]], ["done", "done"])
+        self.assertNotIn("pid", status.json())
+
+    def test_a_job_in_a_collection_indexed_alone_carries_the_collections_name(self):
+        job = self.job("solo")
+        started = self.client.post(f"/api/crawls/{job['id']}/warc-index")
+        self.assertEqual(started.status_code, 202, started.text)
+        self.assertEqual(started.json()["collection"], "QNL 2026")
+        self.wait(f"/api/crawls/{job['id']}")
+
+    def test_the_collection_run_waits_for_a_jobs_own_run(self):
+        job = self.job("solo")
+        with mock.patch.dict(os.environ, {"FAKE_INDEXER_SLOW": "0.6"}):
+            self.client.post(f"/api/crawls/{job['id']}/warc-index")
+            refused = self.client.post(f"/api/collections/{self.coll['id']}/warc-index")
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn("on their own", refused.json()["detail"])
+        self.wait(f"/api/crawls/{job['id']}")
+
+    def test_a_failing_job_does_not_stop_the_others(self):
+        first, second = self.job("first"), self.job("second")
+        real = warc_indexer.index_warcs
+
+        def flaky(crawl_dir, **kw):
+            if Path(crawl_dir).resolve() == Path(first["output_dir"]).resolve():
+                with mock.patch.dict(os.environ, {"FAKE_INDEXER_FAIL": "1"}):
+                    return real(crawl_dir, **kw)
+            return real(crawl_dir, **kw)
+
+        with mock.patch.object(warc_indexer, "index_warcs", side_effect=flaky):
+            manifest = warc_indexer.index_collection(
+                Path(self.coll["root_dir"]),
+                [(first["id"], Path(first["output_dir"])), (second["id"], Path(second["output_dir"]))],
+                collection="QNL 2026")
+        self.assertEqual(manifest["status"], "failed")
+        self.assertEqual([j["status"] for j in manifest["jobs"]], ["failed", "done"])
+        self.assertIn(str(first["id"]), manifest["error"])
+        self.assertEqual(manifest["documents"], 2)
+
+    def test_the_command_line_runs_the_collection(self):
+        first = self.job("first")
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(["collection", "index-warc", "qnl-2026", "--db", str(self.tmp / "swm.db")])
+        self.assertEqual(code, 0, out.getvalue() + err.getvalue())
+        self.assertIn(f"#{first['id']}", out.getvalue())
+        self.assertIn("carrying the collection 'QNL 2026'", out.getvalue())

@@ -924,6 +924,17 @@ the dashboard or the command line; the index is written one capture at a
 time, so nobody waits on anybody. A collection's directory is recorded as an
 absolute path, so a command-line job finds it from any working directory.
 
+**Upkeep.** A collection's row has **Edit** (its name, description and the
+store-once policy; the identifier and the directory are fixed at creation),
+**Rebuild index** (`swm collection reindex NAME`), which reads every job's
+WARC files back into the payload index (for jobs made before the index
+existed, or an index that was lost; the WARCs are not changed), and
+**Index WARCs** (`swm collection index-warc NAME`), which runs warc-indexer
+over every crawl's and recording's WARC files in turn, each document
+carrying the collection's name; see [Indexing crawls and
+recordings](#indexing-crawls-and-recordings). A job in a collection indexed
+on its own carries the collection's name too.
+
 ## Browser modes
 
 Browser mode is a major part of SWM's capture strategy.

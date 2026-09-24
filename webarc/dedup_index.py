@@ -196,6 +196,17 @@ class CollectionIndex:
                  refers_to.get("url"), refers_to.get("warc_date"),
                  refers_to.get("crawl_id")))
 
+    def find_record(self, record_id: str) -> Optional[dict]:
+        """The capture a WARC-Refers-To names, if the index holds it."""
+        row = self._conn.execute(
+            "SELECT crawl_id, url, warc_date, record_type, length FROM captures "
+            "WHERE record_id=? LIMIT 1", (record_id,)).fetchone()
+        return dict(row) if row else None
+
+    def mark_orphaned(self, record_id: str) -> None:
+        with self._transaction() as c:
+            c.execute("UPDATE captures SET orphaned=1 WHERE record_id=?", (record_id,))
+
     def removed_jobs(self) -> set[int]:
         """Jobs whose originals were deleted; nothing may refer into them."""
         rows = self._conn.execute("SELECT crawl_id FROM jobs_removed").fetchall()
@@ -327,3 +338,128 @@ class CollectionIndex:
         except Exception:
             self._conn.execute("ROLLBACK")
             raise
+
+
+# --- rebuilding from the WARCs themselves -----------------------------------
+
+def rebuild(root_dir: Path | str, jobs: list[tuple[int, Path | str]]) -> dict:
+    """Make the collection's index anew from its jobs' WARC files.
+
+    For a collection whose jobs predate the index, or whose index was lost:
+    every response and revisit record of every job is read back, in job
+    order, so a revisit's WARC-Refers-To resolves to the original that was
+    stored before it. A revisit whose original is in no job any more is
+    orphaned. The new index replaces the old only once it is complete, and
+    each job gets a fresh dedup-summary.json.
+
+    Returns per-job counts and the totals.
+    """
+    import hashlib
+    import json
+    import os
+
+    from warcio.archiveiterator import ArchiveIterator
+
+    root = Path(root_dir)
+    final = CollectionIndex.path_for(root)
+    fresh = final.with_name(final.name + ".rebuild")
+    for stale in (fresh, fresh.with_name(fresh.name + "-wal"), fresh.with_name(fresh.name + "-shm")):
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+    index = CollectionIndex(fresh)
+    index.unresolved = 0                                  # revisits whose original is in no job
+    per_job: dict[int, dict] = {}
+    unresolved = 0
+    unreadable: list[str] = []
+    try:
+        for crawl_id, job_dir in sorted(jobs, key=lambda item: int(item[0])):
+            job_dir = Path(job_dir)
+            warcs = sorted(job_dir.glob("*.warc.gz")) + sorted(job_dir.glob("*.warc"))
+            for warc in warcs:
+                try:
+                    _read_warc_into(index, int(crawl_id), warc)
+                except Exception as exc:              # noqa: BLE001 - one bad file, not the run
+                    unreadable.append(f"{warc.name}: {exc}")
+            summary = index.summary(int(crawl_id))
+            per_job[int(crawl_id)] = summary
+            _write_job_summary(job_dir, summary)
+        totals = index.counts()
+    finally:
+        index.close()
+    # the finished index takes the old one's place; its journal goes with it
+    for leftover in (final.with_name(final.name + "-wal"), final.with_name(final.name + "-shm")):
+        try:
+            leftover.unlink()
+        except FileNotFoundError:
+            pass
+    os.replace(fresh, final)
+    for leftover in (fresh.with_name(fresh.name + "-wal"), fresh.with_name(fresh.name + "-shm")):
+        try:
+            leftover.unlink()
+        except FileNotFoundError:
+            pass
+    return {"jobs": per_job, "unresolved_revisits": index.unresolved, "unreadable": unreadable,
+            **totals}
+
+
+def _read_warc_into(index: "CollectionIndex", crawl_id: int, warc: Path) -> None:
+    """Every response and revisit record of one WARC file, into the index."""
+    import hashlib
+
+    from warcio.archiveiterator import ArchiveIterator
+
+    with warc.open("rb") as handle:
+        for record in ArchiveIterator(handle):
+            if record.rec_type not in ("response", "revisit"):
+                continue
+            h = record.rec_headers
+            url = h.get_header("WARC-Target-URI") or ""
+            date = h.get_header("WARC-Date") or ""
+            record_id = h.get_header("WARC-Record-ID") or ""
+            status = None
+            mime = None
+            if record.http_headers is not None:
+                try:
+                    status = int(record.http_headers.get_statuscode())
+                except (TypeError, ValueError):
+                    status = None
+                ctype = record.http_headers.get_header("Content-Type") or ""
+                mime = ctype.split(";", 1)[0].strip().lower() or None
+            if record.rec_type == "response":
+                body = record.content_stream().read()
+                index.record_response(
+                    crawl_id=crawl_id, url=url, warc_date=date,
+                    digest="sha1:" + hashlib.sha1(body).hexdigest(),
+                    record_id=record_id, warc_file=warc.name,
+                    status=status, mime=mime, length=len(body))
+                continue
+            refers_id = h.get_header("WARC-Refers-To") or ""
+            original = index.find_record(refers_id) if refers_id else None
+            index.record_revisit(
+                crawl_id=crawl_id, url=url, warc_date=date,
+                digest=h.get_header("WARC-Payload-Digest") or "",
+                record_id=record_id, warc_file=warc.name, status=status,
+                mime=mime, length=int((original or {}).get("length") or 0),
+                refers_to={
+                    "crawl_id": (original or {}).get("crawl_id"),
+                    "record_id": refers_id or None,
+                    "url": h.get_header("WARC-Refers-To-Target-URI"),
+                    "warc_date": h.get_header("WARC-Refers-To-Date")})
+            if original is None:
+                index.mark_orphaned(record_id)
+                index.unresolved += 1
+
+
+def _write_job_summary(job_dir: Path, summary: dict) -> None:
+    import json
+    path = Path(job_dir) / "dedup-summary.json"
+    document = {**summary, "dedup_across_jobs": True, "rebuilt": True,
+                "note": ("Rebuilt from the WARC files. A revisit record stands for a payload "
+                         "already held: within this job, or by another job of the collection "
+                         "(refers_to_jobs).")}
+    try:
+        path.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass

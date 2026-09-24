@@ -525,3 +525,107 @@ class DeletionOrderTests(ServerTestCase):
         self.assertEqual(refused.status_code, 409, refused.text)
         self.assertIn("earlier collection", refused.json()["detail"])
         self.assertEqual(self.client.get("/api/collections").json(), [])
+
+
+class RebuildTests(ServerTestCase):
+    """The index can be made anew from the WARCs: jobs from before the
+    index join it, and the numbers match what the writer recorded."""
+
+    def test_the_rebuilt_index_matches_the_one_the_writer_kept(self):
+        coll = self.collection()
+        first, second = self.job(coll, "first"), self.job(coll, "second")
+        self.write(coll, first, [("https://s/style.css", CSS), ("https://s/", b"<h1>home</h1>")])
+        self.write(coll, second, [("https://s/p/style.css", CSS), ("https://s/p/style.css", CSS),
+                                  ("https://s/new.css", b"fresh")])
+        before = colls.read_index(coll)
+        try:
+            expected_counts = before.counts()
+            expected_second = before.summary(second["id"])
+        finally:
+            before.close()
+        colls.remove_index(coll["root_dir"])
+        self.assertIsNone(colls.read_index(coll))
+
+        made = self.client.post(f"/api/collections/{coll['id']}/rebuild-index")
+
+        self.assertEqual(made.status_code, 200, made.text)
+        self.assertEqual({k: made.json()[k] for k in expected_counts}, expected_counts)
+        self.assertEqual(made.json()["unresolved_revisits"], 0)
+        after = colls.read_index(coll)
+        try:
+            self.assertEqual(after.counts(), expected_counts)
+            self.assertEqual(after.summary(second["id"]), expected_second)
+            self.assertEqual(after.lookup(DIGEST)["crawl_id"], first["id"])
+            self.assertEqual(after.referenced_jobs(second["id"]), [first["id"]])
+        finally:
+            after.close()
+        summary = json.loads((Path(second["output_dir"]) / "dedup-summary.json").read_text())
+        self.assertTrue(summary["rebuilt"])
+        self.assertEqual(summary["revisits_across_jobs"], 2)
+        self.assertEqual(summary["revisits_within_job"], 0)   # the second CSS is the first's twin
+
+    def test_a_job_written_before_the_index_existed_joins_it(self):
+        coll = self.collection(dedup_across_jobs=False)     # jobs write with no index
+        early = self.job(coll, "early")
+        self.write(coll, early, [("https://s/style.css", CSS)])
+        self.assertIsNone(colls.read_index(coll))
+        self.client.put(f"/api/collections/{coll['id']}", json={"dedup_across_jobs": True})
+        coll = self.client.get(f"/api/collections/{coll['id']}").json()   # policy now on
+
+        made = self.client.post(f"/api/collections/{coll['id']}/rebuild-index")
+
+        self.assertEqual(made.status_code, 200, made.text)
+        self.assertEqual(made.json()["originals"], 1)
+        later = self.job(coll, "later")
+        self.write(coll, later, [("https://s/p/style.css", CSS)])
+        kinds = [r["type"] for r in records_of(Path(later["output_dir"]))]
+        self.assertEqual(kinds, ["revisit"])                # the early job's copy is found
+
+    def test_a_revisit_whose_original_is_gone_is_orphaned_on_rebuild(self):
+        coll = self.collection()
+        first, second = self.job(coll, "first"), self.job(coll, "second")
+        self.write(coll, first, [("https://s/style.css", CSS)])
+        self.write(coll, second, [("https://s/p/style.css", CSS)])
+        import shutil
+        shutil.rmtree(first["output_dir"])                  # the files went, by hand
+        made = self.client.post(f"/api/collections/{coll['id']}/rebuild-index")
+        self.assertEqual(made.status_code, 200, made.text)
+        self.assertEqual(made.json()["unresolved_revisits"], 1)
+        self.assertEqual(made.json()["orphaned"], 1)
+        orphans = self.client.get(f"/api/collections/{coll['id']}/orphans").json()
+        self.assertEqual(orphans["urls"], ["https://s/p/style.css"])
+
+    def test_a_running_job_postpones_the_rebuild(self):
+        coll = self.collection()
+        job = self.job(coll)
+        with mock.patch.object(srv, "_worker_alive", return_value=True):
+            refused = self.client.post(f"/api/collections/{coll['id']}/rebuild-index")
+        self.assertEqual(refused.status_code, 409, refused.text)
+        self.assertIn(str(job["id"]), refused.json()["detail"])
+
+
+class RebuildCommandTests(CommandLineTests):
+    def test_collection_reindex_reads_the_warcs_back(self):
+        code, out, _ = self.run_cli("collection", "create", "QNL", "--db", self.db,
+                                    "--warc-root", self.root)
+        self.assertEqual(code, 0, out)
+        store = Store(self.db)
+        coll = store.find_collection("qnl")
+        job = store.create_crawl("j", {"seeds": []}, str(Path(coll["root_dir"]) / "jobs" / "1"), 0,
+                                 collection_id=coll["id"])
+        store.set_status(job, "completed")
+        index = colls.open_index(coll)
+        session = WarcSession(Path(coll["root_dir"]) / "jobs" / "1", "j", "https://s/", 1, "op",
+                              WarcConfig(), collection_index=index, crawl_id=job)
+        for url in ("https://s/a.css", "https://s/b.css"):
+            session.write_exchange(url=url, method="GET", req_headers={}, post_data=None,
+                                   status=200, status_text="OK",
+                                   resp_headers={"content-type": "text/css"}, body=CSS)
+        session.close(); index.close()
+        colls.remove_index(coll["root_dir"])
+
+        code, out, err = self.run_cli("collection", "reindex", "qnl", "--db", self.db)
+
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("1 original(s), 1 revisit(s)", out)
+        self.assertIn(f"#{job}", out)

@@ -622,6 +622,7 @@ def _collection_view(row: dict, counts: dict | None = None,
         "metadata_fields": len(row.get("metadata") or []),
         "policy": colls.policy_of(row),
         "index": _index_counts(row) if with_bytes else None,
+        "warc_index": _collection_index_summary(root) if with_bytes else None,
         "inherited_by_jobs": colls.inherited_fields(row),
         "jobs": entry["jobs"],
         "by_status": entry["by_status"],
@@ -632,6 +633,14 @@ def _collection_view(row: dict, counts: dict | None = None,
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _collection_index_summary(root: Path) -> dict | None:
+    from .warc_indexer import collection_summary
+    try:
+        return collection_summary(root)
+    except OSError:
+        return None
 
 
 def _collection_metadata_from(payload: dict) -> list[dict] | None:
@@ -978,6 +987,14 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     _STORE = Store(db_path)
     _WARC_ROOT = Path(warc_root)
     _WARC_ROOT.mkdir(parents=True, exist_ok=True)
+    # Collections made before their directory was recorded absolute are
+    # relative to this process's working directory: say so once, so a
+    # command-line job started elsewhere finds the same place.
+    try:
+        for moved in colls.absolutise_roots(_STORE):
+            log.info("Collection %s: directory recorded as %s", moved["slug"], moved["to"])
+    except Exception as exc:                        # pragma: no cover - never fatal
+        log.warning("Could not resolve collection directories: %s", exc)
     _SIMULATE = simulate
     _REPLAY_ROOT = Path(replay_root)
     _BIND_HOST = bind_host
@@ -1967,7 +1984,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 collection = str(payload["collection"]).strip()
             if str(payload.get("warc") or "").strip():
                 chosen = [Path(str(payload["warc"])).name]     # one file, by name only
-        collection = collection or row["name"]
+        if not collection:
+            member_of = _collection_of(row)
+            collection = member_of["name"] if member_of else row["name"]
         warcs = warc_indexer.warc_files(crawl_dir)
         if not warcs:
             raise HTTPException(409, "no WARC files captured yet for this job")
@@ -2294,6 +2313,91 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             return {"urls": index.orphan_urls(), "records": index.orphans()}
         finally:
             index.close()
+
+    @app.post("/api/collections/{collection_id}/warc-index", status_code=202)
+    def warc_index_collection(collection_id: int, payload: dict | None = Body(default=None)):
+        """Run the warc-indexer jar over every crawl's and recording's WARCs
+        in the collection, one job after another, each document carrying
+        the collection's name. Revisit records that point into another
+        job resolve to that job's document when the outputs are loaded
+        together."""
+        import threading
+
+        from . import warc_indexer
+        row = _require_collection(collection_id)
+        root = Path(row["root_dir"])
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)
+                if j.get("kind", "crawl") in _WARC_INDEXABLE_KINDS]
+        alive = [j["id"] for j in jobs if _worker_alive(j)]
+        if alive:
+            raise HTTPException(409, f"job(s) {', '.join(map(str, alive))} are still running; "
+                                     "index the collection once it is quiet")
+        if warc_indexer.collection_is_running(root):
+            raise HTTPException(409, "this collection's WARCs are being indexed already")
+        busy = [j["id"] for j in jobs if _warc_indexing(j["id"], _crawl_dir(j))]
+        if busy:
+            raise HTTPException(409, f"job(s) {', '.join(map(str, busy))} are being indexed "
+                                     "on their own; wait for those runs")
+        cap = warc_indexer.capability(_store().get_setting)
+        if not cap["available"]:
+            raise HTTPException(409, cap["reason"] or "warc-indexer is unavailable")
+        with_warcs = [(j["id"], _crawl_dir(j)) for j in jobs
+                      if warc_indexer.warc_files(_crawl_dir(j))]
+        if not with_warcs:
+            raise HTTPException(409, "no WARC files in this collection yet")
+        collection = row["name"]
+        if isinstance(payload, dict) and str(payload.get("collection") or "").strip():
+            collection = str(payload["collection"]).strip()
+        get_setting = _store().get_setting
+        with _WARC_INDEX_LOCK:
+            for crawl_id, _dir in with_warcs:
+                _WARC_INDEX_RUNS.add(crawl_id)
+
+        def run():
+            try:
+                warc_indexer.index_collection(root, with_warcs, collection=collection,
+                                              get_setting=get_setting)
+            except Exception as exc:                    # noqa: BLE001 - recorded for the row
+                log.warning("collection-wide warc-indexer run for %d failed: %s",
+                            collection_id, exc)
+            finally:
+                with _WARC_INDEX_LOCK:
+                    for crawl_id, _dir in with_warcs:
+                        _WARC_INDEX_RUNS.discard(crawl_id)
+
+        threading.Thread(target=run, name=f"warc-index-collection-{collection_id}",
+                         daemon=True).start()
+        return {"status": warc_indexer.STATUS_RUNNING, "collection": collection,
+                "jobs": [crawl_id for crawl_id, _dir in with_warcs],
+                "status_url": f"/api/collections/{collection_id}/warc-index"}
+
+    @app.get("/api/collections/{collection_id}/warc-index")
+    def warc_index_collection_status(collection_id: int):
+        from .warc_indexer import collection_summary, read_collection_manifest
+        row = _require_collection(collection_id)
+        manifest = read_collection_manifest(Path(row["root_dir"]))
+        if not manifest:
+            raise HTTPException(404, "this collection's WARCs have not been indexed together yet")
+        manifest["summary"] = collection_summary(Path(row["root_dir"]))
+        manifest.pop("pid", None)
+        return manifest
+
+    @app.post("/api/collections/{collection_id}/rebuild-index")
+    def rebuild_collection_index(collection_id: int):
+        """Make the collection's index anew from its jobs' WARC files: for
+        jobs made before the index existed, or an index that was lost."""
+        row = _require_collection(collection_id)
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)]
+        alive = [j["id"] for j in jobs if _worker_alive(j)]
+        if alive:
+            raise HTTPException(
+                409, f"job(s) {', '.join(map(str, alive))} are still running; the index is "
+                     "rebuilt once the collection is quiet")
+        try:
+            result = colls.rebuild_index(_store(), row)
+        except OSError as exc:
+            raise HTTPException(500, f"the index could not be rebuilt: {exc}") from exc
+        return {"ok": True, **result}
 
     @app.post("/api/collections/{collection_id}/replay")
     def replay_collection(collection_id: int):
