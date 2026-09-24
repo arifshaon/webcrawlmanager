@@ -257,6 +257,27 @@ def write_document(root_dir: Path | str, doc: dict) -> Path:
     return target
 
 
+def refresh_document(store, collection: Optional[dict]) -> None:
+    """Rewrite collection.json with the collection's jobs as they now are.
+
+    Called wherever a job's place or state changes: when it is created,
+    when it ends, when it is deleted. A document that only knew jobs at
+    their creation listed a finished job as pending for ever.
+    """
+    if not collection:
+        return
+    row = store.get_collection(collection["id"]) or collection
+    root = Path(row["root_dir"])
+    try:
+        write_document(root, document(
+            row, store.crawls_in_collection(row["id"]),
+            existing=read_document(root)))
+    except OSError as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Could not write collection.json for %s: %s", row.get("slug"), exc)
+
+
 def read_document(root_dir: Path | str) -> Optional[dict]:
     path = Path(root_dir) / DOCUMENT_NAME
     try:

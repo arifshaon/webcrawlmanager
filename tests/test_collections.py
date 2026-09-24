@@ -194,6 +194,43 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.get_collection(cid))
 
 
+class DocumentRefreshTests(unittest.TestCase):
+    """collection.json lists each job with the state it is in now, not the
+    state it was created in."""
+
+    def test_a_finished_job_is_listed_as_finished(self):
+        from webarc import worker
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            root = Path(tmp) / "collections" / "c"
+            cid = store.create_collection("c", "C", "", str(root))
+            collection = store.get_collection(cid)
+            job = store.create_crawl("j", {"seeds": []}, str(root / "jobs" / "1"), 0,
+                                     collection_id=cid)
+            colls.refresh_document(store, collection)
+            self.assertEqual(colls.read_document(root)["jobs"][0]["status"], "pending")
+
+            store.set_status(job, "completed")
+            worker._note_job_end(store, job)
+
+            self.assertEqual(colls.read_document(root)["jobs"][0]["status"], "completed")
+
+    def test_the_command_line_job_reports_its_end_too(self):
+        from webarc.cli import _settle_registered_job
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / "swm.db")
+            root = Path(tmp) / "collections" / "c"
+            cid = store.create_collection("c", "C", "", str(root))
+            job = store.create_crawl("j", {"seeds": []}, str(root / "jobs" / "1"), 0,
+                                     collection_id=cid)
+
+            _settle_registered_job((store, job), "failed")
+
+            self.assertEqual(colls.read_document(root)["jobs"][0]["status"], "failed")
+
+
 class ServerTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

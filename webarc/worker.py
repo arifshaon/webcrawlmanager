@@ -736,6 +736,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         log.exception("Crawl %d failed", args.crawl_id)
         store.set_status(args.crawl_id, FAILED, error=str(exc))
+        _note_job_end(store, args.crawl_id)
         return 1
 
     # decide final crawl-level status from control state
@@ -755,8 +756,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         store.set_status(args.crawl_id, COMPLETED)
     store.clear_control(args.crawl_id)
+    _note_job_end(store, args.crawl_id)
     log.info("Crawl %d finished", args.crawl_id)
     return 0
+
+
+def _note_job_end(store: Store, crawl_id: int) -> None:
+    """The collection's document lists this job with the state it ended in."""
+    try:
+        from .collections import refresh_document
+        row = store.get_crawl(crawl_id)
+        refresh_document(store, store.get_collection((row or {}).get("collection_id")))
+    except Exception as exc:                        # pragma: no cover
+        log.warning("Could not update collection.json: %s", exc)
 
 
 if __name__ == "__main__":

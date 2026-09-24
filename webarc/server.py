@@ -733,16 +733,7 @@ def _job_home(collection: dict | None, storage_root: Path, crawl_id: int) -> Pat
 
 def _refresh_collection_document(collection: dict | None) -> None:
     """Keep collection.json's list of jobs current."""
-    if not collection:
-        return
-    row = _store().get_collection(collection["id"]) or collection
-    root = Path(row["root_dir"])
-    try:
-        colls.write_document(root, colls.document(
-            row, _store().crawls_in_collection(row["id"]),
-            existing=colls.read_document(root)))
-    except OSError as exc:
-        log.warning("Could not write collection.json for %s: %s", row.get("slug"), exc)
+    colls.refresh_document(_store(), collection)
 
 
 def _require_collection(collection_id: int) -> dict:

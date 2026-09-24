@@ -354,22 +354,16 @@ def _settle_registered_job(registered, outcome: str) -> None:
     status = {"completed": COMPLETED, "failed": FAILED}.get(outcome, STOPPED)
     try:
         store.set_status(crawl_id, status)
+        row = store.get_crawl(crawl_id)
+        _refresh_collection_document(store, store.get_collection(
+            (row or {}).get("collection_id")))
     except Exception as exc:                        # pragma: no cover
         logging.getLogger(__name__).warning("Could not record the job's end: %s", exc)
 
 
 def _refresh_collection_document(store, collection: dict) -> None:
-    from pathlib import Path as _P
-
     from . import collections as colls
-    root = _P(collection["root_dir"])
-    try:
-        colls.write_document(root, colls.document(
-            collection, store.crawls_in_collection(collection["id"]),
-            existing=colls.read_document(root)))
-    except OSError as exc:
-        logging.getLogger(__name__).warning(
-            "Could not write collection.json: %s", exc)
+    colls.refresh_document(store, collection)
 
 
 def _create_collection_row(store, name: str, description: str,
