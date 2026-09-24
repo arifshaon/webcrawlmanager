@@ -224,6 +224,13 @@
       background:var(--surface); border:1px solid var(--rule); font-size:.82rem; line-height:1.45; }
     .fb-phase-label { font-weight:600; text-transform:uppercase;
       letter-spacing:.06em; font-size:.7rem; opacity:.75; white-space:nowrap; }
+    .fb-phase.warc-index-failed { border-color:#dc2626; }
+    .fb-phase.warc-index-failed .fb-phase-label { color:#dc2626; opacity:1; }
+    .fb-phase details { flex-basis:100%; }
+    .fb-phase pre { white-space:pre-wrap; word-break:break-word; font-size:.72rem; margin:.3rem 0 0;
+      max-height:12rem; overflow:auto; }
+    #indexer-settings input[type=text] { min-width:26rem; max-width:100%; }
+    #indexer-settings.attention { outline:2px solid #dc2626; outline-offset:4px; border-radius:8px; }
   #busy-overlay { display: none; position: fixed; inset: 0; z-index: 999;
     background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center; }
   .busy-card { background: var(--paper); border: 1px solid var(--rule);
@@ -537,6 +544,22 @@
         <span class="msg" id="res-msg"></span>
       </div>
       <span class="help" id="res-help"></span>
+    </div>
+    <div class="eyebrow">Indexer (warc-indexer, for crawls and recordings)</div>
+    <div class="resource-settings" id="indexer-settings">
+      <div class="levels">
+        <label for="idx-java">Java <button type="button" class="tip" aria-label="What is this for?" data-help="idx-java">?</button>
+          <input type="text" id="idx-java" placeholder="JAVA_HOME folder or the java executable; empty = find it"></label>
+        <label for="idx-jar">Indexer jar <button type="button" class="tip" aria-label="What is this for?" data-help="idx-jar">?</button>
+          <input type="text" id="idx-jar" placeholder="warc-indexer-…-jar-with-dependencies.jar; empty = the build in warc-indexer/target"></label>
+        <label for="idx-config">Configuration <button type="button" class="tip" aria-label="What is this for?" data-help="idx-config">?</button>
+          <input type="text" id="idx-config" placeholder="swm-indexer.conf; empty = the one beside the jar"></label>
+        <label for="idx-memory">Memory <button type="button" class="tip" aria-label="What is this for?" data-help="idx-memory">?</button>
+          <input type="text" id="idx-memory" placeholder="2g"></label>
+        <button type="button" class="secondary" id="idx-save">Save</button>
+        <span class="msg" id="idx-msg"></span>
+      </div>
+      <span class="help" id="idx-help"></span>
     </div>
     <div class="eyebrow">Theme judge (AI, optional)</div>
     <div class="resource-settings" id="theme-ai-settings">
@@ -1865,6 +1888,7 @@ let instagramCapability = null;
 let xCapability = null;
 let youtubeCapability = null;
 let themeAiCapability = null;
+let warcIndexerCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
@@ -1874,6 +1898,7 @@ async function loadCapabilities() {
     xCapability = caps.x || {available: false, reason: "not reported by the server"};
     youtubeCapability = caps.youtube || {available: false, reason: "not reported by the server"};
     themeAiCapability = caps.theme_ai || {available: false, reason: "not reported by the server"};
+    warcIndexerCapability = caps.warc_indexer || {available: false, reason: "not reported by the server"};
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
     facebookCapability = {available: false, reason: "capability check failed"};
@@ -2904,13 +2929,13 @@ function busy(text) {
   node.style.display = "flex";
   return () => { node.style.display = "none"; };
 }
-function offerOpen(url, text) {
+function offerOpen(url, text, label) {
   // A browser lets a click open a new tab only for a few seconds. When the
   // build took longer and the tab was refused, the wait dialog becomes a
   // button: a fresh click, so the tab is allowed.
   const node = document.getElementById("busy-overlay");
   node.innerHTML = `<div class="busy-card"><div class="busy-text">${escapeHtml(text)}</div>`
-    + `<button type="button" class="primary" id="busy-open">Open in a new tab</button>`
+    + `<button type="button" class="primary" id="busy-open">${escapeHtml(label || "Open in a new tab")}</button>`
     + `<button type="button" class="secondary" id="busy-close">Close</button></div>`;
   node.style.display = "flex";
   const close = () => { node.style.display = "none"; node.innerHTML = ""; };
@@ -2937,6 +2962,49 @@ async function replay(id, want) {
   } catch (e) {
     done();
     alert("Could not open: " + e.message);
+  }
+}
+async function indexCapture(id) {
+  // The capture's posts, comments and profiles become one search document
+  // each, in warc-indexer's schema, written beside the capture. The result
+  // is summarised here and can be downloaded; the job card shows the count.
+  const done = busy("Indexing the capture's records. A large WARC takes a moment to scan.");
+  try {
+    const r = await api(`/api/crawls/${id}/index`, {method:"POST"});
+    const types = Object.entries(r.by_type || {}).map(([k, v]) => `${v} ${k}`).join(", ");
+    const pointer = Number(r.unlocated) > 0
+      ? ` ${r.unlocated} of them have no WARC record to point at.`
+      : (Number(r.documents) > 0 ? " Every document points at its WARC record." : "");
+    const text = `Indexed ${r.documents} document${r.documents === 1 ? "" : "s"}`
+      + (types ? ` (${types})` : "") + ` into ${r.output}.` + pointer
+      + (Array.isArray(r.warnings) && r.warnings.length ? ` ${r.warnings.length} warning(s) are in the index manifest.` : "");
+    offerOpen(r.download_url, text, "Download the index");
+    refresh();
+  } catch (e) {
+    done();
+    alert("Indexing failed: " + e.message);
+  }
+}
+async function indexWarc(id) {
+  // A crawl's or recording's WARC files go through the warc-indexer jar,
+  // which writes <name>.jsonl beside each. The server answers at once and
+  // the job card follows the run: progress, then the document count, or
+  // the failure with the jar's own words. When Java or the jar cannot be
+  // found, the Indexer settings open to be told where they are.
+  if (warcIndexerCapability && warcIndexerCapability.available === false) {
+    askForIndexerSetup(warcIndexerCapability.reason);
+    return;
+  }
+  try {
+    await api(`/api/crawls/${id}/warc-index`, {method:"POST"});
+    refresh();
+  } catch (e) {
+    const text = String(e.message || "");
+    if (/java|jar/i.test(text) && /not found|could not be run|unavailable/i.test(text)) {
+      askForIndexerSetup(text);
+      return;
+    }
+    alert("Indexing could not start: " + text);
   }
 }
 async function ctl(id, cmd) {
@@ -3014,6 +3082,7 @@ async function refresh() {
     renderStorageDefault(settings);
     renderResourceSettings(settings);
     renderThemeAiSettings(settings);
+    renderIndexerSettings(settings);
     $("#nav-active").textContent = active ? String(active) : "";
     lastCrawls = crawls;
     lastCollections = Array.isArray(collections) ? collections : [];
@@ -3347,6 +3416,65 @@ async function saveResourceSettings() {
 ["res-enabled", "res-cpu", "res-memory", "res-disk"].forEach(id =>
   $(`#${id}`).addEventListener("input", () => resourceLevelsEdited = true));
 $("#res-save").addEventListener("click", saveResourceSettings);
+
+// --- Indexer: where Java, the warc-indexer jar and its configuration are
+const INDEXER_FIELDS = ["java", "jar", "config", "memory"];
+let indexerEdited = false;
+function renderIndexerSettings(settings) {
+  const idx = settings.indexer || {};
+  const stored = idx.settings || {};
+  if (!indexerEdited) {
+    INDEXER_FIELDS.forEach(key => { $(`#idx-${key}`).value = stored[key] || ""; });
+  }
+  warcIndexerCapability = idx;
+  const found = [];
+  if (idx.available) {
+    found.push(`Ready: ${idx.java_version || "Java"} at ${idx.java}; jar ${idx.jar}`);
+    found.push(idx.config ? `configuration ${idx.config}` : "");
+  }
+  const help = $("#idx-help");
+  help.textContent = idx.available
+    ? found.filter(Boolean).join(" · ") + (idx.note ? " " + idx.note : "")
+    : (idx.reason || "The indexer is not available.") + (idx.note ? " " + idx.note : "");
+  help.classList.toggle("err", !idx.available);
+}
+async function saveIndexerSettings() {
+  const msg = $("#idx-msg");
+  msg.textContent = "Saving…";
+  msg.className = "msg";
+  const indexer = {};
+  INDEXER_FIELDS.forEach(key => { indexer[key] = $(`#idx-${key}`).value.trim(); });
+  try {
+    const settings = await api("/api/settings", {
+      method: "PUT", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({indexer}),
+    });
+    indexerEdited = false;
+    renderIndexerSettings(settings);
+    $("#indexer-settings").classList.remove("attention");
+    msg.textContent = settings.indexer && settings.indexer.available ? "Saved. The indexer is ready." : "Saved.";
+    msg.className = "msg ok";
+    refresh();
+  } catch (e) {
+    msg.textContent = e.message;
+    msg.className = "msg err";
+  }
+}
+// Take the curator to the Indexer settings with the reason in view, when a
+// job's Index WARC button found Java or the jar missing.
+function askForIndexerSetup(reason) {
+  showView("settings");
+  const block = $("#indexer-settings");
+  block.classList.add("attention");
+  const msg = $("#idx-msg");
+  msg.textContent = reason || "Say where Java and the warc-indexer jar are, then try again.";
+  msg.className = "msg err";
+  const target = (reason || "").toLowerCase().includes("java") ? $("#idx-java") : $("#idx-jar");
+  block.scrollIntoView({behavior: "smooth", block: "center"});
+  target.focus();
+}
+INDEXER_FIELDS.forEach(key => $(`#idx-${key}`).addEventListener("input", () => indexerEdited = true));
+$("#idx-save").addEventListener("click", saveIndexerSettings);
 $("#add-seed-btn").addEventListener("click", () => addSeed(""));
 $("#start-btn").addEventListener("click", start);
 $("#reset-btn").addEventListener("click", resetExample);

@@ -147,6 +147,7 @@ function crawlRow(c) {
       <span class="fb-phase-label">${escapeHtml(facebookPhaseLabel(fb.phase))}</span>
       <span>${escapeHtml(fb.message || "")}</span>
     </div>` : ""}
+    ${!isSocial ? warcIndexLine(id, c.warc_index) : ""}
     <div class="actions">
       <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
       <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
@@ -159,12 +160,55 @@ function crawlRow(c) {
       : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
       <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
       : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
+      ${isSocial ? `<button class="act" onclick="indexCapture(${id})" ${(running || paused || blocked || rawStatus === "stopping") ? "disabled" : ""} title="Index the captured posts, comments and profiles as search documents in warc-indexer's schema, beside the capture">${c.index && c.index.documents != null ? `Re-index · ${Number(c.index.documents)}` : "Index"}</button>`
+      : (() => {
+        // crawls and recordings: the warc-indexer jar over the WARC files.
+        // When Java or the jar is missing the button stays live: clicking
+        // it opens Settings › Indexer to say where they are.
+        const wi = c.warc_index || null;
+        const indexing = wi && wi.status === "running";
+        const cap = (typeof warcIndexerCapability !== "undefined" && warcIndexerCapability) || {available: true};
+        const off = indexing || !hasWarc || running || paused || blocked || rawStatus === "stopping";
+        const title = !cap.available ? escapeHtml((cap.reason || "warc-indexer is unavailable") + " Click to set it up.")
+          : "Run warc-indexer over this job's WARC files; each gets a <name>.jsonl of search documents beside it";
+        const label = indexing ? "Indexing…"
+          : !cap.available ? "Index WARC · set up"
+          : wi && wi.status === "done" && wi.documents != null ? `Re-index WARC · ${Number(wi.documents)}`
+          : wi && wi.status === "failed" ? "Index WARC · retry" : "Index WARC";
+        return `<button class="act" onclick="indexWarc(${id})" ${off ? "disabled" : ""} title="${title}">${label}</button>`;
+      })()}
       ${c.has_selection ? `<button class="act replay" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
       <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
       <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
     </div>
     <div class="seeds">${seedRows}</div>
   </div>`;
+}
+
+// What a crawl's or recording's card says about its warc-indexer run: the
+// progress while it goes, the outcome after, and the error with a link to
+// the jar's log when it failed.
+function warcIndexLine(id, wi) {
+  if (!wi || !wi.status) return "";
+  const n = v => Number(v || 0).toLocaleString();
+  if (wi.status === "running") {
+    const p = wi.progress || {};
+    const where = p.files_total > 1 ? `file ${p.file_index || 0} of ${p.files_total}` : (p.current_warc ? escapeHtml(p.current_warc) : "starting");
+    const secs = Number(p.elapsed_seconds || 0);
+    const when = secs >= 90 ? `${Math.round(secs / 60)} min` : `${secs} s`;
+    return `<div class="fb-phase"><span class="fb-phase-label">Indexing</span>
+      <span>${where} · ${n(p.documents)} documents so far · ${when}</span></div>`;
+  }
+  if (wi.status === "failed") {
+    const detail = wi.error_detail ? `<details><summary>What the indexer said</summary><pre>${escapeHtml(wi.error_detail)}</pre></details>` : "";
+    return `<div class="fb-phase warc-index-failed"><span class="fb-phase-label">Indexing failed</span>
+      <span>${escapeHtml(wi.error || "no reason recorded")} <a href="/api/crawls/${id}/warc-index/log" target="_blank" rel="noopener">Open the log</a></span>${detail}</div>`;
+  }
+  if (wi.status === "done") {
+    return `<div class="fb-phase"><span class="fb-phase-label">Indexed</span>
+      <span>${n(wi.documents)} documents from ${n(wi.warcs)} WARC file${Number(wi.warcs) === 1 ? "" : "s"}, beside the WARC${wi.finished_at ? ` · ${escapeHtml(wi.finished_at)}` : ""}</span></div>`;
+  }
+  return "";
 }
 
 // The page uses .mode-tab for both job-type tabs and editor tabs. Scope editor

@@ -19,11 +19,23 @@ Endpoints:
   GET  /api/resources         -> spare CPU, memory and disk; usage per running job
   GET  /api/resources/check   -> whether a new job should be warned before starting
   POST /api/crawls/{id}/start -> launch a job that was told to wait
-  GET/PUT /api/settings       -> default storage location, resource warning levels
+  GET/PUT /api/settings       -> default storage location, resource warning levels,
+                                 the theme judge, the Indexer (Java, jar, config)
   GET  /api/help              -> the help text behind each "?" on the forms
   GET/PUT /api/crawls/{id}/metadata -> a job's descriptive metadata (Dublin Core)
   GET  /api/crawls/{id}/metadata.csv -> the same as a one-row-per-seed sheet
   POST /api/metadata/parse    -> read such a sheet back into the metadata shape
+  POST /api/crawls/{id}/index -> index a social capture's records into
+                                 warc-indexer's document schema (JSON Lines);
+                                 {"relocate": true, "source_root": ...} only
+                                 rewrites where the WARCs are said to live
+  GET  /api/crawls/{id}/index -> the summary of the last such run
+  GET  /api/crawls/{id}/index.jsonl -> download the documents
+  POST /api/crawls/{id}/warc-index -> run the warc-indexer jar on a crawl's or
+                                 recording's WARCs, writing <warc>.jsonl beside
+                                 each; returns at once, the job card follows it
+  GET  /api/crawls/{id}/warc-index -> the state of that run
+  GET  /api/crawls/{id}/warc-index/log -> the jar's output from it
 
 A crawl runs as an isolated subprocess (webarc.worker). Pause/resume/stop are
 delivered through the store's control column, which the worker polls between
@@ -264,6 +276,13 @@ def _write_theme_ai_settings(wanted: object) -> None:
 def _theme_ai_capability() -> dict:
     from .theme import ai_capability
     return ai_capability(_store().get_setting)
+
+
+def _warc_indexer_capability() -> dict:
+    """Whether the warc-indexer jar can be run here: Java and a built jar,
+    found through the Indexer settings, the environment, or the repository."""
+    from .warc_indexer import capability
+    return capability(_store().get_setting)
 
 
 def _youtube_capability() -> dict:
@@ -878,7 +897,36 @@ def _crawl_view(row: dict) -> dict:
         # replay needs an archive, not just a described folder: metadata.json
         # alone gives a job a size but nothing to replay
         "warc_files": _warc_count(crawl_dir),
+        # the last indexing run of a social capture, if any
+        "index": _index_summary(crawl_dir),
+        # the last warc-indexer run over a crawl's or recording's WARCs, if any
+        "warc_index": _warc_index_summary(crawl_dir),
     }
+
+
+_WARC_INDEXABLE_KINDS = ("crawl", KIND_RECORDING)
+
+
+def _warc_index_summary(crawl_dir: Path) -> dict | None:
+    from .warc_indexer import summary
+    try:
+        return summary(crawl_dir)
+    except OSError:
+        return None
+
+
+_SOCIAL_KINDS = (KIND_FACEBOOK, KIND_INSTAGRAM, KIND_X, KIND_YOUTUBE)
+
+
+def _index_summary(crawl_dir: Path) -> dict | None:
+    """What the dashboard shows about a capture's index: counts and when."""
+    from .indexer import read_index_manifest
+    manifest = read_index_manifest(crawl_dir)
+    if not manifest:
+        return None
+    return {key: manifest.get(key) for key in
+            ("platform", "documents", "by_type", "located", "unlocated",
+             "warc_files", "invalid", "generated_at", "collection")}
 
 
 def _warc_count(crawl_dir: Path) -> int:
@@ -979,6 +1027,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "x": _x_capability(),
             "youtube": _youtube_capability(),
             "theme_ai": _theme_ai_capability(),
+            "warc_indexer": _warc_indexer_capability(),
         }
 
     @app.post("/api/theme/check")
@@ -1820,6 +1869,139 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return {"collection": coll, "replay_url": _PYWB.replay_url(coll),
                 "pages_url": pages_url}
 
+    @app.post("/api/crawls/{crawl_id}/index")
+    def index_capture(crawl_id: int, payload: dict | None = Body(default=None)):
+        """Index a finished social capture's records into warc-indexer's
+        document schema, beside the capture in index/. Runs in the request,
+        like replay: the records are small and the WARC scan reads headers
+        only."""
+        from . import indexer
+        row = _require(crawl_id)
+        if row.get("kind") not in _SOCIAL_KINDS:
+            raise HTTPException(
+                409, "Only Facebook, Instagram, X and YouTube captures can be indexed.")
+        if _pid_alive(row.get("pid")):
+            raise HTTPException(409, "Stop the capture before indexing it.")
+        collection = source_root = None
+        relocate = False
+        if isinstance(payload, dict):
+            if str(payload.get("collection") or "").strip():
+                collection = str(payload["collection"]).strip()
+            if str(payload.get("source_root") or "").strip():
+                source_root = str(payload["source_root"]).strip()
+            relocate = bool(payload.get("relocate"))
+        try:
+            if relocate:
+                # only the pointers change: no re-reading of records or WARCs
+                moved = indexer.relocate_index(_crawl_dir(row), source_root)
+                moved["download_url"] = f"/api/crawls/{crawl_id}/index.jsonl"
+                return moved
+            result = indexer.index_capture(_crawl_dir(row), collection=collection,
+                                           source_root=source_root)
+        except indexer.IndexingError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(500, f"indexing failed: {exc}") from exc
+        body = result.to_dict()
+        body["download_url"] = f"/api/crawls/{crawl_id}/index.jsonl"
+        return body
+
+    @app.post("/api/crawls/{crawl_id}/warc-index", status_code=202)
+    def warc_index(crawl_id: int, payload: dict | None = Body(default=None)):
+        """Run the warc-indexer jar over a crawl's or recording's WARC files.
+        The jar runs on its own thread and writes <warc>.jsonl beside each
+        WARC; the job card shows the run's state as it goes."""
+        import threading
+
+        from . import warc_indexer
+        row = _require(crawl_id)
+        if row.get("kind") not in _WARC_INDEXABLE_KINDS:
+            raise HTTPException(
+                409, "Only automated crawls and recordings are indexed from their WARCs; "
+                     "social captures are indexed from their records with Index.")
+        if _pid_alive(row.get("pid")):
+            raise HTTPException(409, "Stop the job before indexing its WARCs.")
+        crawl_dir = _crawl_dir(row)
+        if warc_indexer.is_running(crawl_dir):
+            raise HTTPException(409, "This job's WARCs are being indexed already.")
+        get_setting = _store().get_setting
+        cap = warc_indexer.capability(get_setting)
+        if not cap["available"]:
+            raise HTTPException(409, cap["reason"] or "warc-indexer is unavailable")
+        collection = None
+        chosen = None
+        if isinstance(payload, dict):
+            if str(payload.get("collection") or "").strip():
+                collection = str(payload["collection"]).strip()
+            if str(payload.get("warc") or "").strip():
+                chosen = [Path(str(payload["warc"])).name]     # one file, by name only
+        collection = collection or row["name"]
+        warcs = warc_indexer.warc_files(crawl_dir)
+        if not warcs:
+            raise HTTPException(409, "no WARC files captured yet for this job")
+        if chosen and not any(w.name == chosen[0] for w in warcs):
+            raise HTTPException(404, f"{chosen[0]} is not one of this job's WARC files")
+
+        def run():
+            try:
+                warc_indexer.index_warcs(crawl_dir, warcs=chosen, collection=collection,
+                                         get_setting=get_setting)
+            except Exception as exc:                    # noqa: BLE001 - recorded for the card
+                log.warning("warc-indexer run for %d failed: %s", crawl_id, exc)
+                warc_indexer._write_manifest(crawl_dir, {
+                    "schema": "swm-warc-index-run/1", "status": warc_indexer.STATUS_FAILED,
+                    "error": str(exc), "finished_at": warc_indexer._iso_now(),
+                    "warcs": chosen or [w.name for w in warcs], "outputs": [], "documents": 0})
+
+        threading.Thread(target=run, name=f"warc-index-{crawl_id}", daemon=True).start()
+        return {"status": warc_indexer.STATUS_RUNNING, "warcs": chosen or [w.name for w in warcs],
+                "collection": collection, "jar": cap.get("jar"),
+                "status_url": f"/api/crawls/{crawl_id}/warc-index"}
+
+    @app.get("/api/crawls/{crawl_id}/warc-index")
+    def warc_index_status(crawl_id: int):
+        from .warc_indexer import read_manifest, summary
+        crawl_dir = _crawl_dir(_require(crawl_id))
+        manifest = read_manifest(crawl_dir)
+        if not manifest:
+            raise HTTPException(404, "this job's WARCs have not been indexed yet")
+        manifest["summary"] = summary(crawl_dir)
+        manifest.pop("pid", None)
+        return manifest
+
+    @app.get("/api/crawls/{crawl_id}/warc-index/log")
+    def warc_index_log(crawl_id: int):
+        """The jar's own output from the last run, as written."""
+        from fastapi.responses import PlainTextResponse
+
+        from .warc_indexer import LOG_NAME
+        path = _crawl_dir(_require(crawl_id)) / LOG_NAME
+        if not path.is_file():
+            raise HTTPException(404, "this job's WARCs have not been indexed yet")
+        return PlainTextResponse(path.read_text(encoding="utf-8", errors="replace"))
+
+    @app.get("/api/crawls/{crawl_id}/index")
+    def index_status(crawl_id: int):
+        from .indexer import read_index_manifest
+        manifest = read_index_manifest(_crawl_dir(_require(crawl_id)))
+        if not manifest:
+            raise HTTPException(404, "this capture has not been indexed yet")
+        manifest["download_url"] = f"/api/crawls/{crawl_id}/index.jsonl"
+        return manifest
+
+    @app.get("/api/crawls/{crawl_id}/index.jsonl")
+    def index_download(crawl_id: int):
+        from fastapi.responses import FileResponse
+
+        from .indexer import read_index_manifest
+        row = _require(crawl_id)
+        manifest = read_index_manifest(_crawl_dir(row))
+        target = Path(manifest["output"]) if manifest and manifest.get("output") else None
+        if not target or not target.is_file():
+            raise HTTPException(404, "this capture has not been indexed yet")
+        return FileResponse(target, media_type="application/x-ndjson",
+                            filename=target.name)
+
     def row_seed_url(crawl_id: int) -> str | None:
         prog = _store().get_progress(crawl_id)
         return prog[0]["seed_url"] if prog else None
@@ -1883,6 +2065,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "resources_measured": _monitor().snapshot().get("measured", False),
             "resources_note": resources.measurement_note(),
             "theme_ai": {**ai_settings(_store().get_setting), "capability": _theme_ai_capability()},
+            "indexer": _warc_indexer_capability(),
         }
 
     @app.get("/api/resources")
@@ -1936,10 +2119,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         directory it was written to, so a changed default applies to captures
         made after it.
         """
-        if not any(k in payload for k in ("storage_root", "resources", "theme_ai")):
-            raise HTTPException(400, "provide storage_root, resources or theme_ai")
+        if not any(k in payload for k in ("storage_root", "resources", "theme_ai", "indexer")):
+            raise HTTPException(400, "provide storage_root, resources, theme_ai or indexer")
         if "theme_ai" in payload:
             _write_theme_ai_settings(payload.get("theme_ai"))
+        if "indexer" in payload:
+            from . import warc_indexer
+            try:
+                accepted = warc_indexer.validate_settings(payload.get("indexer"))
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            for key, value in accepted.items():
+                _store().set_setting(warc_indexer.SETTING_PREFIX + key, value)
         if "storage_root" in payload:
             requested = str(payload.get("storage_root") or "").strip()
             if requested:

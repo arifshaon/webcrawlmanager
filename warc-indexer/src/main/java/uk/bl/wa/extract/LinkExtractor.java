@@ -1,0 +1,221 @@
+/**
+ * 
+ */
+package uk.bl.wa.extract;
+
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+import org.apache.tika.metadata.Metadata;
+
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableList.Builder;
+import com.google.common.net.InternetDomainName;
+
+import uk.bl.wa.parsers.HtmlFeatureParser;
+
+/**
+ * @author AnJackson
+ *
+ */
+public class LinkExtractor {
+    
+    public static final String MALFORMED_HOST = "malformed.host";
+    
+    /**
+     * Given an URL, extract the host and return it.
+     * @param url an uncontrolled String which might be a valid URL.
+     * @return the host or {@link #MALFORMED_HOST} if the host was malformed.
+     */
+    public static String extractHost(String url) {
+        // Attempt to parse:
+        try {
+            org.apache.commons.httpclient.URI uri = new org.apache.commons.httpclient.URI(url,false);
+            // Extract domain:
+            String host = uri.getHost();
+            // RFC-952 and RFC-1123: 255 characters is the limit according to specs
+            if( host == null || host.length() > 255 || !HOST_PATTERN.matcher(host).matches()) { 
+                return MALFORMED_HOST;
+            }
+            return host;
+        } catch ( Exception e ) {
+            // Return a special hostname if parsing failed:
+            return MALFORMED_HOST;
+        }
+    }
+    // Modified from
+    // https://stackoverflow.com/questions/106179/regular-expression-to-match-dns-hostname-or-ip-address/3824105#3824105
+    // We allow all letters even though only a-z are legal with the intention of later punycode-encoding
+    // This has no effect in extractHost as the Apache URI handler replaces non-ascii characters with '?'
+    private static final Pattern HOST_PATTERN = Pattern.compile(
+            "([\\p{L}\\d]|[\\p{L}\\d][\\p{L}\\d-]{0,61}[\\p{L}\\d])" +
+            "([.]([\\p{L}\\d]|[\\p{L}\\d][\\p{L}\\d-]{0,61}[\\p{L}\\d]))*$");
+    
+    /**
+     * 
+     * @param input
+     * @param charset
+     * @param baseUri
+     * @param includeImgLinks
+     * @return
+     * @throws IOException
+     */
+    public static Set<String> extractPublicSuffixes( Metadata metadata ) throws IOException {
+        String[] links = metadata.getValues(HtmlFeatureParser.LINK_LIST);
+        Set<String> suffixes = new HashSet<String>();
+        for( String link : links ) {
+            String suffix = extractPublicSuffix(link);
+            if( suffix != null ) {
+                suffixes.add(suffix);
+            }
+        }
+        return suffixes;
+    }
+    
+    /**
+     * Extract the public suffix, but compensate for the fact that the library we are 
+     * using considers 'uk' to be the public suffix, rather than e.g. 'co.uk'
+     * 
+     * @param url e.g. http://this.that.google.com/tootles
+     * @return e.g. "com", or "co.uk".  NULL if there was a parsing error.
+     */
+    public static String extractPublicSuffix( String url ) {
+        String host;
+        try {
+            host = new URI(url).getHost();
+        } catch (URISyntaxException e) {
+            return null;
+        }
+        return extractPublicSuffixFromHost(host);
+    }
+    
+    public static String extractPublicSuffixFromHost( String host ) {
+        if( host == null ) return null;
+        // Parse out the public suffix:
+        InternetDomainName domainName;
+        try {
+            domainName = InternetDomainName.from(host);
+        } catch( Exception e ) {
+            return null;
+        }
+        InternetDomainName suffix = null;
+        if( host.endsWith(".uk")) {
+            ImmutableList<String> parts = domainName.parts();
+            if( parts.size() >= 2 ) {
+                suffix = InternetDomainName.from(parts.get(parts.size() - 2)
+                        + "." + parts.get(parts.size() - 1));
+            }
+        } else {
+            suffix = domainName.publicSuffix();
+        }
+        // Return a value:
+        if( suffix == null ) return null;
+        return suffix.toString();
+    }
+    
+    public static String extractPrivateSuffix( String url ) {
+        String host;
+        try {
+            host = new URI(url).getHost();
+        } catch (URISyntaxException e) {
+            return null;
+        }
+        return extractPrivateSuffixFromHost(host);
+    }
+
+    /**
+     * Attempt to parse out the private domain. Fall back on host if things go
+     * awry.
+     * 
+     * @param host
+     * @return
+     */
+    public static String extractPrivateSuffixFromHost( String host ) {
+        if( host == null ) return null;
+        // Parse out the public suffix:
+        InternetDomainName domainName;
+        try {
+            domainName = InternetDomainName.from(host);
+        } catch( Exception e ) {
+            return host;
+        }
+        InternetDomainName suffix = null;
+        // It appears the IDN class does not know about the various UK
+        // second-level domains.
+        // If it's a UK host, override the result by assuming three levels:
+        if( host.endsWith(".uk")) {
+            ImmutableList<String> parts = domainName.parts();
+            if( parts.size() >= 3 ) {
+                suffix = InternetDomainName.from(parts.get(parts.size() - 3)
+                        + "." + parts.get(parts.size() - 2) + "."
+                        + parts.get(parts.size() - 1));
+            }
+        } else {
+            if( domainName.isTopPrivateDomain() || domainName.isUnderPublicSuffix() ) {
+                suffix = domainName.topPrivateDomain();
+            } else {
+                suffix = domainName;
+            }
+        }
+
+        // If it all failed for some reason, fall back on the host value:
+        if (suffix == null)
+            suffix = domainName;
+
+        return suffix.toString();
+    }
+    
+    /**
+     * Returns a list of each level of the given host address. E.g. 'bbc.co.uk' would return:
+     * [uk],[co.uk],[bbc.co.uk]
+     *
+     * @param host The full host address
+     * @return An ImmutableList of Strings, one element per host level
+     */
+    public static ImmutableList<String> allLevels(String host) {
+        // Default to empty list
+        Builder<String> result = ImmutableList.builder();
+
+        try {
+            InternetDomainName domainName = InternetDomainName.from(host);
+            result = parentLevels(domainName);
+        }
+        catch(NullPointerException e) {
+            // ignore errors of this nature
+        }
+        catch (IllegalArgumentException e) {
+            // This happens for IP-based hosts, see
+            // https://github.com/ukwa/webarchive-discovery/issues/90
+        }
+
+        return result.build();
+    }
+
+    private static ImmutableList.Builder<String> parentLevels(InternetDomainName internetDomainName) {
+        ImmutableList.Builder<String> levels;
+
+        if(internetDomainName.hasParent()){
+            levels = parentLevels(internetDomainName.parent());
+        }
+        else {
+            levels = ImmutableList.builder();
+        }
+
+        levels.add(internetDomainName.toString());
+        return levels;
+    }
+
+    public static void main( String[] args ) {
+        System.out.println("TEST: "+extractPublicSuffix("http://www.google.com/test.html"));
+        System.out.println("TEST: "+extractPublicSuffix("http://www.google.co.uk/test.html"));
+        System.out.println("TEST: "+extractPublicSuffix("http://www.google.sch.uk/test.html"));
+        System.out.println("TEST: "+extractPublicSuffix("http://www.google.nhs.uk/test.html"));
+        System.out.println("TEST: "+extractPublicSuffix("http://www.nationalarchives.gov.uk/test.html"));
+        System.out.println("TEST: "+extractPublicSuffix("http://www.bl.uk/test.html"));
+    }
+
+}

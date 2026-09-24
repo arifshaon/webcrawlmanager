@@ -535,6 +535,110 @@ def _cmd_metadata(args) -> int:
     return 0
 
 
+def _cmd_index(args) -> int:
+    import json as _json
+    from pathlib import Path as _P
+
+    from . import indexer
+
+    platform = None if args.platform == "auto" else args.platform
+    if args.relocate:
+        try:
+            moved = indexer.relocate_index(_P(args.capture_dir), args.source_root)
+        except (indexer.IndexingError, OSError, ValueError) as exc:
+            print(f"Cannot relocate: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(_json.dumps(moved, ensure_ascii=False, indent=2))
+        else:
+            print(f"Rewrote source_file_path in {moved['rewritten']} of {moved['documents']} "
+                  f"document(s) to {moved['source_root']}/<file name> → {moved['output']}")
+        return 0
+    try:
+        result = indexer.index_capture(
+            _P(args.capture_dir), output=_P(args.output) if args.output else None,
+            collection=args.collection, platform=platform, source_root=args.source_root,
+            progress=None if args.json else lambda msg: print(msg, file=sys.stderr))
+    except indexer.IndexingError as exc:
+        print(f"Cannot index: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(_json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    print(f"Indexed {result.documents} document(s) from the {result.platform} capture "
+          f"'{result.collection}' → {result.output}")
+    for type_name, count in sorted(result.by_type.items()):
+        print(f"  {count:6d}  {type_name}")
+    print(f"WARC records found for {result.located} document(s); "
+          f"{result.unlocated} carry no WARC pointer "
+          f"({result.warc_files} WARC file(s), {result.warc_records} records scanned)")
+    if result.invalid:
+        print(f"{result.invalid} document(s) failed schema validation and were left out",
+              file=sys.stderr)
+    for warning in result.warnings[:20]:
+        print(f"warning: {warning}", file=sys.stderr)
+    return 0
+
+
+def _cmd_index_warc(args) -> int:
+    import json as _json
+    from pathlib import Path as _P
+
+    from . import warc_indexer
+
+    crawl_dir = _P(args.crawl_dir)
+    if not crawl_dir.is_dir():
+        print(f"Cannot index: {crawl_dir} is not a folder", file=sys.stderr)
+        return 1
+    # the dashboard's Indexer settings apply on the command line too
+    get_setting = None
+    if _P(args.db).is_file():
+        from .store import Store
+        get_setting = Store(args.db).get_setting
+    cap = warc_indexer.capability(get_setting)
+    if not cap["available"]:
+        print(f"Cannot index: {cap['reason']}", file=sys.stderr)
+        print("Set the paths under the dashboard's Settings › Indexer, or with SWM_JAVA and "
+              "SWM_WARC_INDEXER_JAR.", file=sys.stderr)
+        return 1
+    if cap.get("note") and not args.json:
+        print(f"note: {cap['note']}", file=sys.stderr)
+
+    def progress(p: dict) -> None:
+        if args.json:
+            return
+        where = (f"file {p['file_index']} of {p['files_total']}" if p.get("files_total", 0) > 1
+                 else (p.get("current_warc") or "starting"))
+        print(f"\r  indexing {where}: {p.get('documents', 0)} documents so far, "
+              f"{p.get('elapsed_seconds', 0)} s", end="", file=sys.stderr, flush=True)
+
+    try:
+        manifest = warc_indexer.index_warcs(
+            crawl_dir, warcs=[args.warc] if args.warc else None,
+            collection=args.collection or crawl_dir.name, memory=args.memory,
+            get_setting=get_setting, on_progress=progress)
+    except warc_indexer.WarcIndexerUnavailable as exc:
+        print(f"Cannot index: {exc}", file=sys.stderr)
+        return 1
+    if not args.json:
+        print(file=sys.stderr)                          # end the progress line
+    if args.json:
+        print(_json.dumps(manifest, ensure_ascii=False, indent=2))
+        return 0 if manifest["status"] == warc_indexer.STATUS_DONE else 1
+    if manifest["status"] != warc_indexer.STATUS_DONE:
+        print(f"Indexing failed: {manifest.get('error')}", file=sys.stderr)
+        if manifest.get("error_detail"):
+            print("The indexer said:", file=sys.stderr)
+            for line in str(manifest["error_detail"]).splitlines():
+                print(f"  {line}", file=sys.stderr)
+        print(f"Full output: {manifest.get('log')}", file=sys.stderr)
+        return 1
+    print(f"Indexed {manifest['documents']} document(s) from {len(manifest['warcs'])} WARC file(s):")
+    for out in manifest["outputs"]:
+        print(f"  {out['documents']:7d}  {out['index']}")
+    return 0
+
+
 def _cmd_resources(args) -> int:
     import json as _json
 
@@ -735,6 +839,50 @@ def main(argv: list[str] | None = None) -> int:
     p_md_export.add_argument("job_dir", help="A job's folder (holds metadata.json)")
     p_md_export.add_argument("--output", "-o",
                              help="Where to write the sheet (default: metadata.csv in the folder; - for stdout)")
+
+    p_idx = sub.add_parser(
+        "index",
+        help="Index a social-media capture (Facebook, Instagram, X, YouTube) "
+        "into warc-indexer's document schema, as JSON Lines")
+    p_idx.add_argument("capture_dir",
+                       help="A social capture's folder (holds <platform>-manifest.json, "
+                       "the record files and the WARCs); with --relocate, that folder "
+                       "or the index file itself")
+    p_idx.add_argument("--relocate", action="store_true",
+                       help="Do not re-index: rewrite source_file_path in the existing "
+                       "index to the --source-root given plus each file name. Needs "
+                       "neither the records nor the WARCs")
+    p_idx.add_argument("--output", "-o",
+                       help="Where to write the documents (default: "
+                       "<capture_dir>/index/<platform>-index.jsonl)")
+    p_idx.add_argument("--collection",
+                       help="Collection name every document carries "
+                       "(default: the capture's name)")
+    p_idx.add_argument("--platform",
+                       choices=["auto", "facebook", "instagram", "x", "youtube"],
+                       default="auto", help="Which capture the folder holds (default: detect)")
+    p_idx.add_argument("--source-root",
+                       help="Path or URL prefix under which the WARC files will be "
+                       "kept by whoever uses the index, e.g. a repository mount or "
+                       "download URL, used as given; source_file_path becomes "
+                       "<root>/<file name> (default: the full path of where each "
+                       "file is now)")
+    p_idx.add_argument("--json", action="store_true",
+                       help="print the summary as JSON")
+
+    p_iw = sub.add_parser(
+        "index-warc",
+        help="Run the warc-indexer jar over a crawl's or recording's WARC files, "
+        "writing <warc>.jsonl beside each")
+    p_iw.add_argument("crawl_dir", help="A job's folder holding the WARC files")
+    p_iw.add_argument("--warc", help="Index only this WARC file (by name) rather than all")
+    p_iw.add_argument("--collection", help="Collection name every document carries "
+                      "(default: the folder name)")
+    p_iw.add_argument("--memory", help="Java heap for the jar (default: the Indexer setting, else 2g)")
+    p_iw.add_argument("--db", default="./webarc-state/webarc.db",
+                      help="dashboard state file whose Indexer settings (Java, jar, "
+                      "configuration) apply when it exists")
+    p_iw.add_argument("--json", action="store_true", help="print the run's manifest as JSON")
 
     p_rec = sub.add_parser(
         "record",
@@ -1093,6 +1241,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "collection":
         return _cmd_collection(args)
+
+    if args.command == "index":
+        return _cmd_index(args)
+
+    if args.command == "index-warc":
+        return _cmd_index_warc(args)
 
     if args.command == "serve":
         try:

@@ -1,0 +1,48 @@
+{
+  "collections" : {
+    "subdomains" : {
+      "en.wikipedia.org" : {
+        "collection" : "Wikipedia",
+        "collections" : [ "Wikipedia" ],
+        "subject" : [ "Crowdsourcing" ]
+      }
+    },
+    "resource" : {
+      "http://en.wikipedia.org/wiki/Mona_Lisa" : {
+        "collection" : "Wikipedia",
+        "collections" : [ "Wikipedia", "Wikipedia|Main Site", "Wikipedia|Main Site|Mona Lisa" ],
+        "subject" : [ "Crowdsourcing" ]
+      }
+    },
+    "root" : {
+      "http://en.wikipedia.org/" : {
+        "collection" : "Wikipedia",
+        "collections" : [ "Wikipedia", "Wikipedia|Main Site" ],
+        "subject" : [ "Crowdsourcing" ]
+      }
+    },
+    "plus1" : {
+    },
+    "source_file_matches" : {
+      "flashfrozen-" : {
+        "collection" : "Wikipedia",
+        "collections" : [ "Wikipedia", "Wikipedia|Main Site" ],
+        "subject" : [ "Crowdsourcing" ]
+      }
+    }
+  },
+  "collectionDateRanges" : {
+    "Wikipedia|Main Site" : {
+      "start" : "1970-01-01T00:00:00.000+0000",
+      "end" : "9999-12-30T23:59:59.999+0000"
+    },
+    "Wikipedia" : {
+      "start" : "1970-01-01T00:00:00.000+0000",
+      "end" : "9999-12-30T23:59:59.999+0000"
+    },
+    "Wikipedia|Main Site|Mona Lisa" : {
+      "start" : "1970-01-01T00:00:00.000+0000",
+      "end" : "9999-12-30T23:59:59.999+0000"
+    }
+  }
+}

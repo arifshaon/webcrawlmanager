@@ -1,0 +1,234 @@
+**NOTE** Generally, we only add terms to the Solr schema, so it should usually be compatible with previous versions (i.e. clients should be able to query across both without modification). However, there are been a small number of fixes which unfortunately required breaking changes you may need to be aware of or work-around. e.g. [hash becomes single-valued](https://github.com/ukwa/webarchive-discovery/issues/95) from 3.0.0 to 3.1.0
+
+
+
+3.5.1
+-----
+
+### Replaced DROID/nanite with a custom re-implementation (`droid-light`)
+
+The previous DROID/nanite-based format identification could hang indefinitely on certain files — a combinatorial explosion in one specific signature's fragment-matching logic (triggered by, among others, some MP3 files) could stall indexing entirely, with no timeout or recovery. `droid-light` is a from-scratch re-implementation of DROID's binary signature matching, built and extensively tested against real archived content, with this failure mode structurally eliminated — matching is now bounded and predictable regardless of file content.
+
+Signature file upgraded to `DROID_SignatureFile_V124.xml` (from the previous, older version).
+
+Performance is broadly comparable to the previous implementation — some formats (e.g. MP4) are measurably faster; most are roughly on par. A new fast-path mode also allows checking against just the small set of signatures relevant to a file's declared HTTP `Content-Type`, when available, before falling back to a full scan.
+
+- **Memory safety**: large files are read via bounded head+tail windows rather than being loaded in full, so memory usage stays predictable regardless of file size.
+- **Known limitation, not a regression**: formats with no binary signature in PRONOM (e.g. CSS, JavaScript, plain text) were never identifiable by DROID either, old or new — `content_type_droid` will not report these regardless of implementation.
+- **Local signature additions**: two signature entries have been added locally, beyond the stock V124 release — one for an EOT font version not covered by PRONOM, one for SVG files without an XML declaration.
+
+-  **Memory safety**: The reading image/height of an image without loading the whole image into memory. This will fix some out of memory errors.
+
+
+3.5.0
+-----
+
+### Features
+
+- **Java 11:** Minimum Java version upgraded from 8 to 11.
+
+### Configuration
+
+- `config3.xml` bumped to version 3.5.
+
+- **Perceptual image hashing (PDQ and pHash):** Images are now indexed with two perceptual hash
+  algorithms for near-duplicate image detection at scale. PDQ hash (256-bit) is Meta's algorithm,
+  well-suited for billion-scale similarity search. pHash (64-bit) is a classic DCT-based perceptual
+  hash. Both are computed from the decoded `BufferedImage` in a single pipeline pass alongside the
+  existing dimension extraction. Images smaller than 150px in either dimension are skipped.
+
+- **New config property `warc.index.extract.content.images.calculateHashes`:** Controls whether
+  perceptual hashes are computed during indexing. **Enabled by default.** Users indexing into an
+  existing Solr schema that does not include the new hash fields must explicitly disable this
+  property to avoid indexing errors: warc.index.extract.content.images.calculateHashes = false
+
+- **New Solr fields for perceptual hashes:** Nine hash fields are added to the schema:
+  image_pdq_hash (original orientation) plus seven dihedral variants
+  (image_pdq_rotate90_hash, image_pdq_rotate180_hash, image_pdq_rotate270_hash,
+  image_pdq_flipX_hash, image_pdq_flipY_hash, image_pdq_flipPlus1_hash,
+  image_pdq_flipMinus1_hash) and image_p_hash. Dynamic field patterns for LSH banding are
+  also added: 8 bands per PDQ dihedral variant (image_pdq_*_band_*) and 2 bands for pHash
+  (image_p_hash_band_*), enabling efficient approximate similarity search without scanning the
+  full index. Band fields are indexed but not stored, as they are used only for lookup and not
+  needed in search results.
+  
+- **External service enrichment:** Solr documents can now be enriched by calling an external
+  HTTP service during indexing. The service is called once per WARC record and the response is
+  mapped back into Solr fields. Request and response mappings are fully configurable, keeping
+  the integration independent of specific Solr field names. See the `enrich` property in
+  `config3.xml` for configuration details. Implementation is in `ExternalServiceSolrFieldEnricher`.
+
+- **New config property `warc.enrich.enabled`:** Controls whether external service enrichment
+  is active during indexing. **Disabled by default.** Enable this property and configure the
+  `enrich` section in `config3.xml` to use the external enrichment service.
+
+- **New Solr fields for content safety via warc-safe integration:** Four new fields support
+  integration with the [warc-safe](https://github.com/natliblux/warc-safe) content safety service:
+  `nfw_probability`, `is_nsfw`, `is_virus` and `virus_description`. These are populated via the
+  external service enrichment mechanism described above.
+
+
+
+3.4.0
+-----
+* No breaking changes in the 3.4.0 release. Several rare crash bugs has been fixes so whole ARC/WARC-file will be indexed. New packaging.<br>
+  Many of rare ARC/WARC parsing errors has also been fixed in JWARC (https://github.com/iipc/jwarc) when indexing to Outback CDX server.
+* Warc-indexer repository moved from https://github.com/ukwa/webarchive-discovery/ to https://github.com/netarchivesuite/warc-indexer
+* The warc-indexer is now a single stand alone maven module extracted from the /webarchive-discovery/ project. All commit history has been preserved.<br>
+  And the uber-jar has shrunk from 175MB to 137MB. Thanks to @Asger-KB (Asger) for the PR:  https://github.com/netarchivesuite/warc-indexer/pull/3<br>
+  Upgrade third party dependencies and complete rewrite of the maven packing shading into uber-jar. This removed several duplicate dependencies clashes. <br>
+  Thanks @Asger-KB (Asger) for the new maven package build.
+* Remove default value for disable-commit. Closing https://github.com/ukwa/webarchive-discovery/issues/319
+ Thanks to @bnfleb (Leslie) for this fix.
+* Remove port number from url_norm. Closing: https://github.com/ukwa/webarchive-discovery/issues/284
+* Fixed (regression error?) that sometimes words where concatenated without white space from tika analysis.
+* Fixed PDF text extraction. Often (~5% of PDF's) no text was extracted and document had content_text_length:0 . <br>
+  Thanks @Asger-KB (Asger) for help with the tricky debugging required to find and fix it in PR: https://github.com/netarchivesuite/warc-indexer/pull/5
+* Minor change in top private domain calculation (domain field) due to com.google.guava upgrade. 
+  For example is foo.blogspot.dk no longer top private domain while foo.blogspot.com still is. <br>
+  See: https://github.com/google/guava/wiki/InternetDomainNameExplained for more details.<br>
+  The host field is unchanged.
+* Fixed regression error. Image links > 2048 characters are ignored and will not give solr indexing error.  This was often data: base64 character encoded images or invalid html.
+* Fix invalid http status code in old ARC files. The value "200Ok" was used by some webservers. Error in parsing status to an integer will default to http status 200. The bug stopped indexing of that ARC file so all subsequent records was not indexed.  Closing https://github.com/netarchivesuite/warc-indexer/issues/8
+* Redirect URLS in solr field 'redirect_to_norm' now limited to 2048 characters. Some crawler traps produced urls > 32K characters.
+* Skip parsing href links > 2048 characters. Also check host length <256 characters before parsing host. Invalid urls with 100+ dots (.) in host could give StackOverflowError in pattern matching.
+* Elements_used field now only takes first 1024 characters. Can happen when misusing the 'rel' HTML tag with 100's of keywords.
+* Add zenodo file by @VictorHarbo in https://github.com/netarchivesuite/warc-indexer/pull/10<br>
+[![DOI](https://zenodo.org/badge/1013711589.svg)](https://doi.org/10.5281/zenodo.18183415)
+
+3.3.1
+-----
+
+source_file and source_file_path are again set correct as there were in version 3.2.0. 
+
+3.3.0
+-----
+
+* Upgrade to Apache Tika 2, which significantly changes metadata field naming and usage.
+* Upgraded Nanite to Apache Tika 2, and version 1.5.0-111.
+* Added support for JSONL output via a command-line option (`--output-format`) for local and Hadoop modes (`--jsonl`).
+* Moving from ElasticSearch to OpenSearch [#269](https://github.com/ukwa/webarchive-discovery/pull/269)
+* Add support for resource WARC records (produced by e.g. warcit) [#270](https://github.com/ukwa/webarchive-discovery/pull/270)
+* Host links validation [#283](https://github.com/ukwa/webarchive-discovery/pull/283)
+
+
+3.2.0
+-----
+
+(UNRELEASED)
+
+* Updated many dependencies, in particular Solr to 8.7.0.
+* Cut large, experimental packages out of the main build (NPL etc.) for now.
+* Add support for ElasticSearch [#249](https://github.com/ukwa/webarchive-discovery/pull/249)
+
+
+3.1.0
+-----
+
+* Removed previously deprecated hash-based-ID code to further simplify the indexer code.
+* Move as much code as possible out of the main Indexer class to the Payload or Text analyser classes.
+* Separate Standard and 'Kitchen Sink' build. [#183](https://github.com/ukwa/webarchive-discovery/issues/183)
+* Switch to using `java.util.ServiceLoader` pattern so we can manage build artefacts and dependencies more easily [#189](https://github.com/ukwa/webarchive-discovery/pull/189)
+* Update to Nanite 1.3.2-94 for the bugfixed container signature file and to reduce dependency size.
+* Prevent duplicate values for multi-valued fields [#192](https://github.com/ukwa/webarchive-discovery/issues/192)
+* Add optional OSCAR4 chemical compound extractor [#163](https://github.com/ukwa/webarchive-discovery/issues/163)
+* Set author to be multivalued in Solr 7 schema [#191](https://github.com/ukwa/webarchive-discovery/pull/191)
+* Updated to requiring Java 8 [#193](https://github.com/ukwa/webarchive-discovery/issues/193)
+* Updated to Apache Tika 1.24
+* Ensure wayback_date is padded correctly [#211](https://github.com/ukwa/webarchive-discovery/pull/211)
+* Ensure we remain compatible with Solr schemas with single-valued author fields as well as arrays [#217](https://github.com/ukwa/webarchive-discovery/pull/217).
+* Update MDX prototype to extract fields as compressed JSONL rather than send to Solr.
+* Update to latest version (2.10.3) of Jackson JSON parser/writer tools.
+* Decode chunked transfer encoding payloads.
+* Add hash mismatches as a 'parse error' field rather than blocking further parsing and throwing an exception.
+* Extract compressed record length when performing CDX indexing.
+* Skip probably `OPTIONS` records when CDX indexing (arising from web-rendered recordings of e.g. Twitter)
+* Add heuristic check for chunked content [#220](https://github.com/ukwa/webarchive-discovery/pull/220).
+* Decompress and dechunk fixes [#232](https://github.com/ukwa/webarchive-discovery/pull/222).
+
+3.0.0
+-----
+
+**NOTE** The changes to the schema mean this version is not compatible with 2.1.0 indexes. We've also moved to Java 7.
+
+* Validation/statistics for WARC file name matching rules, given a list of WARC file names 
+* Added some experimental face detection code with tests.
+* Fixed licence headers #182
+* Switched from tabs to spaces #173
+* New folder with  Solr 7 schema.xml and solrconfig. All fieldtypes converted to Solr 7. Field content changed to single valued (only in this folder)
+* Solr 7: highlight component added on field content.
+* Solr 7: solrconfig.xml Improved ranking and search in a few more fields with boost.
+* Solr 7: Tweaking of merge/memory parameters etc. to improve performance. (most on index time).
+* Solr 7: A few fields with docVal are now stored="false" since they will still be retrieved by a query. (saving index space)
+* New solr field 'redirect_to_norm'. Will only be used for redirect HTTP 3xx status codes and empty for other statuses. So no change unless you index HTTP 3xx codes. 
+* Time-limiting for processing using Threads now allows the JVM to exit upon overall completion #149
+* New solr field 'redirect_to_norm'. Will only be used for redirect HTTP 3xx status codes and empty for other statuses. So no change unless you index HTTP 3xx codes.
+* Refactored and extended URL-normalisation [#115](https://github.com/ukwa/webarchive-discovery/issues/115) and [#119](https://github.com/ukwa/webarchive-discovery/issues/119)
+* Updated performance instrumentation, with break down of time used on common file types
+* Switched to docValues for most fields [#51](https://github.com/ukwa/webarchive-discovery/issues/51)
+* Switched to separate fields for the source file and offset references, and dropped the _s suffix.
+* No docValues for crawl_dates due to an apparent bug in Solr [#64](https://github.com/ukwa/webarchive-discovery/issues/64)
+* Fixed bug in command-line client where final set of documents were not being submitted to Solr.
+* Added and filled resource_name field.
+* Made first_bytes shingler optional.
+* Non-existant elements crop up in elements_used for plain text [#35](https://github.com/ukwa/webarchive-discovery/issues/35)
+* Date-based partial updates not working [#64](https://github.com/ukwa/webarchive-discovery/issues/64)
+* Added Map-Reduce tools to generate 'MDX' (Metadata inDeX) sequence files, for resolving revisits and generating datasets of samples and stats. See [#65](https://github.com/ukwa/webarchive-discovery/issues/65) and [#16](https://github.com/ukwa/webarchive-discovery/issues/16).
+* Fix generator extraction [#58](https://github.com/ukwa/webarchive-discovery/issues/58)
+* In MDX, extract audio/video metadata for analysis. [#67](https://github.com/ukwa/webarchive-discovery/issues/67)
+* Default to storing text in the MDX rather than stripping it.
+* Attempt to improve link extraction via MDX  [#16](https://github.com/ukwa/webarchive-discovery/issues/16)
+* Switch to Java 7 (required by Tika > 1.10) [#69](https://github.com/ukwa/webarchive-discovery/issues/69)
+* Updated to Tika 1.17, Solr 5.5.4, Nanite 1.3.1-94, OpenWayback 2.3.2.
+* Deprecated usage of collapse-by-hash mode (i.e. use `use_hash_url_id=false` now) as using updates in this way scales poorly for us.
+* Store host in surt form, and the url path and the status code [#81](https://github.com/ukwa/webarchive-discovery/issues/81)
+* Switched to loading test resources via the classpath [#54](https://github.com/ukwa/webarchive-discovery/issues/54)
+* Added an improved high-level `type` field intended to supersede `content_type_norm` [#82](https://github.com/ukwa/webarchive-discovery/issues/82)
+* Fixed bug where `application/xhtml+xml` was _not_ getting classified as `type:Web Page` and `content_type_norm:html` [#83](https://github.com/ukwa/webarchive-discovery/issues/83).
+* Switch date strings to integers where appropriate [#97](https://github.com/ukwa/webarchive-discovery/issues/97)
+* Use a single-valued primary `hash` field and move option of multiple values to `hashes` field [#95](https://github.com/ukwa/webarchive-discovery/issues/95)
+* Extend annotations mechanism to allow source file prefix as a scope [#96](https://github.com/ukwa/webarchive-discovery/pull/96)
+* And various minor bugfixes. See the [3.0.0 Release Milestone](https://github.com/ukwa/webarchive-discovery/milestone/6) for further details.
+* Source_file_path field added. (full path to warc-file)
+* Images (optional) Exif gps,version extraction and height/width  of images indexed.
+* Images links exctrated to new field
+* new solr field: index_time
+* Two new fields from warc-header: warc_key_id, warc_ip
+* More field values extracted for revisit records.
+* Usage of annotations from config file [#113](https://github.com/ukwa/webarchive-discovery/issues/113)
+* Add user supplied Archive-It Solr fields (collection, collection_id, institution) [#129](https://github.com/ukwa/webarchive-discovery/pull/129)
+* Ensure time-zones are applied correctly based on UTC crawl timestamp [#142](https://github.com/ukwa/webarchive-discovery/issues/142)
+* Pruning of invalid tag names extracted by JSoup [#143](https://github.com/ukwa/webarchive-discovery/issues/143)
+* Add `resourcename_facet` to Solr schema to allow for faceting on resourcename.
+
+2.1.0
+-----
+
+* Explicit client commits should be optional (in command-line version) [#43](https://github.com/ukwa/webarchive-discovery/pull/43)
+* Performance instrumentation [#46](https://github.com/ukwa/webarchive-discovery/pull/46)
+* Reduced schema to required fields only [#49](https://github.com/ukwa/webarchive-discovery/pull/49)
+* The TikaInputStream must be closed to closed to clean up temp files [#50](https://github.com/ukwa/webarchive-discovery/pull/50)
+* Empty terms should not be added [#55](https://github.com/ukwa/webarchive-discovery/pull/55)
+* Switched HTML links extraction from String join/split on space to String[] [#52](https://github.com/ukwa/webarchive-discovery/pull/52)
+* Multiple minor issues [#56](https://github.com/ukwa/webarchive-discovery/pull/56)
+  * Instrumentation has been added to a lot of code parts and the resulting overview has been enhanced with percentages of overall time used.
+  * The Tika language detection speed improvement [Tika #29](https://github.com/apache/tika/pull/29) has been temporarily copied in order to benefit from the speed without having to use the yet-unreleased Tika 1.8.
+  * Some trivial speed-improvements were added by replacing String.replaceAll with precompiled Patterns.
+  * Extraction of meta-data from the ARC path has been added: ARCNameAnalyser. The unit test demonstrates how job-names and other data can be extracted.
+  * Optional link and URL normalisation [yika #60](https://github.com/ukwa/webarchive-discovery/pull/60)
+
+2.0.0
+-----
+
+* TBA
+
+1.1.1
+-----
+Up to this release, there were two development strands, held on distinct branches:
+
+* master: This is our production version, which does full-text indexing but does not extract many facets.
+* adda-discovery: This is our development version, where we are experimenting with new facets and features to see what other useful aspects of the content we can make available for indexing.
+
+The 1.1.1 release brought these two together, and addressed these issues: https://github.com/ukwa/warc-discovery/issues?milestone=1&state=closed
+
+

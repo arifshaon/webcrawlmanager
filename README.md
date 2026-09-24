@@ -51,6 +51,9 @@ Key capabilities:
   upload.
 - **Inspection and QA** — list captured URLs, summarise hosts, search recordings
   and cut smaller diagnostic WARCs.
+- **Search indexing of social captures** — one document per post, comment,
+  profile or video in the warc-indexer (SolrWayback) schema, each pointing at
+  its WARC record, from the command line or a dashboard button.
 - **Flexible browser modes** — `headless`, `headed` and `native` (system Chrome
   via CDP); automated crawls support all three, interactive recording supports
   `headed` and `native`.
@@ -90,6 +93,7 @@ Key capabilities:
 - [Collections](#collections)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
+- [Indexing social captures](#indexing-social-captures)
 - [Replay](#replay-replaywebpage)
 - [Dashboard](#dashboard)
 - [Architecture](#architecture)
@@ -983,6 +987,130 @@ The extracted file is intended for inspection and troubleshooting. It is not a
 complete replacement for the original recording when large media or documents
 have been removed.
 
+## Indexing social captures
+
+A Facebook, Instagram, X or YouTube capture leaves normalised records beside
+its WARC files: the posts, comments, profiles, videos and channels it
+collected, each with its text, author, time and media. A generic WARC indexer
+never sees them; it indexes the hundreds of scripts and images behind one
+page whose extracted text is mostly navigation. SWM indexes the records
+instead.
+
+`index` turns a social capture into one search document per item, using the
+field names of the **warc-indexer** (webarchive-discovery) Solr schema that
+SolrWayback and the UK Web Archive tooling use. The documents load into the
+same index as warc-indexer's own output, or into any search engine, and each
+one points at the WARC record of the page it came from (`source_file_path`
+and `source_file_offset`), so a search hit is an archive citation that a
+Wayback-style engine can replay.
+
+```powershell
+python -m webarc.cli index warcs/12
+python -m webarc.cli index warcs/12 --collection "Heritage 2026" --json
+```
+
+The platform is detected from the capture's manifest. Output goes to
+`<capture>/index/<platform>-index.jsonl`, one JSON object per line, with a
+summary in `<capture>/index/index-manifest.json`: documents by type, how
+many found their WARC record, and any warnings. `--output` writes elsewhere.
+
+From the dashboard, every finished social job has an **Index** button. It
+writes the same files, reports the counts, and offers the index file for
+download; the button then shows the document count and re-indexes on demand.
+
+What a document carries:
+
+- **Identity and place**: `id` (`facebook:post:<id>`, `x:user:<id>`, ...),
+  `type` (`Facebook Post`, `Instagram Comment`, `YouTube Video`, ...), `url`,
+  `url_norm`, `host`, `domain`.
+- **Content**: `content` (the post, caption, comment or description),
+  `title`, `author`, `keywords` (hashtags, tags), `content_language` where
+  the platform gives it, `links` and `links_images`.
+- **Time**: `publication_date` (when the item was written) and `crawl_date`
+  and `wayback_date` (when it was captured, taken from the WARC record).
+- **Evidence**: `source_file`, `source_file_path`, `source_file_offset`,
+  `warc_key_id` (the WARC record's own id), `status_code` and the record's
+  payload `hash`. Comments point at the post page they were read from.
+- **Context**: `collection` (the capture name unless `--collection` says
+  otherwise), `institution` (the operator), `access_terms` and
+  `wct_subjects` from the capture's Rights and Subject metadata, and every
+  platform detail that has no schema field (reaction counts, parent ids,
+  handles) as `key=value` entries in `content_metadata_ss`.
+
+By default `source_file_path` is the full path of where each WARC is when
+the index is made. WARC files move when they are ingested, so two things
+keep the pointer usable afterwards. `--source-root` sets the path or URL
+prefix under which the files will be kept, used as given, and every
+`source_file_path` becomes that prefix plus the file name. And
+`--relocate` rewrites the pointers in an existing index to a new root
+without re-reading the records or the WARCs, which need not exist any more;
+it takes the capture folder or the index file itself. The file name plus
+`source_file_offset` is the stable key throughout, the convention
+warc-indexer's consumers and SolrWayback's file resolvers already follow,
+and `warc_key_id` identifies the record wherever the file ends up.
+
+```powershell
+python -m webarc.cli index warcs/12 --source-root https://repo.example/warcstore/
+python -m webarc.cli index warcs/12 --relocate --source-root /mnt/repository/warcs
+python -m webarc.cli index warcs/12/index/facebook-index.jsonl --relocate --source-root s3://archive/warcs
+```
+
+In the API the same options are `source_root` and `relocate` in the body of
+the index request. Without a WARC beside the records (a capture run with
+WARC writing off) the documents are still complete and searchable, only
+without the evidence fields.
+
+Only field names the schema defines are emitted; a document that would not
+load is left out and counted as invalid in the summary. Items whose page is
+not in a WARC (a YouTube video read through yt-dlp, a capture run without
+WARC writing) are still indexed, without the evidence fields.
+
+### Indexing crawls and recordings
+
+An automated crawl or an interactive recording holds ordinary web pages,
+which are indexed from the WARC itself by **warc-indexer**. A patched copy
+of warc-indexer 3.5.1 lives in [`warc-indexer/`](warc-indexer/README-SWM.md)
+with the fixes SWM's captures exposed: the charset the server declared is
+honoured, and the JSON output carries the WARC path and the record type.
+Build it once (`mvnw -DskipTests package` in that folder; only Java is
+needed) and SWM finds the jar there. Java 11 or newer must be installed.
+
+From the dashboard, every crawl and recording job with WARC files has an
+**Index WARC** button. It runs the jar over the job's WARC files and writes
+`<warc file name>.jsonl` beside each one, a document per record in
+warc-indexer's schema. The run happens in the background and the job card
+follows it: which file it is on, how many documents so far and how long it
+has run, then the document count when it finishes. A failure is shown on
+the card in the indexer's own words, with the last lines of its output and
+a link to the whole log, which is `warc-index.log` in the job's folder
+beside `warc-index-manifest.json`, the record of the run.
+
+**Settings › Indexer** says where Java, the jar and the configuration are
+and how much memory the jar may use. Each may be left empty, in which case
+SWM looks for Java through `JAVA_HOME` and the PATH, for the jar in the
+repository's `warc-indexer/target`, and for the configuration beside the
+jar; the section reports what it found, or what is missing. When Java or
+the jar cannot be found, pressing Index WARC opens that section with the
+reason, so the path can be given there and the button tried again. The
+Java entry accepts the `JAVA_HOME` folder or the executable itself, and
+every path is checked before it is kept.
+
+The same from the command line, all WARCs in a folder or one by name:
+
+```powershell
+python -m webarc.cli index-warc warcs/90
+python -m webarc.cli index-warc warcs/90 --warc rec-x.com-seed001-20260907141427-00001.warc.gz --collection "X profile"
+```
+
+The command shows progress as it goes and, on a failure, the reason and
+the indexer's last lines. With `--db` pointing at the dashboard's state
+file (the default location is assumed) the Settings › Indexer paths apply
+on the command line too. SWM launches the jar as a separate program and
+reads what it writes, the same arrangement as with gallery-dl, so the
+jar's licence stays its own. `SWM_WARC_INDEXER_JAR`, `SWM_WARC_INDEXER_CONF`
+and `SWM_JAVA` point SWM at a jar, a configuration or a Java elsewhere when
+there is no dashboard.
+
 ## Replay (ReplayWeb.page)
 
 SWM uses **Webrecorder ReplayWeb.page** and wabac.js for local replay. Replay runs
@@ -1194,6 +1322,10 @@ record command ──► recorder.py ──► visible browser ──► capture
 
 Quality assurance
 WARC folder ──► inspect / extract ──► replay.py ──► ReplayWeb.page
+
+Search
+social capture records + WARC ──► indexer.py ──► index/<platform>-index.jsonl
+                                                  (warc-indexer schema)
 ```
 
 Capture occurs at the browser network-event layer. SWM records what the browser

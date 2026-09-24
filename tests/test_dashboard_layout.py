@@ -94,7 +94,8 @@ class HandlerTests(DashboardTestCase):
         self.assertIn('id="busy-open"', self.script)
 
     def test_the_replay_and_pages_actions_are_wired(self):
-        for name in ("replay", "toggle", "editMetadata", "startNow", "forceStop", "del", "ctl"):
+        for name in ("replay", "toggle", "editMetadata", "startNow", "forceStop", "del", "ctl",
+                     "indexCapture", "indexWarc"):
             with self.subTest(handler=name):
                 self.assertIn(name, self.defined())
 
