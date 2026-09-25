@@ -374,14 +374,25 @@
   .counts a { padding: 4px 0; display: inline-block; }
   .empty { padding: 40px; text-align: center; color: var(--muted); }
   .coll-chip { background: var(--accent-bg); color: var(--accent); }
-  .coll-table { width: 100%; border-collapse: collapse; font-size: var(--t-md); }
-  .coll-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: var(--t-xs);
-    text-transform: uppercase; letter-spacing: .05em; padding: 8px 10px; border-bottom: 1px solid var(--rule); }
-  .coll-table td { padding: 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
-  .coll-table .coll-name { font-weight: 600; }
-  .coll-table .coll-desc { color: var(--muted); font-size: var(--t-sm); margin-top: 2px; max-width: 42ch; }
-  .coll-table .coll-actions { white-space: nowrap; }
-  .coll-table .coll-actions button { margin-right: 4px; }
+  .coll { display: flex; flex-wrap: wrap; gap: 10px 18px; padding: 14px 18px;
+    border-bottom: 1px solid var(--rule); }
+  .coll:last-child { border-bottom: 0; }
+  .coll-main { flex: 1 1 360px; min-width: 0; }
+  .coll-title { font-weight: 600; font-size: var(--t-md); display: flex; flex-wrap: wrap;
+    align-items: baseline; gap: 4px 10px; }
+  .coll-slug { font-family: var(--mono); font-size: var(--t-xs); color: var(--faint); font-weight: 400; }
+  .coll-desc { color: var(--muted); font-size: var(--t-sm); margin-top: 3px; max-width: 72ch; }
+  .coll-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 8px;
+    font-family: var(--mono); font-size: var(--t-sm); color: var(--muted); }
+  .coll-meta b { color: var(--ink); font-weight: 600; }
+  .coll-actions { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
+    justify-content: flex-end; flex: 0 1 auto; max-width: 100%; }
+  .coll-notes { margin-top: 6px; display: grid; gap: 3px; }
+  .coll-notes .warn { color: var(--stop); }
+  .panel { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 18px; }
+  .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--rule); }
   .coll-status { color: var(--muted); font-size: var(--t-sm); }
   .coll-new { margin-top: 18px; }
   .empty code { font-family: var(--mono); }
@@ -647,7 +658,7 @@
     <span class="help">A collection groups the jobs that belong together and gives them a directory of their own. Each job in it inherits the collection's description for anything it does not say itself.</span>
     <div class="manifest" id="collection-list"><div class="empty">Loading…</div></div>
     <h2 class="eyebrow coll-new">New collection</h2>
-    <form id="collection-form" onsubmit="return false">
+    <form id="collection-form" class="panel" onsubmit="return false">
       <div class="form-grid">
         <div class="field">
           <label class="field-label" for="c-name">Name <button type="button" class="tip" aria-label="What is this for?" data-help="c-name">?</button></label>
@@ -676,7 +687,7 @@
           <div class="md-editor" id="c-metadata"></div>
         </div>
       </div>
-      <div class="actions">
+      <div class="form-actions">
         <button type="button" class="primary" id="c-create-btn">Create collection</button>
         <button type="button" class="secondary" id="c-cancel-btn" hidden>Cancel</button>
         <span class="msg" id="c-msg"></span>
@@ -2821,29 +2832,42 @@ function renderCollections() {
     box.innerHTML = `<div class="empty">No collections yet. Create one below, or from any job form.</div>`;
     return;
   }
-  const rows = lastCollections.map(c => `
-    <tr>
-      <td><div class="coll-name">${escapeHtml(c.name)}</div>
-          ${c.description ? `<div class="coll-desc">${escapeHtml(c.description)}</div>` : ""}
-          <div class="coll-status">${escapeHtml(c.slug)} · ${Number(c.metadata_fields) || 0} metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}</div></td>
-      <td><div>${Number(c.jobs) || 0} job${Number(c.jobs) === 1 ? "" : "s"}</div>
-          <div class="coll-status">${statusSummary(c.by_status)}</div>
-          ${c.index && Number(c.index.orphaned) ? `<div class="coll-status" style="color:var(--danger,#b42318)">${Number(c.index.orphaned)} page(s) missing their original <button type="button" class="secondary" style="margin-left:4px" onclick="recrawlOrphans(${Number(c.id)})">Re-crawl</button></div>` : ""}</td>
-      <td>${fmtBytes(Number(c.bytes) || 0)}${c.index && Number(c.index.revisits) ? `<div class="coll-status">${Number(c.index.revisits)} reused · ${fmtBytes(Number(c.index.bytes_saved) || 0)} not stored twice</div>` : c.policy && c.policy.dedup_across_jobs === false ? `<div class="coll-status">stored in full per job</div>` : ""}</td>
-      <td class="coll-status">${escapeHtml(String(c.last_activity || "").slice(0, 16).replace("T", " "))}${collectionIndexLine(c.warc_index)}</td>
-      <td class="coll-actions">
+  const rows = lastCollections.map(c => {
+    const jobs = Number(c.jobs) || 0;
+    const notes = [];
+    if (c.index && Number(c.index.orphaned))
+      notes.push(`<div class="coll-status warn">${Number(c.index.orphaned)} page(s) missing their original <button type="button" class="secondary" style="margin-left:4px" onclick="recrawlOrphans(${Number(c.id)})">Re-crawl</button></div>`);
+    if (c.index && Number(c.index.revisits))
+      notes.push(`<div class="coll-status">${Number(c.index.revisits).toLocaleString()} payloads reused · ${fmtBytes(Number(c.index.bytes_saved) || 0)} not stored twice</div>`);
+    else if (c.policy && c.policy.dedup_across_jobs === false)
+      notes.push(`<div class="coll-status">stored in full per job</div>`);
+    const indexLine = collectionIndexLine(c.warc_index);
+    if (indexLine) notes.push(indexLine);
+    return `
+    <article class="coll" aria-label="${escapeHtml(c.name)}">
+      <div class="coll-main">
+        <div class="coll-title"><span class="coll-name">${escapeHtml(c.name)}</span><span class="coll-slug">${escapeHtml(c.slug)}</span></div>
+        ${c.description ? `<div class="coll-desc">${escapeHtml(c.description)}</div>` : ""}
+        <div class="coll-meta">
+          <span><b>${jobs}</b> job${jobs === 1 ? "" : "s"}${jobs ? ` · ${statusSummary(c.by_status)}` : ""}</span>
+          <span><b>${fmtBytes(Number(c.bytes) || 0)}</b> on disk</span>
+          <span><b>${Number(c.metadata_fields) || 0}</b> metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}</span>
+          ${c.last_activity ? `<span>last activity <b>${escapeHtml(String(c.last_activity).slice(0, 16).replace("T", " "))}</b></span>` : ""}
+        </div>
+        ${notes.length ? `<div class="coll-notes">${notes.join("")}</div>` : ""}
+      </div>
+      <div class="coll-actions">
         <button type="button" class="secondary" onclick="collectionJobs(${Number(c.id)})">Jobs</button>
         <button type="button" class="secondary" onclick="editCollection(${Number(c.id)})" title="Change the name, description or store-once policy; the identifier and the directory are fixed at creation">Edit</button>
         <button type="button" class="secondary" onclick="describeCollection(${Number(c.id)})">Describe</button>
         <button type="button" class="secondary" onclick="replayCollection(${Number(c.id)})">Replay</button>
         <button type="button" class="secondary" onclick="indexCollectionWarcs(${Number(c.id)})" ${Number(c.active_jobs) || (c.warc_index && c.warc_index.status === "running") ? "disabled" : ""} title="Run warc-indexer over every crawl's and recording's WARC files in the collection; each document carries the collection's name">${c.warc_index && c.warc_index.status === "running" ? "Indexing…" : c.warc_index && c.warc_index.status === "done" ? `Re-index WARCs · ${Number(c.warc_index.documents || 0).toLocaleString()}` : c.warc_index && c.warc_index.status === "failed" ? "Index WARCs · retry" : "Index WARCs"}</button>
         <button type="button" class="secondary" onclick="rebuildIndex(${Number(c.id)})" ${Number(c.active_jobs) ? "disabled" : ""} title="Read the collection's WARC files back into its payload index: for jobs made before the index existed, or an index that was lost">Rebuild index</button>
-        <button type="button" class="secondary" onclick="delCollection(${Number(c.id)})">Delete</button>
-      </td>
-    </tr>`).join("");
-  box.innerHTML = `<table class="coll-table"><thead><tr>
-      <th>Collection</th><th>Jobs</th><th>On disk</th><th>Last activity</th><th><span class="sr-only">Actions</span></th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
+        <button type="button" class="secondary danger" onclick="delCollection(${Number(c.id)})">Delete</button>
+      </div>
+    </article>`;
+  }).join("");
+  box.innerHTML = rows;
 }
 function collectionIndexLine(wi) {
   if (!wi || !wi.status) return "";
