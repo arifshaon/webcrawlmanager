@@ -293,7 +293,32 @@
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
   .counts { font-family: var(--mono); font-size: var(--t-sm); color: var(--muted); text-align: right; }
   .counts b { color: var(--ink); font-weight: 600; }
-  .actions { display: flex; gap: 6px; padding: 0 18px 14px 18px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 0 18px 14px 18px; }
+  .actions .spacer { flex: 1; }
+  /* run controls and the way in sit as joined groups; the rest is one menu away */
+  .act-group { display: inline-flex; }
+  .act-group .act { border-radius: 0; margin-left: -1px; }
+  .act-group .act:first-child { border-radius: 8px 0 0 8px; margin-left: 0; }
+  .act-group .act:last-child { border-radius: 0 8px 8px 0; }
+  .act-group .act:only-child { border-radius: 8px; }
+  .act-group .act:hover, .act-group .act:focus-visible { position: relative; z-index: 1; }
+  .act.replay { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .act.replay:hover { background: var(--accent-bg); }
+  .act.stop:not(:disabled):hover { border-color: var(--stop); color: var(--stop); background: var(--stop-bg); }
+  .more { position: relative; }
+  .more > summary { list-style: none; display: inline-block; }
+  .more > summary::-webkit-details-marker { display: none; }
+  .more[open] > summary { background: var(--surface); }
+  .more .menu { position: absolute; left: 0; top: calc(100% + 4px); z-index: 15; min-width: 220px;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: 10px; box-shadow: var(--shadow);
+    padding: 6px; display: grid; gap: 2px; }
+  .more .menu button { font: inherit; font-size: var(--t-sm); text-align: left; width: 100%; padding: 8px 10px;
+    border: 0; border-radius: 6px; background: none; color: var(--ink); cursor: pointer; }
+  .more .menu button:hover, .more .menu button:focus-visible { background: var(--surface); }
+  .more .menu button:disabled { opacity: .45; cursor: not-allowed; }
+  /* the destructive action stands apart: quiet until pointed at, then unmistakable */
+  .act.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .act.ghost.danger:not(:disabled):hover, .act.ghost.danger:focus-visible { color: var(--stop); border-color: var(--stop); background: var(--stop-bg); }
     .fb-phase { display:flex; gap:.5rem; align-items:baseline; flex-wrap:wrap;
       padding:.5rem .9rem; margin:0 .9rem .6rem; border-radius:8px;
       background:var(--surface); border:1px solid var(--rule); font-size: var(--t-sm); line-height:1.45; }
@@ -345,7 +370,8 @@
     border-top: 1px solid var(--rule); flex-wrap: wrap; }
   .browse-foot .spacer { flex: 1 1 auto; }
   .storage-row { display: flex; gap: 8px; align-items: center; }
-  .storage-row input { flex: 1 1 auto; min-width: 0; }
+  .storage-row input, .storage-row select { flex: 1 1 auto; min-width: 0; }
+  .storage-row button { white-space: nowrap; flex: none; }
   button { font-family: var(--ui); border-radius: 8px; cursor: pointer;
     transition: background .12s, border-color .12s, color .12s, box-shadow .12s; }
   button.act, button.secondary {
@@ -435,11 +461,30 @@
   .section-head {
     display: flex; align-items: center; gap: 10px; padding: 10px 13px;
     background: var(--surface); border-bottom: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
   }
-  .section-title { font-weight: 600; }
+  .section-title { font-weight: 700; }
   .section-hint { font-size: var(--t-sm); color: var(--muted); }
-  .section-head button { margin-left: auto; }
+  .section-head button.secondary { margin-left: auto; }
+  .section-toggle { font: inherit; width: 26px; height: 26px; padding: 0; border: 1px solid transparent;
+    border-radius: 6px; background: none; color: var(--muted); cursor: pointer; flex: none;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .section-toggle:hover { background: var(--paper); color: var(--ink); border-color: var(--rule); }
+  .section-toggle::before { content: "▾"; }
+  .form-section.collapsed .section-toggle::before { content: "▸"; }
+  .form-section.collapsed .section-head { border-bottom: 0; }
+  .form-section.collapsed .section-body { display: none; }
   .section-body { padding: 14px; }
+  .advanced { border: 1px dashed var(--rule); border-radius: 10px; margin-bottom: 14px; }
+  .advanced > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: 4px 10px; padding: 12px 13px; }
+  .advanced > summary::-webkit-details-marker { display: none; }
+  .advanced > summary::before { content: "▸"; color: var(--muted); }
+  .advanced[open] > summary::before { content: "▾"; }
+  .advanced > summary:hover { background: var(--surface); border-radius: 10px; }
+  .advanced[open] > summary { border-bottom: 1px dashed var(--rule); }
+  .advanced-body { padding: 14px 14px 0; }
+  .advanced-body .form-section:last-child { margin-bottom: 14px; }
   .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   .field.wide { grid-column: 1 / -1; }
   label.field-label { display: block; font-weight: 600; margin-bottom: 5px; }
@@ -829,10 +874,17 @@
         </div>
         <div class="form-section">
           <div class="section-head">
-            <span class="section-title">Browser and scope</span>
-            <span class="section-hint">Control how the site is opened and how far the crawl travels.</span>
+            <span class="section-title">Collection, browser and scope</span>
+            <span class="section-hint">Where the job is filed, how the site is opened, how far the crawl travels.</span>
           </div>
           <div class="section-body form-grid">
+            <div class="field wide">
+              <label class="field-label" for="f-collection">Collection <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
+              <div class="storage-row">
+                <select id="f-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
+                <button type="button" class="secondary collection-new-btn" data-target="f-collection">New collection…</button>
+              </div>
+            </div>
             <div class="field">
               <label class="field-label" for="f-browser-mode">Browser mode <button type="button" class="tip" aria-label="What is this for?" data-help="f-browser-mode">?</button></label>
               <select id="f-browser-mode">
@@ -849,21 +901,6 @@
                 <option value="path-prefix">Stay below the seed path</option>
                 <option value="any">Any linked host</option>
               </select>
-            </div>
-            <div class="field">
-              <label class="field-label" for="f-max-depth">Maximum link depth <button type="button" class="tip" aria-label="What is this for?" data-help="f-max-depth">?</button></label>
-              <input type="number" id="f-max-depth" min="0" step="1" value="2">
-              <span class="help">0 captures only the seed page; 1 also follows its direct links.</span>
-            </div>
-            <div class="field">
-              <label class="field-label" for="f-max-pages">Maximum pages per seed <button type="button" class="tip" aria-label="What is this for?" data-help="f-max-pages">?</button></label>
-              <input type="number" id="f-max-pages" min="1" step="1" value="200">
-            </div>
-            <div class="field wide">
-              <label class="field-label" for="f-exclude">Excluded URL patterns <button type="button" class="tip" aria-label="What is this for?" data-help="f-exclude">?</button></label>
-              <textarea id="f-exclude" rows="3">\.(zip|exe|dmg|iso)($|\?)
-/logout</textarea>
-              <span class="help">One regular expression per line; matching URLs are not crawled.</span>
             </div>
           </div>
         </div>
@@ -955,6 +992,32 @@
             </div>
           </div>
         </div>
+        <details class="advanced" id="crawl-advanced">
+          <summary><span class="section-title">Advanced crawl settings</span><span class="section-hint">Link depth and page limits, exclusions, delays, timeout, wait behaviour, robots, scrolling, WARC size, deduplication, storage location.</span></summary>
+          <div class="advanced-body">
+        <div class="form-section">
+          <div class="section-head">
+            <span class="section-title">Limits and exclusions</span>
+            <span class="section-hint">How far and how much the crawl takes from each seed.</span>
+          </div>
+          <div class="section-body form-grid">
+            <div class="field">
+              <label class="field-label" for="f-max-depth">Maximum link depth <button type="button" class="tip" aria-label="What is this for?" data-help="f-max-depth">?</button></label>
+              <input type="number" id="f-max-depth" min="0" step="1" value="2">
+              <span class="help">0 captures only the seed page; 1 also follows its direct links.</span>
+            </div>
+            <div class="field">
+              <label class="field-label" for="f-max-pages">Maximum pages per seed <button type="button" class="tip" aria-label="What is this for?" data-help="f-max-pages">?</button></label>
+              <input type="number" id="f-max-pages" min="1" step="1" value="200">
+            </div>
+            <div class="field wide">
+              <label class="field-label" for="f-exclude">Excluded URL patterns <button type="button" class="tip" aria-label="What is this for?" data-help="f-exclude">?</button></label>
+              <textarea id="f-exclude" rows="3">\.(zip|exe|dmg|iso)($|\?)
+/logout</textarea>
+              <span class="help">One regular expression per line; matching URLs are not crawled.</span>
+            </div>
+          </div>
+        </div>
         <div class="form-section">
           <div class="section-head">
             <span class="section-title">Crawl behaviour</span>
@@ -1028,13 +1091,6 @@
               </label>
             </div>
             <div class="field wide">
-              <label class="field-label" for="f-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
-              <div class="storage-row">
-                <select id="f-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
-                <button type="button" class="secondary collection-new-btn" data-target="f-collection">New collection…</button>
-              </div>
-            </div>
-            <div class="field wide">
               <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="f-storage">?</button></label>
               <div class="storage-row">
               <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty for the default location">
@@ -1043,6 +1099,8 @@
             </div>
           </div>
         </div>
+          </div>
+        </details>
         <div class="form-section">
           <div class="section-head">
             <span class="section-title">Describe this capture <button type="button" class="tip" aria-label="What is this for?" data-help="f-metadata">?</button></span>
@@ -3176,11 +3234,28 @@ function saveAppearance() {
   try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(a)); } catch (e) { /* per-browser convenience only */ }
   applyAppearance(a);
 }
+// Every settings section on a job form folds with the chevron before its
+// title, so a long configuration can be scanned section by section.
+$$(".form-section > .section-head").forEach(head => {
+  if (head.querySelector(".section-toggle")) return;
+  const section = head.parentElement;
+  const button = document.createElement("button");
+  button.type = "button"; button.className = "section-toggle";
+  const title = (head.querySelector(".section-title") || {}).textContent || "section";
+  button.setAttribute("aria-label", `Collapse or expand ${title.trim()}`);
+  button.setAttribute("aria-expanded", "true");
+  button.addEventListener("click", () => {
+    const collapsed = section.classList.toggle("collapsed");
+    button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  });
+  head.insertBefore(button, head.firstChild);
+});
 applyAppearance(loadAppearance());
 $("#appearance-form").addEventListener("change", saveAppearance);
 document.addEventListener("click", e => {
   if (!e.target.isConnected) return;          // a button the click itself re-rendered is not "outside"
   ["#appearance", "#customise"].forEach(sel => { const d = $(sel); if (d && d.open && !d.contains(e.target)) d.open = false; });
+  $$("details.more[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; });
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") { $$("details[open]").forEach(d => { if (d.classList.contains("appearance") || d.classList.contains("customise")) d.open = false; }); } });
 

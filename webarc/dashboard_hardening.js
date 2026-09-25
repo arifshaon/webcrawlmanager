@@ -154,41 +154,57 @@ function crawlRow(c) {
     </div>` : ""}
     ${!isSocial ? warcIndexLine(id, c.warc_index) : ""}
     <div class="actions">
-      <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
-      <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
-      ${waiting ? `<button class="act" onclick="startNow(${id})">Start now</button>
-      <button class="act danger" onclick="ctl(${id},'stop')">Cancel</button>` : `<button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>`}
-      ${rawStatus === "stopping" ? `<button class="act danger" onclick="forceStop(${id})" title="End the worker now if it is not answering">Force stop</button>` : ""}
-      ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
-      ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
-      <button class="act replay" onclick="replay(${id},'warc')" ${hasWarc ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
-      : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
-      <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
-      : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
-      ${isSocial ? `<button class="act" onclick="indexCapture(${id})" ${(running || paused || blocked || rawStatus === "stopping") ? "disabled" : ""} title="Index the captured posts, comments and profiles as search documents in warc-indexer's schema, beside the capture">${c.index && c.index.documents != null ? `Re-index · ${Number(c.index.documents)}` : "Index"}</button>`
-      : (() => {
-        // crawls and recordings: the warc-indexer jar over the WARC files.
-        // When Java or the jar is missing the button stays live: clicking
-        // it opens Settings › Indexer to say where they are.
-        const wi = c.warc_index || null;
-        const indexing = wi && wi.status === "running";
-        const cap = (typeof warcIndexerCapability !== "undefined" && warcIndexerCapability) || {available: true};
-        const off = indexing || !hasWarc || running || paused || blocked || rawStatus === "stopping";
-        const title = !cap.available ? escapeHtml((cap.reason || "warc-indexer is unavailable") + " Click to set it up.")
-          : "Run warc-indexer over this job's WARC files; each gets a <name>.jsonl of search documents beside it";
-        const label = indexing ? "Indexing…"
-          : !cap.available ? "Index WARC · set up"
-          : wi && wi.status === "done" && wi.documents != null ? `Re-index WARC · ${Number(wi.documents)}`
-          : wi && wi.status === "failed" ? "Index WARC · retry" : "Index WARC";
-        return `<button class="act" onclick="indexWarc(${id})" ${off ? "disabled" : ""} title="${title}">${label}</button>`;
-      })()}
-      ${c.has_selection ? `<button class="act replay" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
-      <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
-      <button class="act danger" onclick="del(${id})" ${(running || paused || blocked || (c.warc_index && c.warc_index.status === "running")) ? "disabled" : ""} ${c.warc_index && c.warc_index.status === "running" ? 'title="Wait for the indexer to finish"' : ""}>Delete</button>
+      <div class="act-group" role="group" aria-label="Run controls">
+        <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
+        <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
+        ${waiting ? `<button class="act" onclick="startNow(${id})">Start now</button>
+        <button class="act stop" onclick="ctl(${id},'stop')">Cancel</button>` : `<button class="act stop" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>`}
+        ${rawStatus === "stopping" ? `<button class="act stop" onclick="forceStop(${id})" title="End the worker now if it is not answering">Force stop</button>` : ""}
+        ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
+      </div>
+      <div class="act-group" role="group" aria-label="Open the capture">
+        ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
+        <button class="act replay" onclick="replay(${id},'warc')" ${hasWarc ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
+        : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
+        <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
+        : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
+      </div>
+      <details class="more" ${moreOpen.has(id) ? "open" : ""} ontoggle="moreToggled(${id}, this.open)">
+        <summary class="act" aria-label="More actions for this job">More ▾</summary>
+        <div class="menu" role="menu">
+          <button role="menuitem" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
+          ${isSocial ? `<button role="menuitem" onclick="indexCapture(${id})" ${(running || paused || blocked || rawStatus === "stopping") ? "disabled" : ""} title="Index the captured posts, comments and profiles as search documents in warc-indexer's schema, beside the capture">${c.index && c.index.documents != null ? `Re-index · ${Number(c.index.documents)}` : "Index"}</button>`
+          : (() => {
+            // crawls and recordings: the warc-indexer jar over the WARC files.
+            // When Java or the jar is missing the item stays live: clicking
+            // it opens Settings › Indexer to say where they are.
+            const wi = c.warc_index || null;
+            const indexing = wi && wi.status === "running";
+            const cap = (typeof warcIndexerCapability !== "undefined" && warcIndexerCapability) || {available: true};
+            const off = indexing || !hasWarc || running || paused || blocked || rawStatus === "stopping";
+            const title = !cap.available ? escapeHtml((cap.reason || "warc-indexer is unavailable") + " Click to set it up.")
+              : "Run warc-indexer over this job's WARC files; each gets a <name>.jsonl of search documents beside it";
+            const label = indexing ? "Indexing…"
+              : !cap.available ? "Index WARC · set up"
+              : wi && wi.status === "done" && wi.documents != null ? `Re-index WARC · ${Number(wi.documents)}`
+              : wi && wi.status === "failed" ? "Index WARC · retry" : "Index WARC";
+            return `<button role="menuitem" onclick="indexWarc(${id})" ${off ? "disabled" : ""} title="${title}">${label}</button>`;
+          })()}
+          ${c.has_selection ? `<button role="menuitem" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
+          ${ch && changeParts.length ? `<button role="menuitem" onclick="window.open('/api/crawls/${id}/changes', '_blank')" title="Page-by-page report against the collection's earlier captures">Page changes</button>` : ""}
+        </div>
+      </details>
+      <span class="spacer"></span>
+      <button class="act ghost danger" onclick="del(${id})" ${(running || paused || blocked || (c.warc_index && c.warc_index.status === "running")) ? "disabled" : ""} ${c.warc_index && c.warc_index.status === "running" ? 'title="Wait for the indexer to finish"' : 'title="Delete this job; you are asked to confirm, and told what depends on it"'}>Delete</button>
     </div>
     <div class="seeds">${seedRows}</div>
   </div>`;
 }
+
+// Which jobs' More menus are open: the list is rebuilt every two seconds
+// and must not close a menu the curator has just opened.
+const moreOpen = new Set();
+function moreToggled(id, open) { if (open) moreOpen.add(id); else moreOpen.delete(id); }
 
 // What a crawl's or recording's card says about its warc-indexer run: the
 // progress while it goes, the outcome after, and the error with a link to
