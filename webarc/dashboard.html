@@ -535,12 +535,14 @@
     padding: 12px 14px; display: grid; gap: 8px; font-size: var(--t-sm); }
   .customise .menu .row { display: flex; align-items: center; gap: 8px; }
   .customise .menu .row span { flex: 1; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; min-height: 60px; }
   .card { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
     box-shadow: var(--shadow); padding: 14px 16px 16px; position: relative; min-height: 96px; }
   .card.dragging { opacity: .5; }
-  .card.drop-before { box-shadow: -4px 0 0 var(--accent), var(--shadow); }
-  .card.drop-after { box-shadow: 4px 0 0 var(--accent), var(--shadow); }
+  .card.drop-before { box-shadow: -4px 0 0 var(--accent), var(--shadow); outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card.drop-after { box-shadow: 4px 0 0 var(--accent), var(--shadow); outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card .card-tools .grip { cursor: grab; }
+  .card.dragging { cursor: grabbing; }
   .card-head { display: flex; align-items: center; gap: 6px; min-height: 26px; }
   .card-head .k { flex: 1; min-width: 0; font-size: var(--t-xs); color: var(--muted); font-family: var(--mono);
     text-transform: uppercase; letter-spacing: .05em; margin: 0; font-weight: 600;
@@ -3234,13 +3236,15 @@ function cardTitle(id, res) {
   return (OVERVIEW_CARDS.find(c => c.id === id) || {}).title || id;
 }
 function cardMenuTitle(card) { return `${card.title} (${card.group.toLowerCase()})`; }
+let overviewDragging = null;          // the card id being dragged, while a drag is under way
 function renderOverview(res, storage, crawls, collections) {
   lastOverview = [res, storage, crawls, collections];
+  if (overviewDragging) return;        // the refresh must not rebuild the board under a drag
   const bodies = cardBodies(res, storage, crawls, collections);
   const order = overviewOrder();
   const hidden = new Set(overviewLayout.hidden || []);
   const shown = order.filter(id => !hidden.has(id));
-  $("#overview").innerHTML = shown.map((id, i) => {
+  const boardHtml = shown.map((id, i) => {
     const card = OVERVIEW_CARDS.find(c => c.id === id);
     return `<article class="card" data-card="${id}" draggable="true" aria-label="${escapeHtml(cardMenuTitle(card))}" title="${escapeHtml(card.group)}">
       <div class="card-head"><h3 class="k" title="${escapeHtml(cardTitle(id, res))} · ${escapeHtml(card.group)}">${escapeHtml(cardTitle(id, res))}</h3>
@@ -3251,6 +3255,9 @@ function renderOverview(res, storage, crawls, collections) {
           <button type="button" onclick="hideCard('${id}')" aria-label="Hide ${escapeHtml(card.title)}" title="Hide (bring it back from Customise)">×</button>
         </span></div>${bodies[id] || ""}</article>`;
   }).join("") || `<div class="empty">Every card is hidden. Bring them back from Customise.</div>`;
+  const board = $("#overview");
+  const rebuilt = board.innerHTML !== boardHtml;
+  if (rebuilt) board.innerHTML = boardHtml;
   const menu = $("#customise-menu");
   const hiddenCards = order.filter(id => hidden.has(id));
   const menuHtml = (hiddenCards.length
@@ -3258,18 +3265,57 @@ function renderOverview(res, storage, crawls, collections) {
     : `<div>Every card is shown. Hide one with the × on its corner; drag a card, or use its arrows, to reorder.</div>`)
     + `<div class="row"><span></span><button type="button" class="secondary" onclick="resetOverview()">Reset layout</button></div>`;
   if (menu.innerHTML !== menuHtml) menu.innerHTML = menuHtml;   // the 2-second refresh must not pull a button from under a click
-  $("#overview").querySelectorAll(".card").forEach(card => {
-    card.addEventListener("dragstart", e => { card.classList.add("dragging"); e.dataTransfer.setData("text/plain", card.dataset.card); e.dataTransfer.effectAllowed = "move"; });
-    card.addEventListener("dragend", () => { card.classList.remove("dragging"); $$(".card").forEach(c => c.classList.remove("drop-before", "drop-after")); });
-    card.addEventListener("dragover", e => { e.preventDefault(); const r = card.getBoundingClientRect(); const before = e.clientX < r.left + r.width / 2;
-      card.classList.toggle("drop-before", before); card.classList.toggle("drop-after", !before); });
-    card.addEventListener("dragleave", () => card.classList.remove("drop-before", "drop-after"));
-    card.addEventListener("drop", e => { e.preventDefault(); const id = e.dataTransfer.getData("text/plain"); if (!id || id === card.dataset.card) return;
-      const r = card.getBoundingClientRect(); const before = e.clientX < r.left + r.width / 2;
-      const order = overviewOrder().filter(x => x !== id); const at = order.indexOf(card.dataset.card) + (before ? 0 : 1);
-      order.splice(at, 0, id); overviewLayout.order = order; saveOverview(); });
-  });
+  if (rebuilt) wireOverviewDrag(board);
   $("#resources-note").textContent = res.note || "";
+}
+// Dragging a card: it lands where it is dropped. Dropped on a card that
+// comes earlier, it goes before that card; on one that comes later, after
+// it; on empty board space, at the end. The board is not rebuilt while a
+// drag is under way, so the refresh cannot pull the card from under the
+// pointer; the arrows on each card do the same by keyboard.
+function wireOverviewDrag(board) {
+  const clearMarks = () => board.querySelectorAll(".card").forEach(c => c.classList.remove("drop-before", "drop-after"));
+  const shownOrder = () => [...board.querySelectorAll(".card")].map(c => c.dataset.card);
+  const placement = target => {                // where the dragged card would go relative to target
+    const order = shownOrder();
+    return order.indexOf(overviewDragging) > order.indexOf(target.dataset.card) ? "before" : "after";
+  };
+  board.querySelectorAll(".card").forEach(card => {
+    card.addEventListener("dragstart", e => {
+      overviewDragging = card.dataset.card;
+      e.dataTransfer.setData("text/plain", card.dataset.card);
+      e.dataTransfer.effectAllowed = "move";
+      setTimeout(() => card.classList.add("dragging"), 0);   // after the browser takes its drag image
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging"); clearMarks(); overviewDragging = null;
+      if (lastOverview) renderOverview(...lastOverview);       // catch up on what the refresh skipped
+    });
+    card.addEventListener("dragover", e => {
+      if (!overviewDragging || overviewDragging === card.dataset.card) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      const where = placement(card);
+      clearMarks(); card.classList.add(where === "before" ? "drop-before" : "drop-after");
+    });
+    card.addEventListener("drop", e => {
+      e.preventDefault(); e.stopPropagation();
+      const id = overviewDragging || e.dataTransfer.getData("text/plain");
+      if (!id || id === card.dataset.card) return;
+      const where = placement(card);
+      const order = overviewOrder().filter(x => x !== id);
+      order.splice(order.indexOf(card.dataset.card) + (where === "before" ? 0 : 1), 0, id);
+      overviewLayout.order = order; overviewDragging = null; clearMarks(); saveOverview();
+    });
+  });
+  board.addEventListener("dragover", e => { if (overviewDragging) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; } });
+  board.addEventListener("dragleave", e => { if (!board.contains(e.relatedTarget)) clearMarks(); });
+  board.addEventListener("drop", e => {                    // on the board itself, not a card: to the end
+    e.preventDefault();
+    const id = overviewDragging || e.dataTransfer.getData("text/plain");
+    if (!id) return;
+    const order = overviewOrder().filter(x => x !== id); order.push(id);
+    overviewLayout.order = order; overviewDragging = null; clearMarks(); saveOverview();
+  });
 }
 async function continueFacebook(id) {
   try {
