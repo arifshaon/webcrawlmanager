@@ -816,16 +816,23 @@ class RebuildLockTests(unittest.TestCase):
 
 
 class CollectionReplayTests(ServerTestCase):
-    def test_the_collection_replay_opens_at_the_start_pages(self):
-        from unittest import mock
-        coll = self.client.post("/api/collections", json={"name": "QNL"}).json()
-        for name, url in (("first", "https://a.example/"), ("second", "https://b.example/x")):
+    def jobs_with_seed(self, coll, *names_and_urls):
+        made = []
+        for name, url in names_and_urls:
             job = self.client.post("/api/crawls", json={
                 "name": name, "start": "wait", "collection_id": coll["id"],
                 "config": {"operator": "o", "seeds": [{"url": url}]}}).json()
             (Path(job["output_dir"]) / f"{name}.warc.gz").write_bytes(b"\x1f\x8bxx")
-        with mock.patch("webarc.replay.build_replay_site", return_value=self.tmp / "site") as build, \
-                mock.patch("webarc.replay.build_start_page") as start, \
+            made.append(job)
+        return made
+
+    def test_the_collection_replay_prepares_the_archive_and_a_page_of_distinct_starting_urls(self):
+        from unittest import mock
+        coll = self.client.post("/api/collections", json={"name": "QNL"}).json()
+        first, second, third = self.jobs_with_seed(
+            coll, ("first", "https://a.example/"), ("second", "https://a.example/?utm_source=x"),
+            ("third", "https://b.example/x"))
+        with mock.patch("webarc.replay.build_replay_site") as build, \
                 mock.patch("webarc.replay.ReplayServer") as server_cls:
             server_cls.return_value.is_running.return_value = True
             server_cls.return_value.replay_url.side_effect = (
@@ -833,12 +840,34 @@ class CollectionReplayTests(ServerTestCase):
             srv._PYWB = server_cls.return_value
             try:
                 response = self.client.post(f"/api/collections/{coll['id']}/replay")
+                (srv._REPLAY_ROOT / "collection-qnl").mkdir(parents=True, exist_ok=True)
+                (srv._REPLAY_ROOT / "collection-qnl" / "index.html").write_text("x")
+                page = self.client.get(f"/collections/{coll['id']}/replay")
             finally:
                 srv._PYWB = None
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["replay_url"], "http://replay/collection-qnl/seeds.html")
-        self.assertEqual(response.json()["start_pages"], 2)
-        self.assertEqual(len(build.call_args[0][0]), 2)
-        entries = start.call_args[0][2]
-        self.assertEqual([e["url"] for e in entries], ["https://b.example/x", "https://a.example/"])
-        self.assertEqual(start.call_args[0][1], "QNL")
+        self.assertEqual(response.json()["start_url"], f"/collections/{coll['id']}/replay")
+        self.assertEqual(response.json()["replay_url"], "http://replay/collection-qnl/index.html")
+        self.assertEqual(response.json()["start_pages"], 2)          # the two a.example seeds are one
+        self.assertEqual(len(build.call_args[0][0]), 3)
+        self.assertEqual(page.status_code, 200)
+        html = page.text
+        self.assertEqual(html.count("https://a.example/</div>"), 1)
+        self.assertIn("2 captures: second", html)
+        self.assertIn('href="http://replay/collection-qnl/index.html?url=https%3A%2F%2Fb.example%2Fx"', html)
+
+    def test_a_collection_of_social_captures_without_warcs_still_gets_its_page(self):
+        coll = self.client.post("/api/collections", json={"name": "Social"}).json()
+        job = self.client.post("/api/facebook", json={
+            "page_url": "https://www.facebook.com/qnl", "mode": "latest_n", "latest_n": 5,
+            "start": "wait", "collection_id": coll["id"]}).json()
+        response = self.client.post(f"/api/collections/{coll['id']}/replay")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIsNone(response.json()["replay_url"])
+        page = self.client.get(response.json()["start_url"])
+        self.assertIn(f'href="/api/crawls/{job["id"]}/pages"', page.text)
+        self.assertIn("No WARC files in this collection yet", page.text)
+
+    def test_an_empty_collection_has_nothing_to_replay(self):
+        coll = self.client.post("/api/collections", json={"name": "Empty"}).json()
+        self.assertEqual(self.client.post(f"/api/collections/{coll['id']}/replay").status_code, 409)

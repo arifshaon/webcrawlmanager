@@ -1840,6 +1840,48 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             raise HTTPException(404, "not found")
         return FileResponse(target)
 
+    def _capture_pages(crawl_id: int, crawl_dir: Path, *, required: bool) -> str | None:
+        """Build a social capture's reader pages and return their URL, or
+        None for a capture that has no pages (a crawl, a recording). A
+        failure raises when the pages are all there is to show."""
+        from .facebook_render import build_site, is_facebook_capture
+        from .instagram_render import build_site as build_instagram_site
+        from .instagram_render import is_instagram_capture
+        from .x_render import build_site as build_x_site
+        from .x_render import is_x_capture
+        from .youtube_render import build_site as build_youtube_site
+        from .youtube_render import is_youtube_capture
+        builder = None
+        if is_youtube_capture(crawl_dir):
+            builder = build_youtube_site
+        elif is_x_capture(crawl_dir):
+            builder = build_x_site
+        elif is_instagram_capture(crawl_dir):
+            builder = build_instagram_site
+        elif is_facebook_capture(crawl_dir):
+            builder = build_site
+        if builder is None:
+            return None
+        try:
+            builder(crawl_dir)
+        except Exception as exc:
+            if required:
+                raise HTTPException(500, f"could not build capture pages: {exc}") from exc
+            log.warning("Could not build capture pages for %d: %s", crawl_id, exc)
+            return None
+        return f"/captures/{crawl_id}/pages/index.html"
+
+    @app.get("/api/crawls/{crawl_id}/pages")
+    def capture_pages(crawl_id: int):
+        """Open a social capture's reader pages, building them first if
+        need be: what a collection's replay page links to."""
+        from fastapi.responses import RedirectResponse
+        row = _require(crawl_id)
+        url = _capture_pages(crawl_id, _crawl_dir(row), required=True)
+        if url is None:
+            raise HTTPException(404, "this job has no reader pages; replay its WARC instead")
+        return RedirectResponse(url, status_code=303)
+
     @app.post("/api/crawls/{crawl_id}/replay")
     def replay(crawl_id: int, request: Request):
         """Build a ReplayWeb.page site for this crawl and return the replay URL."""
@@ -1853,64 +1895,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         # without their content.
         warcs += _referenced_warcs(row)
 
-        # A Facebook capture is read through the pages built from its records.
+        # A social capture is read through the pages built from its records.
         # They are built inside the capture directory, beside the media they
         # reference, and served from there so those references resolve. When
         # the capture also has a WARC, both ways in are offered: replay shows
         # the Page as it first loaded, the pages show what was collected.
-        from .facebook_render import build_site, is_facebook_capture
-        from .instagram_render import build_site as build_instagram_site
-        from .instagram_render import is_instagram_capture
-        from .x_render import build_site as build_x_site
-        from .x_render import is_x_capture
-        from .youtube_render import build_site as build_youtube_site
-        from .youtube_render import is_youtube_capture
-        pages_url = None
-        if is_youtube_capture(crawl_dir):
-            try:
-                build_youtube_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                log.warning("Could not build capture pages for %d: %s", crawl_id, exc)
-        elif is_x_capture(crawl_dir):
-            try:
-                build_x_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                log.warning("Could not build capture pages for %d: %s",
-                            crawl_id, exc)
-        elif is_instagram_capture(crawl_dir):
-            try:
-                build_instagram_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                log.warning("Could not build capture pages for %d: %s",
-                            crawl_id, exc)
-        elif is_facebook_capture(crawl_dir):
-            try:
-                build_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                logging.getLogger(__name__).warning(
-                    "Could not build capture pages for %d: %s", crawl_id, exc)
+        pages_url = _capture_pages(crawl_id, crawl_dir, required=not warcs)
 
         if not warcs:
             if pages_url:
                 return {"pages_url": pages_url, "kind": "capture_pages"}
             raise HTTPException(409, "no WARC files captured yet for this crawl")
 
+        from .youtube_render import is_youtube_capture
         coll = collection_name(crawl_id)
         youtube_media = None
         if is_youtube_capture(crawl_dir):
@@ -2421,46 +2418,75 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 _REBUILDING.discard(collection_id)
         return {"ok": True, **result}
 
+    def _start_groups(collection_id: int) -> list[dict]:
+        """The collection's distinct starting URLs, each with the captures
+        (jobs) behind it, newest first."""
+        from .dedup_index import url_key
+        groups: dict[str, dict] = {}
+        for job in sorted(_store().crawls_in_collection(collection_id), key=lambda j: j["id"]):
+            job_dir = _crawl_dir(job)
+            has_warc = bool(list(job_dir.glob("*.warc.gz")) or list(job_dir.glob("*.warc")))
+            kind = job.get("kind", "crawl")
+            for seed in _store().get_progress(job["id"]):
+                key = url_key(seed["seed_url"])
+                group = groups.setdefault(key, {"url": seed["seed_url"], "captures": []})
+                group["captures"].append({
+                    "job_id": job["id"], "job": job["name"], "kind": kind,
+                    "date": job.get("created_at"), "has_warc": has_warc,
+                    "has_pages": kind not in _WARC_INDEXABLE_KINDS})
+        for group in groups.values():          # newest first; the job number breaks a tie
+            group["captures"].sort(key=lambda c: (str(c.get("date") or ""), int(c["job_id"])),
+                                   reverse=True)
+        return sorted(groups.values(), key=lambda g: g["url"])
+
     @app.post("/api/collections/{collection_id}/replay")
-    def replay_collection(collection_id: int, request: Request):
-        """Replay every WARC of every job in the collection as one archive,
-        opened at a page listing the jobs' start pages by website."""
+    def replay_collection(collection_id: int):
+        """Prepare the collection's replay: every WARC of every job as one
+        archive (so a page one job refers to another for is there), and a
+        page listing the distinct starting URLs with a way in for each."""
         global _PYWB
-        from .replay import ReplayServer, build_replay_site, build_start_page
+        from .replay import ReplayServer, build_replay_site
         row = _require_collection(collection_id)
         warcs: list[Path] = []
-        entries: list[dict] = []
-        jobs = _store().crawls_in_collection(collection_id)
-        for job in sorted(jobs, key=lambda j: j["id"], reverse=True):
+        for job in _store().crawls_in_collection(collection_id):
             job_dir = _crawl_dir(job)
             warcs += sorted(job_dir.glob("*.warc.gz")) + sorted(job_dir.glob("*.warc"))
-            kind = job.get("kind", "crawl")
-            # a social capture is read through its own pages, served by the
-            # dashboard, when they have been built
-            pages = job_dir / "pages" / "index.html"
-            href = (f"{str(request.base_url).rstrip('/')}/captures/{job['id']}/pages/index.html"
-                    if kind not in _WARC_INDEXABLE_KINDS and pages.is_file() else None)
-            for seed in _store().get_progress(job["id"]):
-                entries.append({"url": seed["seed_url"], "job": job["name"], "kind": kind,
-                                "date": job.get("created_at"), "href": href})
-        if not warcs:
-            raise HTTPException(409, "no WARC files in this collection yet")
+        groups = _start_groups(collection_id)
+        if not warcs and not any(c["has_pages"] for g in groups for c in g["captures"]):
+            raise HTTPException(409, "nothing captured in this collection yet")
         coll = f"collection-{row['slug']}"
-        try:
-            site = build_replay_site(warcs, _REPLAY_ROOT / coll)
-            build_start_page(site, row["name"], entries)
-        except Exception as exc:
-            raise HTTPException(500, f"replay setup failed: {exc}") from exc
-        if _PYWB is None or not _PYWB.is_running():
-            server = ReplayServer(_REPLAY_ROOT, port=8091)
+        replay_base = None
+        if warcs:
             try:
-                server.start_background()
-            except OSError as exc:
-                raise HTTPException(
-                    500, f"the replay server could not start: {exc}") from exc
-            _PYWB = server
-        return {"collection": coll, "replay_url": _PYWB.replay_url(coll, "seeds.html"),
-                "start_pages": len(entries), "warc_files": len(warcs)}
+                build_replay_site(warcs, _REPLAY_ROOT / coll)
+            except Exception as exc:
+                raise HTTPException(500, f"replay setup failed: {exc}") from exc
+            if _PYWB is None or not _PYWB.is_running():
+                server = ReplayServer(_REPLAY_ROOT, port=8091)
+                try:
+                    server.start_background()
+                except OSError as exc:
+                    raise HTTPException(
+                        500, f"the replay server could not start: {exc}") from exc
+                _PYWB = server
+            replay_base = _PYWB.replay_url(coll)
+        return {"collection": coll, "start_url": f"/collections/{collection_id}/replay",
+                "replay_url": replay_base, "start_pages": len(groups),
+                "warc_files": len(warcs)}
+
+    @app.get("/collections/{collection_id}/replay", response_class=HTMLResponse)
+    def collection_start_page(collection_id: int):
+        """The collection's replay page: its distinct starting URLs, each
+        with Replay (the archive, when prepared) or Open pages."""
+        from .replay import start_page_html
+        row = _require_collection(collection_id)
+        coll = f"collection-{row['slug']}"
+        replay_base = None
+        if (_REPLAY_ROOT / coll / "index.html").is_file() and _PYWB is not None \
+                and _PYWB.is_running():
+            replay_base = _PYWB.replay_url(coll)
+        return HTMLResponse(start_page_html(row["name"], _start_groups(collection_id),
+                                            replay_base))
 
     @app.get("/api/crawls/{crawl_id}/changes")
     def crawl_changes(crawl_id: int):

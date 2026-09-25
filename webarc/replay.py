@@ -391,59 +391,98 @@ _START_HTML = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title} — start pages</title>
+  <title>{title} — replay</title>
   <style>
-    body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; color: #222; }}
+    body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 64rem; padding: 0 1rem; color: #222; }}
     h1 {{ font-size: 1.4rem; margin-bottom: .25rem; }}
     p.lead {{ color: #555; margin-top: 0; }}
     h2 {{ font-size: 1.05rem; margin: 1.5rem 0 .5rem; border-bottom: 1px solid #ddd; padding-bottom: .25rem; }}
     ul {{ list-style: none; padding: 0; margin: 0; }}
-    li {{ padding: .35rem 0; display: flex; gap: .75rem; align-items: baseline; flex-wrap: wrap; }}
-    li a {{ word-break: break-all; }}
-    li small {{ color: #666; }}
-    p.all {{ margin-top: 2rem; }}
+    li {{ padding: .5rem 0; border-bottom: 1px solid #f0f0f0; }}
+    .url {{ word-break: break-all; font-weight: 600; }}
+    .caps {{ color: #666; font-size: .9rem; margin-top: .15rem; }}
+    .caps a {{ color: #666; }}
+    .acts {{ margin-top: .35rem; display: flex; gap: .5rem; flex-wrap: wrap; }}
+    .acts a {{ display: inline-block; padding: .25rem .7rem; border: 1px solid #888; border-radius: 4px; text-decoration: none; color: #222; font-size: .9rem; }}
+    .acts a.primary {{ background: #1f5fbf; border-color: #1f5fbf; color: #fff; }}
+    p.all {{ margin-top: 2rem; color: #555; }}
   </style>
 </head>
 <body>
   <h1>{title}</h1>
-  <p class="lead">The pages the collection's jobs were started from. Open one and browse the archive from there; this replay is for checking a capture, not for publication.</p>
+  <p class="lead">Every page the collection's jobs were started from, once each, with the captures behind it. Replay opens the page from the collection's archive, so what one job refers to another for is there too. This replay is for checking a capture, not for publication.</p>
   {sections}
-  <p class="all"><a href="index.html">Every captured URL, as the replay tool lists them</a></p>
+  {footer}
 </body>
 </html>
 """
 
 
-def build_start_page(site_dir: Path, title: str, entries: list[dict]) -> Path:
-    """seeds.html beside a replay site's index.html: the entry pages of the
-    collection grouped by website, newest capture first, each opening the
-    replay at that page. An entry is {url, job, date, kind, href?}: an
-    href (a social capture's own pages, served by the dashboard) is linked
-    as it is; otherwise the replay is opened at the url."""
+def start_page_html(title: str, groups: list[dict], replay_base: str | None) -> str:
+    """The collection's replay page: one entry per distinct starting URL.
+
+    A group is {url, captures: [{job_id, job, kind, date, has_warc,
+    has_pages}]}, newest capture first. A URL any capture holds a WARC for
+    gets Replay, opening the collection's archive at that page
+    (replay_base is the archive's index.html; None when the collection has
+    no WARC). A social capture gets Open pages, the reader pages of its
+    latest capture, with each older capture's pages one link away; a WARC
+    beside it gets Replay WARC.
+    """
     from html import escape
     from urllib.parse import quote, urlsplit
 
-    groups: dict[str, list[dict]] = {}
-    for entry in entries:
-        host = (urlsplit(entry.get("url") or "").hostname or "other").lower()
-        groups.setdefault(host, []).append(entry)
+    by_host: dict[str, list[dict]] = {}
+    for group in groups:
+        host = (urlsplit(group.get("url") or "").hostname or "other").lower()
+        by_host.setdefault(host, []).append(group)
     sections = []
-    for host in sorted(groups):
+    for host in sorted(by_host):
         items = []
-        for entry in sorted(groups[host], key=lambda e: str(e.get("date") or ""), reverse=True):
-            href = entry.get("href") or ("index.html?url=" + quote(entry["url"], safe=""))
-            note = " · ".join(x for x in (
-                entry.get("kind") if entry.get("kind") not in (None, "crawl") else None,
-                entry.get("job"), str(entry.get("date") or "")[:16].replace("T", " ")) if x)
-            items.append(f'<li><a href="{escape(href, quote=True)}">{escape(entry["url"])}</a>'
-                         f'<small>{escape(note)}</small></li>')
+        for group in sorted(by_host[host], key=lambda g: g["url"]):
+            captures = sorted(group["captures"],
+                              key=lambda c: (str(c.get("date") or ""), int(c.get("job_id") or 0)),
+                              reverse=True)
+            social = [c for c in captures if c.get("kind") not in (None, "crawl", "recording")]
+            with_warc = any(c.get("has_warc") for c in captures)
+            acts = []
+            if social:
+                latest = social[0]
+                acts.append(f'<a class="primary" href="/api/crawls/{int(latest["job_id"])}/pages" '
+                            f'target="_blank" rel="noopener">Open pages</a>')
+                if with_warc and replay_base:
+                    acts.append(f'<a href="{escape(replay_base, quote=True)}?url='
+                                f'{quote(group["url"], safe="")}" target="_blank" '
+                                'rel="noopener">Replay WARC</a>')
+            elif with_warc and replay_base:
+                acts.append(f'<a class="primary" href="{escape(replay_base, quote=True)}?url='
+                            f'{quote(group["url"], safe="")}" target="_blank" '
+                            'rel="noopener">Replay</a>')
+            else:
+                acts.append('<span class="caps">nothing captured yet</span>')
+            notes = []
+            for c in captures:
+                kind = c.get("kind") or "crawl"
+                text = " · ".join(x for x in (
+                    kind if kind != "crawl" else None, c.get("job"),
+                    str(c.get("date") or "")[:16].replace("T", " ")) if x)
+                if c in social and c is not social[0]:
+                    text = (f'<a href="/api/crawls/{int(c["job_id"])}/pages" target="_blank" '
+                            f'rel="noopener">{escape(text)}</a>')
+                else:
+                    text = escape(text)
+                notes.append(text)
+            items.append(f'<li><div class="url">{escape(group["url"])}</div>'
+                         f'<div class="caps">{len(captures)} capture{"" if len(captures) == 1 else "s"}: '
+                         f'{"; ".join(notes)}</div><div class="acts">{"".join(acts)}</div></li>')
         sections.append(f"<h2>{escape(host)}</h2><ul>{''.join(items)}</ul>")
     if not sections:
-        sections.append("<p>No start pages are recorded for this collection's jobs.</p>")
-    path = Path(site_dir) / "seeds.html"
-    path.write_text(_START_HTML.format(title=escape(title), sections="\n  ".join(sections)),
-                    encoding="utf-8")
-    return path
+        sections.append("<p>No starting URLs are recorded for this collection's jobs.</p>")
+    footer = (f'<p class="all"><a href="{escape(replay_base, quote=True)}">Every captured URL, '
+              'as the replay tool lists them</a></p>' if replay_base
+              else '<p class="all">No WARC files in this collection yet; the captures above are '
+                   'read through their pages.</p>')
+    return _START_HTML.format(title=escape(title), sections="\n  ".join(sections), footer=footer)
 
 
 def collection_name(crawl_id: int | str) -> str:

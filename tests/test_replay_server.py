@@ -152,24 +152,39 @@ class StartPageTests(unittest.TestCase):
         self.assertIn('var url = asked || "https://s/"', page)
         self.assertIn("document.write('<replay-web-page source=\"a.warc.gz\"'", page)
 
-    def test_the_start_page_groups_the_seeds_by_website_newest_first(self):
-        from webarc.replay import build_start_page
-        with tempfile.TemporaryDirectory() as tmp:
-            path = build_start_page(Path(tmp), "QNL 2026", [
-                {"url": "https://a.example/", "job": "first", "kind": "crawl",
-                 "date": "2026-09-01T10:00:00+00:00"},
-                {"url": "https://a.example/news?x=1&y=2", "job": "second", "kind": "crawl",
-                 "date": "2026-09-02T10:00:00+00:00"},
-                {"url": "https://www.facebook.com/qnl", "job": "fb", "kind": "facebook",
-                 "date": "2026-09-03T10:00:00+00:00",
-                 "href": "http://127.0.0.1:8000/captures/7/pages/index.html"},
-            ])
-            html = path.read_text(encoding="utf-8")
-        self.assertEqual(path.name, "seeds.html")
-        self.assertIn("<h2>a.example</h2>", html)
-        self.assertIn("<h2>www.facebook.com</h2>", html)
-        self.assertLess(html.index("second"), html.index("first"))           # newest first
-        self.assertIn('href="index.html?url=https%3A%2F%2Fa.example%2Fnews%3Fx%3D1%26y%3D2"', html)
-        self.assertIn('href="http://127.0.0.1:8000/captures/7/pages/index.html"', html)
-        self.assertIn("facebook · fb", html)
-        self.assertIn('<a href="index.html">', html)
+    def test_the_start_page_lists_each_starting_url_once_with_a_way_in_by_kind(self):
+        from webarc.replay import start_page_html
+        html = start_page_html("QNL 2026", [
+            {"url": "https://a.example/", "captures": [
+                {"job_id": 2, "job": "second", "kind": "crawl", "date": "2026-09-02T10:00:00",
+                 "has_warc": True, "has_pages": False},
+                {"job_id": 1, "job": "first", "kind": "crawl", "date": "2026-09-01T10:00:00",
+                 "has_warc": True, "has_pages": False}]},
+            {"url": "https://www.facebook.com/qnl", "captures": [
+                {"job_id": 7, "job": "fb-sept", "kind": "facebook", "date": "2026-09-03T10:00:00",
+                 "has_warc": True, "has_pages": True},
+                {"job_id": 5, "job": "fb-aug", "kind": "facebook", "date": "2026-08-03T10:00:00",
+                 "has_warc": False, "has_pages": True}]},
+            {"url": "https://www.youtube.com/@qnl", "captures": [
+                {"job_id": 9, "job": "yt", "kind": "youtube", "date": "2026-09-04T10:00:00",
+                 "has_warc": False, "has_pages": True}]},
+        ], "http://127.0.0.1:8091/collection-qnl/index.html")
+        self.assertEqual(html.count("https://a.example/</div>"), 1)          # once, two captures
+        self.assertIn("2 captures: second · 2026-09-02 10:00; first · 2026-09-01 10:00", html)
+        self.assertIn('href="http://127.0.0.1:8091/collection-qnl/index.html?url=https%3A%2F%2Fa.example%2F"', html)
+        self.assertIn('<a class="primary" href="/api/crawls/7/pages"', html)   # the latest capture's pages
+        self.assertIn('<a href="/api/crawls/5/pages"', html)                   # the older one, a link away
+        self.assertIn(">Replay WARC</a>", html)                                 # beside it, it has a WARC
+        self.assertIn('<a class="primary" href="/api/crawls/9/pages"', html)
+        self.assertNotIn("/api/crawls/9/pages\" target=\"_blank\" rel=\"noopener\">Replay WARC", html)
+        self.assertIn("<h2>www.youtube.com</h2>", html)
+
+    def test_without_an_archive_the_page_still_opens_the_captures_pages(self):
+        from webarc.replay import start_page_html
+        html = start_page_html("Social", [
+            {"url": "https://www.facebook.com/qnl", "captures": [
+                {"job_id": 7, "job": "fb", "kind": "facebook", "date": "2026-09-03T10:00:00",
+                 "has_warc": False, "has_pages": True}]}], None)
+        self.assertIn('href="/api/crawls/7/pages"', html)
+        self.assertNotIn("Replay WARC", html)
+        self.assertIn("No WARC files in this collection yet", html)

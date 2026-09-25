@@ -2715,11 +2715,11 @@ async function describeCollection(id) {
   } catch (e) { alert("Could not load the collection: " + e.message); }
 }
 async function replayCollection(id) {
-  const done = busy("Preparing every WARC in the collection for replay. Large collections take a moment.");
+  const done = busy("Preparing the collection for replay. Large collections take a moment.");
   try {
     const r = await api(`/api/collections/${id}/replay`, {method: "POST"});
-    if (window.open(r.replay_url, "_blank")) { done(); return; }
-    offerOpen(r.replay_url, "The replay is ready.");
+    if (window.open(r.start_url, "_blank")) { done(); return; }
+    offerOpen(r.start_url, "The replay is ready.");
   } catch (e) {
     done();
     alert("Could not replay: " + e.message);
