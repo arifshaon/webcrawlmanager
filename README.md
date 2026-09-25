@@ -840,8 +840,14 @@ dashboard's database and never written into a capture.
 
 A collection groups the jobs that belong together and gives them a directory
 of their own. It is the unit a curator thinks in ("the 2026 election sites",
-"the library's own channels") and, in a later version, the unit within which
-a page already captured is not stored again unless it has changed.
+"the library's own channels") and the unit within which a payload already
+captured is stored once. Every job belongs to a collection: the one you pick
+or make on the job form, or the **Default** collection when you pick none,
+which SWM makes under the storage root the first time a job needs it. A job
+that names a storage location of its own is written there and still belongs
+to its collection. Jobs made before collections existed keep their place
+under the storage root and are listed under "Older jobs, not in a
+collection".
 
 Every collection has:
 
@@ -874,16 +880,22 @@ swm collection create "QNL 2026" --description "The library's own sites" \
 swm collection create "Elections" --metadata-file elections-metadata.csv
 swm collection list
 swm collection show qnl-2026
-swm crawl config.yaml --collection qnl-2026        # the job goes under the collection
+swm crawl config.yaml                              # the job goes into the Default collection
+swm crawl config.yaml --collection qnl-2026        # or into this one
 swm record https://example.org/ --collection "QNL 2026"
+swm crawl config.yaml --standalone                 # outside any collection, as before
 swm collection delete qnl-2026                     # states what it means, then asks
 ```
 
 `--collection` accepts a name, an identifier or an id. A name that matches no
 collection is an error rather than a new collection, so a typo never files a
 job in a collection of its own; add `--create-collection` to make it on the
-spot. A job run from the command line against a collection is registered in
-the dashboard's state file and listed with the collection's other jobs.
+spot. A job run from the command line is registered in the dashboard's state
+file (`--db`, the dashboard's own by default) and listed with its
+collection's other jobs; `--standalone` runs it the old way, writing to the
+configuration's output directory with no record kept. Run command-line jobs
+from the directory the dashboard runs in, or give `--db` and `--warc-root`
+the same paths the dashboard uses, so both see the same collections.
 Metadata for `create` is a JSON array of `{name, value}` fields, or a file:
 JSON in that shape, or a metadata sheet as the dashboard exports one.
 
@@ -921,8 +933,7 @@ exist, and a collection made later under the same name starts its own). A
 collection is not deleted while one of its jobs is running unless the
 deletion is forced. Jobs of one collection can run at the same time, from
 the dashboard or the command line; the index is written one capture at a
-time, so nobody waits on anybody. A collection's directory is recorded as an
-absolute path, so a command-line job finds it from any working directory.
+time, so nobody waits on anybody.
 
 **What changed since last time.** Two captures of a page are seldom the
 same bytes (a cache stamp, a nonce, the menu item marked as current), so

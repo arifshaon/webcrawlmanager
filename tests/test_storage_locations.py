@@ -47,12 +47,18 @@ class StorageTestCase(unittest.TestCase):
         return self.client.get(f"/api/crawls/{crawl_id}").json()
 
 
+def default_home(root: Path, crawl_id: int) -> Path:
+    """Where a job with no location of its own goes: the Default collection
+    under the storage root in use when that collection was first needed."""
+    return root / "collections" / "default" / "jobs" / str(crawl_id)
+
+
 class DefaultLocationTests(StorageTestCase):
-    def test_a_crawl_with_no_location_uses_the_server_root(self):
+    def test_a_crawl_with_no_location_goes_to_the_default_collection_under_the_server_root(self):
         made = self.crawl()
 
         self.assertEqual(Path(self.row(made["id"])["output_dir"]),
-                         self.root / str(made["id"]))
+                         default_home(self.root, made["id"]))
 
     def test_the_default_can_be_changed_from_the_dashboard(self):
         elsewhere = self.tmp / "archive-drive"
@@ -62,7 +68,10 @@ class DefaultLocationTests(StorageTestCase):
         made = self.crawl()
 
         self.assertEqual(Path(self.row(made["id"])["output_dir"]),
-                         elsewhere.resolve() / str(made["id"]))
+                         default_home(elsewhere.resolve(), made["id"]))
+        # a collection made now goes there as well
+        coll = self.client.post("/api/collections", json={"name": "QNL"}).json()
+        self.assertEqual(Path(coll["root_dir"]), elsewhere.resolve() / "collections" / "qnl")
 
     def test_the_settings_report_what_is_actually_in_use(self):
         elsewhere = self.tmp / "archive-drive"
@@ -84,7 +93,7 @@ class DefaultLocationTests(StorageTestCase):
         made = self.crawl()
 
         self.assertEqual(Path(self.row(made["id"])["output_dir"]),
-                         self.root / str(made["id"]))
+                         default_home(self.root, made["id"]))
 
     def test_a_default_that_has_become_unusable_does_not_stop_captures(self):
         """An unplugged drive must not fail every new capture."""
@@ -96,7 +105,7 @@ class DefaultLocationTests(StorageTestCase):
         made = self.crawl()
 
         self.assertEqual(Path(self.row(made["id"])["output_dir"]),
-                         self.root / str(made["id"]))
+                         default_home(self.root, made["id"]))
 
 
 class PerCrawlLocationTests(StorageTestCase):
@@ -367,7 +376,7 @@ class RemoteBindingTests(StorageTestCase):
         made = self.crawl()
 
         self.assertEqual(Path(self.row(made["id"])["output_dir"]),
-                         self.root / str(made["id"]))
+                         default_home(self.root, made["id"]))
 
     def test_the_dashboard_is_told_the_field_is_unavailable(self):
         capabilities = self.client.get("/api/capabilities").json()

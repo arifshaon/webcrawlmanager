@@ -253,7 +253,7 @@ tai-max-calls: >-
 
 # Collections
 job-collection: >-
-  The collection this job belongs to. Its files are placed under the collection's own directory, and it inherits the collection's description for anything it does not say itself. Leave it empty for a job that stands alone; choose "New collection…" to make one here.
+  The collection this job belongs to. Its files are placed under the collection's own directory, and it inherits the collection's description for anything it does not say itself. Every job belongs to one: leave it on Default for a job not filed elsewhere, pick a collection, or choose "New collection…" to make one here.
 c-name: >-
   What the collection is called in lists and in the files it produces. Its identifier for directories and archive records is taken from this name when it is created and never changes afterwards, so rename freely.
 c-storage: >-

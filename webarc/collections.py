@@ -429,29 +429,56 @@ def describe_impact(impact: dict) -> str:
 
 # --- upkeep -------------------------------------------------------------------
 
-def absolutise_roots(store, base: Path | str | None = None) -> list[dict]:
-    """Collections recorded with a relative directory (made before roots
-    were stored absolute) are re-recorded against ``base``, the directory
-    such paths were relative to: the dashboard's working directory. Their
-    jobs' directories follow. Returns what was changed."""
-    base = Path(base) if base is not None else Path.cwd()
-    changed = []
-    for row in store.list_collections():
-        root = Path(row["root_dir"])
-        if root.is_absolute():
-            continue
-        resolved = (base / root).resolve()
-        store.set_collection_root(row["id"], str(resolved))
-        jobs = []
-        for job in store.crawls_in_collection(row["id"]):
-            raw = job.get("output_dir") or ""       # "" is a job never finalised: leave it
-            if raw and not Path(raw).is_absolute():
-                store.set_output_dir(job["id"], str((base / raw).resolve()))
-                jobs.append(job["id"])
-        changed.append({"id": row["id"], "slug": row["slug"], "from": str(root),
-                        "to": str(resolved), "jobs": jobs})
-        refresh_document(store, store.get_collection(row["id"]))
-    return changed
+DEFAULT_SLUG = "default"
+DEFAULT_NAME = "Default"
+DEFAULT_DESCRIPTION = "Jobs not filed in a collection of their own."
+
+
+def create(store, name: str, description: str, metadata: list[dict], base: Path | str,
+           storage_dir: str | None = None, policy: dict | None = None) -> dict:
+    """A collection: its directory and collection.json first, then its row,
+    so a collection that cannot be written to is never listed.
+
+    Raises ValueError for a name already taken or an index left at the
+    target root by an earlier collection; OSError when the directory cannot
+    be made.
+    """
+    name = validate_name(name)
+    description = validate_description(description)
+    slug = slugify(name)
+    if store.find_collection(slug):
+        raise ValueError(f"A collection with the identifier '{slug}' already exists.")
+    root = collection_root(Path(storage_dir) if storage_dir else Path(base), slug)
+    try:
+        root = root.expanduser().resolve()   # stored absolute: the same place from any cwd
+    except OSError:
+        pass
+    leftover = index_leftover(root)
+    if leftover:
+        raise ValueError(f"{leftover} belongs to an earlier collection of this name; move "
+                         "or remove it, or choose another name or storage location.")
+    policy = policy or dict(DEFAULT_POLICY)
+    root.mkdir(parents=True, exist_ok=True)
+    write_document(root, document(
+        {"id": None, "slug": slug, "name": name, "description": description,
+         "root_dir": str(root), "metadata": metadata, "policy": policy}, []))
+    collection_id = store.create_collection(slug, name, description, str(root), metadata, policy)
+    row = store.get_collection(collection_id)
+    write_document(root, document(row, []))
+    return row
+
+
+def ensure_default(store, base: Path | str) -> dict:
+    """The collection a job goes to when it names none: made under the
+    storage root the first time it is needed, and again if it was deleted."""
+    row = store.find_collection(DEFAULT_SLUG)
+    if row:
+        return row
+    return create(store, DEFAULT_NAME, DEFAULT_DESCRIPTION, [], base)
+
+
+def is_default(collection: Optional[dict]) -> bool:
+    return bool(collection) and collection.get("slug") == DEFAULT_SLUG
 
 
 def rebuild_index(store, collection: dict) -> dict:

@@ -325,15 +325,18 @@ def _register_job_in_collection(args, name: str, kind: str, config: dict,
     from .store import RUNNING
 
     store = _open_store(args.db)
-    collection = store.find_collection(args.collection)
-    if collection is None:
-        if not getattr(args, "create_collection", False):
-            raise ValueError(
-                f"No collection called '{args.collection}'. Create it first with "
-                f"'swm collection create', or add --create-collection.")
-        collection = _create_collection_row(
-            store, args.collection, "", [], _P(getattr(args, "warc_root", None)
-                                               or "./warcs"))
+    base = _P(getattr(args, "warc_root", None) or getattr(args, "output", None) or "./warcs")
+    named = getattr(args, "collection", None)
+    if not named:                                  # every job belongs to a collection
+        collection = colls.ensure_default(store, base)
+    else:
+        collection = store.find_collection(named)
+        if collection is None:
+            if not getattr(args, "create_collection", False):
+                raise ValueError(
+                    f"No collection called '{named}'. Create it first with "
+                    f"'swm collection create', or add --create-collection.")
+            collection = _create_collection_row(store, named, "", [], base)
     crawl_id = store.create_crawl(
         name=name, config=dict(config), output_dir="", seeds_total=seeds_total,
         kind=kind, collection_id=collection["id"])
@@ -378,37 +381,12 @@ def _create_collection_row(store, name: str, description: str,
                            storage_dir: str | None = None,
                            policy: dict | None = None) -> dict:
     """A collection's row, directory and collection.json."""
-    from pathlib import Path as _P
-
     from . import collections as colls
 
-    name = colls.validate_name(name)
-    description = colls.validate_description(description)
-    slug = colls.slugify(name)
-    if store.find_collection(slug):
-        raise ValueError(f"A collection with the identifier '{slug}' already exists.")
-    root = colls.collection_root(_P(storage_dir) if storage_dir else _P(base), slug)
     try:
-        root = root.expanduser().resolve()   # stored absolute: the same place from any cwd
-    except OSError:
-        pass
-    leftover = colls.index_leftover(root)
-    if leftover:
-        raise ValueError(f"{leftover} belongs to an earlier collection of this name; move "
-                         "or remove it, or choose another name or --storage-dir.")
-    policy = policy or dict(colls.DEFAULT_POLICY)
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        colls.write_document(root, colls.document(
-            {"id": None, "slug": slug, "name": name, "description": description,
-             "root_dir": str(root), "metadata": metadata, "policy": policy}, []))
+        return colls.create(store, name, description, metadata, base, storage_dir, policy)
     except OSError as exc:
-        raise ValueError(f"Could not create the collection's directory {root}: {exc}") from exc
-    collection_id = store.create_collection(slug, name, description, str(root), metadata,
-                                            policy)
-    row = store.get_collection(collection_id)
-    colls.write_document(root, colls.document(row, []))
-    return row
+        raise ValueError(f"Could not create the collection's directory: {exc}") from exc
 
 
 def _cmd_collection(args) -> int:
@@ -833,8 +811,8 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument("config", help="Path to config.yaml")
     p_crawl.add_argument("-v", "--verbose", action="store_true")
     p_crawl.add_argument("--db", default="./webarc-state/webarc.db",
-                         help="dashboard state file whose resource warning "
-                         "levels apply (defaults are used when it does not exist)")
+                         help="dashboard state file the job is registered in and "
+                         "whose resource warning levels apply")
     p_crawl.add_argument("--yes", "-y", action="store_true",
                          help="start even when the machine is short of a "
                          "resource, without asking")
@@ -844,10 +822,17 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument("--no-resource-check", action="store_true",
                          help="skip the CPU, memory and disk check")
     p_crawl.add_argument("--collection",
-                         help="run this job as part of a collection (by name, "
-                         "identifier or id): its files go under the "
-                         "collection's directory and it is listed with the "
-                         "collection's other jobs")
+                         help="run this job as part of this collection (by name, "
+                         "identifier or id) rather than the default one: its "
+                         "files go under the collection's directory and it is "
+                         "listed with the collection's other jobs")
+    p_crawl.add_argument("--warc-root", default="./warcs",
+                         help="the dashboard's storage root, under which the "
+                         "default collection lives (default: ./warcs)")
+    p_crawl.add_argument("--standalone", action="store_true",
+                         help="run outside any collection: write to the "
+                         "configuration's output directory and keep no record "
+                         "in the dashboard's state file")
     p_crawl.add_argument("--create-collection", action="store_true",
                          help="make the collection named by --collection if "
                          "it does not exist yet")
@@ -998,10 +983,14 @@ def main(argv: list[str] | None = None) -> int:
                        help="Operator recorded in the WARC metadata")
     p_rec.add_argument("-v", "--verbose", action="store_true")
     p_rec.add_argument("--db", default="./webarc-state/webarc.db",
-                       help="dashboard state file (used with --collection)")
+                       help="dashboard state file the recording is registered in")
     p_rec.add_argument("--collection",
-                       help="record as part of a collection (by name, "
-                       "identifier or id)")
+                       help="record as part of this collection (by name, "
+                       "identifier or id) rather than the default one")
+    p_rec.add_argument("--standalone", action="store_true",
+                       help="record outside any collection: write to "
+                       "<output>/<name>/ and keep no record in the dashboard's "
+                       "state file")
     p_rec.add_argument("--create-collection", action="store_true",
                        help="make the collection named by --collection if "
                        "it does not exist yet")
@@ -1167,7 +1156,7 @@ def main(argv: list[str] | None = None) -> int:
         out_dir = _P(args.output) / name
         registered = None
         collection = None
-        if args.collection:
+        if not args.standalone:
             try:
                 registered, collection, out_dir = _register_job_in_collection(
                     args, name, "recording",
@@ -1373,7 +1362,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
 
     registered = None
-    if args.command == "crawl" and getattr(args, "collection", None):
+    if args.command == "crawl" and not args.standalone:
         import yaml as _yaml
         from pathlib import Path as _P
 

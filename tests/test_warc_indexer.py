@@ -351,7 +351,7 @@ class ServerTests(FakeJarTestCase):
 
         self.assertEqual(started.status_code, 202, started.text)
         self.assertEqual(started.json()["status"], "running")
-        self.assertEqual(started.json()["collection"], "demo")
+        self.assertEqual(started.json()["collection"], "Default")    # the job's collection
         view = self.wait_done(made["id"])
         self.assertEqual(view["warc_index"]["status"], "done")
         self.assertEqual(view["warc_index"]["documents"], 2)

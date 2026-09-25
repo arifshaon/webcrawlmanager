@@ -711,7 +711,7 @@ def _index_counts(collection: dict) -> dict | None:
 
 
 def _create_collection(payload: dict) -> dict:
-    """Make a collection: its row, its directory and its collection.json."""
+    """Make a collection: its directory, its collection.json and its row."""
     try:
         name = colls.validate_name(payload.get("name"))
         description = colls.validate_description(payload.get("description"))
@@ -719,41 +719,26 @@ def _create_collection(payload: dict) -> dict:
         raise HTTPException(400, str(exc)) from exc
     metadata = _collection_metadata_from(payload) or []
     policy = _collection_policy_from(payload) or dict(colls.DEFAULT_POLICY)
-    slug = colls.slugify(name)
-    if _store().find_collection(slug):
-        raise HTTPException(409, f"a collection with the identifier '{slug}' already "
-                                 "exists; choose another name")
-    root = colls.collection_root(_storage_root_for(payload.get("storage_dir")), slug)
     try:
-        root = root.resolve()          # stored absolute: the same place from any cwd
-    except OSError:
-        pass
-    leftover = colls.index_leftover(root)
-    if leftover:
-        raise HTTPException(
-            409, f"{leftover} belongs to an earlier collection of this name; move or "
-                 "remove it, or choose another name or storage location")
-    # The directory and its document first: a collection that cannot be
-    # written to is refused before it is listed anywhere.
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-        colls.write_document(root, colls.document(
-            {"id": None, "slug": slug, "name": name, "description": description,
-             "root_dir": str(root), "metadata": metadata, "policy": policy}, []))
+        return colls.create(_store(), name, description, metadata,
+                            _storage_root_for(payload.get("storage_dir")), policy=policy)
+    except ValueError as exc:                        # taken, or an earlier index in the way
+        raise HTTPException(409, str(exc)) from exc
     except OSError as exc:
         raise HTTPException(400, f"could not create the collection's directory: {exc}") from exc
+
+
+def _default_collection() -> dict:
+    """Where a job goes when it names no collection."""
     try:
-        collection_id = _store().create_collection(slug, name, description,
-                                                   str(root), metadata, policy)
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    row = _store().get_collection(collection_id)
-    colls.write_document(root, colls.document(row, []))
-    return row
+        return colls.ensure_default(_store(), _default_storage_root())
+    except (ValueError, OSError) as exc:
+        raise HTTPException(500, f"the default collection could not be made: {exc}") from exc
 
 
 def _resolve_collection(payload: dict) -> dict | None:
-    """The collection a create request names, made if it asks for a new one.
+    """The collection a create request names, made if it asks for a new one;
+    the default collection when it names none.
 
     ``collection_id`` names one by id; ``collection`` by id, identifier or
     name; ``new_collection`` is a {name, description?, metadata?} to make
@@ -769,18 +754,26 @@ def _resolve_collection(payload: dict) -> dict | None:
     if reference in (None, ""):
         reference = payload.get("collection")
     if reference in (None, ""):
-        return None
+        return _default_collection()               # every job belongs to a collection
     row = _store().find_collection(reference)
     if not row:
         raise HTTPException(404, f"collection not found: {reference}")
     return row
 
 
-def _job_home(collection: dict | None, storage_root: Path, crawl_id: int) -> Path:
-    """A job's directory: under its collection when it has one."""
-    if collection:
-        return colls.job_home(collection["root_dir"], crawl_id)
-    return storage_root / str(crawl_id)
+def _names_location(payload: dict) -> bool:
+    """Whether the request chose a storage location of its own."""
+    return bool(str(payload.get("storage_dir") or "").strip())
+
+
+def _job_home(collection: dict | None, storage_root: Path, crawl_id: int,
+              own: bool = False) -> Path:
+    """A job's directory: the location it named for itself, else under its
+    collection. A job from before collections, with none, keeps its place
+    under the storage root."""
+    if own or not collection:
+        return storage_root / str(crawl_id)
+    return colls.job_home(collection["root_dir"], crawl_id)
 
 
 def _refresh_collection_document(collection: dict | None) -> None:
@@ -1011,14 +1004,6 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     _STORE = Store(db_path)
     _WARC_ROOT = Path(warc_root)
     _WARC_ROOT.mkdir(parents=True, exist_ok=True)
-    # Collections made before their directory was recorded absolute are
-    # relative to this process's working directory: say so once, so a
-    # command-line job started elsewhere finds the same place.
-    try:
-        for moved in colls.absolutise_roots(_STORE):
-            log.info("Collection %s: directory recorded as %s", moved["slug"], moved["to"])
-    except Exception as exc:                        # pragma: no cover - never fatal
-        log.warning("Could not resolve collection directories: %s", exc)
     _SIMULATE = simulate
     _REPLAY_ROOT = Path(replay_root)
     _BIND_HOST = bind_host
@@ -1181,7 +1166,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             name=name, config=config, output_dir="", seeds_total=1,
             kind=KIND_RECORDING,
             collection_id=(collection or {}).get("id"))
-        crawl_dir = _job_home(collection, storage_root, crawl_id)
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
@@ -1227,7 +1213,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             name=name, config=config, output_dir="", seeds_total=1,
             kind=KIND_FACEBOOK,
             collection_id=(collection or {}).get("id"))
-        crawl_dir = _job_home(collection, storage_root, crawl_id)
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
@@ -1366,7 +1353,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             name=name, config=config, output_dir="",
             seeds_total=len(config["seeds"]),
             collection_id=(collection or {}).get("id"))
-        crawl_dir = _job_home(collection, storage_root, crawl_id)
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config["output_dir"] = str(crawl_dir)
         config.setdefault("crawl_name", name)
         crawl_dir.mkdir(parents=True, exist_ok=True)
@@ -1544,7 +1532,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             name=name, config=config_json, output_dir="",
             seeds_total=len(config.targets), kind=KIND_INSTAGRAM,
             collection_id=(collection or {}).get("id"))
-        crawl_dir = _job_home(collection, storage_root, crawl_id)
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
@@ -1634,7 +1623,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             name=name, config=config_json, output_dir="",
             seeds_total=len(config.targets), kind=KIND_YOUTUBE,
             collection_id=(collection or {}).get("id"))
-        crawl_dir = _job_home(collection, storage_root, crawl_id)
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
@@ -1720,7 +1710,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             name=name, config=config_json, output_dir="",
             seeds_total=len(config.targets), kind=KIND_X,
             collection_id=(collection or {}).get("id"))
-        crawl_dir = _job_home(collection, storage_root, crawl_id)
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))

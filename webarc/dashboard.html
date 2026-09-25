@@ -456,7 +456,7 @@
       </select>
       <select id="jf-collection" aria-label="Collection">
         <option value="">All collections</option>
-        <option value="none">Not in a collection</option>
+        <option value="none">Older jobs, not in a collection</option>
       </select>
       <select id="jf-status" aria-label="Job status">
         <option value="">Any status</option>
@@ -852,7 +852,7 @@
             <div class="field wide">
               <label class="field-label" for="f-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
               <div class="storage-row">
-                <select id="f-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+                <select id="f-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
                 <button type="button" class="secondary collection-new-btn" data-target="f-collection">New collection…</button>
               </div>
             </div>
@@ -920,7 +920,7 @@
           <div class="field wide">
             <label class="field-label" for="r-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
             <div class="storage-row">
-              <select id="r-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <select id="r-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="r-collection">New collection…</button>
             </div>
           </div>
@@ -992,7 +992,7 @@
           <div class="field wide">
             <label class="field-label" for="fb-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
             <div class="storage-row">
-              <select id="fb-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <select id="fb-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="fb-collection">New collection…</button>
             </div>
           </div>
@@ -1131,7 +1131,7 @@
           <div class="field wide">
             <label class="field-label" for="ig-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
             <div class="storage-row">
-              <select id="ig-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <select id="ig-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="ig-collection">New collection…</button>
             </div>
           </div>
@@ -1278,7 +1278,7 @@
           <div class="field wide">
             <label class="field-label" for="x-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
             <div class="storage-row">
-              <select id="x-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <select id="x-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="x-collection">New collection…</button>
             </div>
           </div>
@@ -1430,7 +1430,7 @@
           <div class="field wide">
             <label class="field-label" for="yt-collection">Collection <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="job-collection">?</button></label>
             <div class="storage-row">
-              <select id="yt-collection" class="collection-pick"><option value="">Not in a collection</option></select>
+              <select id="yt-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="yt-collection">New collection…</button>
             </div>
           </div>
@@ -2618,21 +2618,28 @@ $("#yt-targets").addEventListener("change", () => metadataEditors.youtube.render
 // ---- collections ------------------------------------------------------------
 const collectionMetadata = new MetadataEditor($("#c-metadata"), {scopes: () => []});
 
+// Every job belongs to a collection: the default one unless another is
+// chosen or made here. The default is offered first, by its name once it
+// exists, and is made by the server the first time a job needs it.
 function collectionOptions(selected) {
-  return `<option value="">Not in a collection</option>` + lastCollections.map(c =>
-    `<option value="${Number(c.id)}"${String(c.id) === String(selected) ? " selected" : ""}>${escapeHtml(c.name)}</option>`).join("");
+  const dflt = lastCollections.find(c => c.slug === "default");
+  const others = lastCollections.filter(c => c.slug !== "default");
+  const dfltId = dflt ? String(dflt.id) : "";
+  const pick = String(selected || "");
+  return `<option value=""${pick === "" || pick === dfltId ? " selected" : ""}>${dflt ? escapeHtml(dflt.name) : "Default"} (the default collection)</option>` + others.map(c =>
+    `<option value="${Number(c.id)}"${String(c.id) === pick ? " selected" : ""}>${escapeHtml(c.name)}</option>`).join("");
 }
 function fillCollectionPickers() {
   $$(".collection-pick").forEach(select => {
     const chosen = select.value;
     select.innerHTML = collectionOptions(chosen);
-    if (chosen && !lastCollections.some(c => String(c.id) === chosen)) select.value = "";
+    if (chosen && !lastCollections.some(c => String(c.id) === chosen && c.slug !== "default")) select.value = "";
   });
 }
 function fillCollectionFilter() {
   const select = $("#jf-collection");
   const chosen = select.value;
-  select.innerHTML = `<option value="">All collections</option><option value="none">Not in a collection</option>`
+  select.innerHTML = `<option value="">All collections</option><option value="none">Older jobs, not in a collection</option>`
     + lastCollections.map(c => `<option value="${Number(c.id)}">${escapeHtml(c.name)} (${Number(c.jobs) || 0})</option>`).join("");
   select.value = chosen;
   if (select.value !== chosen) select.value = "";

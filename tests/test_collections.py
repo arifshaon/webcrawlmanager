@@ -447,13 +447,38 @@ class ServerTests(ServerTestCase):
 
         self.assertEqual([c["id"] for c in storage["per_collection"]], [made["id"]])
 
-    def test_a_job_outside_any_collection_is_unchanged(self):
+    def test_a_job_that_names_no_collection_goes_to_the_default_one(self):
+        self.assertEqual(self.client.get("/api/collections").json(), [])
         job = self.job()
 
-        self.assertIsNone(job["collection"])
-        self.assertEqual(Path(job["output_dir"]), self.root / str(job["id"]))
+        self.assertEqual(job["collection"]["slug"], "default")
+        self.assertEqual(job["collection"]["name"], "Default")
+        default_root = self.root / "collections" / "default"
+        self.assertEqual(Path(job["output_dir"]), default_root / "jobs" / str(job["id"]))
         doc = json.loads((Path(job["output_dir"]) / md.DOCUMENT_NAME).read_text())
-        self.assertNotIn("collection", doc)
+        self.assertEqual(doc["collection"]["slug"], "default")
+        listed = self.client.get("/api/collections").json()
+        self.assertEqual([c["slug"] for c in listed], ["default"])
+        self.assertEqual(listed[0]["jobs"], 1)
+        again = self.job()                                   # made once, reused after
+        self.assertEqual(again["collection"]["id"], job["collection"]["id"])
+        self.assertEqual(self.client.get("/api/collections").json()[0]["jobs"], 2)
+
+    def test_a_deleted_default_collection_is_made_again_when_needed(self):
+        first = self.job()
+        gone = self.client.delete(f"/api/collections/{first['collection']['id']}?purge=true")
+        self.assertEqual(gone.status_code, 200, gone.text)
+        self.assertEqual(self.client.get("/api/collections").json(), [])
+        second = self.job()
+        self.assertEqual(second["collection"]["slug"], "default")
+        self.assertNotEqual(second["collection"]["id"], first["collection"]["id"])
+        self.assertTrue(Path(second["output_dir"]).is_dir())
+
+    def test_a_job_from_before_collections_keeps_its_place(self):
+        row = srv._store().create_crawl("old", {"seeds": []}, str(self.root / "7"), 0)
+        view = self.client.get(f"/api/crawls/{row}").json()
+        self.assertIsNone(view["collection"])
+        self.assertEqual(Path(view["output_dir"]), self.root / "7")
 
 
 class CommandLineTests(unittest.TestCase):
@@ -572,6 +597,45 @@ class CommandLineTests(unittest.TestCase):
             _register_job_in_collection(args, "job", "crawl", {"seeds": []}, seeds_total=0)
         self.assertIn("Create it first", str(caught.exception))
         self.assertEqual(Store(self.db).list_collections(), [])
+
+    def test_a_job_naming_no_collection_is_placed_in_the_default_one(self):
+        from types import SimpleNamespace
+        from webarc.cli import _register_job_in_collection
+
+        args = SimpleNamespace(db=self.db, collection=None, create_collection=False,
+                               warc_root=self.root)
+        (store, job), collection, job_dir = _register_job_in_collection(
+            args, "job", "crawl", {"seeds": [{"url": "https://a.example/"}]}, seeds_total=1)
+        self.assertEqual(collection["slug"], "default")
+        self.assertEqual(job_dir, Path(collection["root_dir"]) / "jobs" / str(job))
+        self.assertTrue(Path(collection["root_dir"]).is_absolute())
+        self.assertEqual(Path(collection["root_dir"]).resolve(),
+                         (Path(self.root) / "collections" / "default").resolve())
+        (_store, second), again, _dir = _register_job_in_collection(
+            args, "job2", "crawl", {"seeds": []}, seeds_total=0)
+        self.assertEqual(again["id"], collection["id"])
+
+    def test_standalone_keeps_a_job_out_of_every_collection(self):
+        cfg = Path(self.tmp) / "cfg.yaml"
+        cfg.write_text("crawl_name: x\noutput_dir: %s\nseeds:\n  - url: https://a.example/\n"
+                       % (Path(self.tmp) / "out"))
+        with mock.patch("webarc.cli.run_crawl") as run:
+            code, out, err = self.run_cli("crawl", str(cfg), "--standalone", "--no-resource-check",
+                                          "--db", self.db, "--warc-root", self.root)
+        self.assertEqual(code, 0, out + err)
+        self.assertEqual(Path(run.call_args[0][0].output_dir), Path(self.tmp) / "out")
+        self.assertFalse(Path(self.db).exists())            # no record kept
+        self.assertIsNone(run.call_args[0][0].collection)
+
+        with mock.patch("webarc.cli.run_crawl") as run:
+            code, out, err = self.run_cli("crawl", str(cfg), "--no-resource-check",
+                                          "--db", self.db, "--warc-root", self.root)
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("Collection: Default (default)", out)
+        placed = run.call_args[0][0]
+        self.assertEqual(placed.collection["slug"], "default")
+        self.assertEqual(Path(placed.output_dir).parent.parent.name, "default")
+        self.assertEqual(Store(self.db).find_collection("default")["name"], "Default")
 
     def test_a_job_can_make_its_collection_and_is_placed_in_it(self):
         from types import SimpleNamespace
@@ -694,50 +758,6 @@ class CommandLineJobLivenessTests(unittest.TestCase):
             self.assertFalse(srv._pid_is_worker(os.getpid()))
 
 
-class RelativeRootTests(unittest.TestCase):
-    """Collections recorded with a relative directory are re-recorded
-    absolute when the dashboard starts, jobs included."""
-
-    def test_relative_roots_are_resolved_once_against_the_dashboards_directory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(Path(tmp) / "swm.db")
-            cid = store.create_collection("t", "T", "", "warcs/collections/t")
-            job = store.create_crawl("j", {"seeds": []}, "warcs/collections/t/jobs/1", 0,
-                                     collection_id=cid)
-            other = store.create_collection("abs", "Abs", "", str(Path(tmp) / "abs"))
-
-            changed = colls.absolutise_roots(store, base=tmp)
-
-            self.assertEqual([c["slug"] for c in changed], ["t"])
-            self.assertEqual(changed[0]["jobs"], [job])
-            root = Path(store.get_collection(cid)["root_dir"])
-            self.assertTrue(root.is_absolute())
-            self.assertEqual(root, (Path(tmp) / "warcs" / "collections" / "t").resolve())
-            self.assertEqual(Path(store.get_crawl(job)["output_dir"]),
-                             (Path(tmp) / "warcs" / "collections" / "t" / "jobs" / "1").resolve())
-            self.assertEqual(store.get_collection(other)["root_dir"], str(Path(tmp) / "abs"))
-            self.assertEqual(colls.absolutise_roots(store, base=tmp), [])     # once is enough
-            self.assertEqual(colls.read_document(root)["root_dir"], str(root))
-
-    def test_the_dashboard_does_it_at_start(self):
-        from fastapi.testclient import TestClient
-        from webarc import server as srv
-
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(Path(tmp) / "swm.db")
-            store.create_collection("t", "T", "", "warcs/collections/t")
-            cwd = os.getcwd()
-            os.chdir(tmp)
-            try:
-                app = srv.create_app(str(Path(tmp) / "swm.db"), "warcs", simulate=True,
-                                     replay_root=str(Path(tmp) / "replay"), monitor_resources=False)
-                listed = TestClient(app).get("/api/collections").json()
-            finally:
-                os.chdir(cwd)
-            self.assertEqual(Path(listed[0]["root_dir"]),
-                             (Path(tmp) / "warcs" / "collections" / "t").resolve())
-
-
 class EditTests(unittest.TestCase):
     def test_name_description_and_policy_change_in_one_put(self):
         from fastapi.testclient import TestClient
@@ -757,17 +777,6 @@ class EditTests(unittest.TestCase):
                              ("QNL 2026", "News sites", "qnl"))
             self.assertFalse(view["policy"]["dedup_across_jobs"])
             self.assertEqual(colls.read_document(Path(made["root_dir"]))["name"], "QNL 2026")
-
-
-class MigrationSafetyTests(unittest.TestCase):
-    def test_a_job_never_finalised_keeps_its_empty_directory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Store(Path(tmp) / "swm.db")
-            cid = store.create_collection("t", "T", "", "warcs/collections/t")
-            job = store.create_crawl("j", {"seeds": []}, "", 0, collection_id=cid)
-            changed = colls.absolutise_roots(store, base=tmp)
-            self.assertEqual(changed[0]["jobs"], [])
-            self.assertEqual(store.get_crawl(job)["output_dir"], "")     # never the cwd
 
 
 class RebuildLockTests(unittest.TestCase):

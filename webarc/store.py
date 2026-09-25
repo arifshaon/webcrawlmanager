@@ -720,15 +720,6 @@ class Store:
             c.execute("DELETE FROM collections WHERE id=?", (int(collection_id),))
             return ids
 
-    def set_collection_root(self, collection_id: int, root_dir: str) -> None:
-        with self._conn() as c:
-            c.execute("UPDATE collections SET root_dir=?, updated_at=? WHERE id=?",
-                      (str(root_dir), _now(), int(collection_id)))
-
-    def set_output_dir(self, crawl_id: int, output_dir: str) -> None:
-        with self._conn() as c:
-            c.execute("UPDATE crawls SET output_dir=? WHERE id=?", (str(output_dir), int(crawl_id)))
-
     def crawls_in_collection(self, collection_id: int) -> list[dict]:
         with self._conn() as c:
             rows = c.execute("SELECT * FROM crawls WHERE collection_id=? ORDER BY id",
