@@ -1298,6 +1298,21 @@ seeds:
 
 `swm metadata export <job folder>` writes the sheet for a finished job.
 
+### Appearance and the overview
+
+**Appearance**, top right, sets the theme (match the system, light or dark),
+a high-contrast variant, and the text size (default, large or larger); the
+choice is kept in the browser and applied before the page paints. Every
+colour pair in both themes meets WCAG AA contrast, no text is set below
+12px, the page has a heading structure and a skip link, and the whole
+dashboard checks clean against axe-core's WCAG 2.2 AA rules.
+
+The **Overview** on the Jobs page is a board of cards (CPU, memory and disk
+free, what running jobs use, captured total, job count, storage free and
+used, collections). Drag a card, or use the arrows on its corner, to reorder;
+× hides it; **Customise** brings hidden cards back or resets the layout. The
+layout is kept in the browser.
+
 ### Finding a job in the list
 
 The bar above the job list narrows it as you type or choose: by name or
