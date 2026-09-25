@@ -139,7 +139,7 @@ res-disk: >-
 idx-java: >-
   Where Java is: the JAVA_HOME folder (the one holding bin/java) or the java executable itself. Leave empty to use JAVA_HOME or the java on the PATH. Java 11 or newer is needed to run the indexer.
 idx-jar: >-
-  The warc-indexer jar that indexes crawls and recordings, built in the repository's warc-indexer folder with mvnw -DskipTests package. Leave empty to use that build.
+  The warc-indexer jar that indexes crawls and recordings, built in the repository's warc-indexer folder with the Maven wrapper there (.\mvnw.cmd -q -DskipTests package on Windows, ./mvnw -q -DskipTests package on Linux or macOS; only Java is needed). Leave empty to use that build. When the jar is missing, the message here says the exact command for this machine.
 idx-config: >-
   The indexer configuration to run with. Leave empty for the swm-indexer.conf beside the jar, the setting the indexing was validated with.
 idx-memory: >-

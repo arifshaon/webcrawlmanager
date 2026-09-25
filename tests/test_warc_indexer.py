@@ -611,3 +611,24 @@ class CollectionRunProgressTests(FakeJarTestCase):
         self.assertEqual(manifest["status"], "running")
         self.assertIn("progress", manifest["jobs"][0])         # written during the run
         self.assertEqual(warc_indexer.read_collection_manifest(root)["status"], "done")
+
+
+class BuildInstructionTests(unittest.TestCase):
+    def test_the_instruction_names_the_wrapper_for_this_operating_system(self):
+        folder = str(warc_indexer._repo_root() / "warc-indexer")
+        text = warc_indexer.build_instruction("nt")
+        self.assertIn(".\\mvnw.cmd -q -DskipTests package", text)
+        self.assertIn(folder, text)
+        text = warc_indexer.build_instruction("posix")
+        self.assertIn("./mvnw -q -DskipTests package", text)
+        self.assertNotIn("mvnw.cmd", text)
+
+    def test_a_missing_jar_is_explained_with_that_instruction(self):
+        with mock.patch.dict(os.environ, {warc_indexer.CMD_ENV: "", warc_indexer.JAR_ENV: "",
+                                          warc_indexer.JAVA_ENV: "", "JAVA_HOME": ""}), \
+                mock.patch("webarc.warc_indexer.shutil.which", return_value=None), \
+                mock.patch.object(warc_indexer, "find_jar", return_value=None):
+            cap = warc_indexer.capability()
+        self.assertIn("mvnw", cap["reason"])
+        self.assertIn("open a terminal in", cap["reason"])
+        self.assertEqual(cap["build"], warc_indexer.build_instruction())

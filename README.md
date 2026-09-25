@@ -1112,8 +1112,12 @@ which are indexed from the WARC itself by **warc-indexer**. A patched copy
 of warc-indexer 3.5.1 lives in [`warc-indexer/`](warc-indexer/README-SWM.md)
 with the fixes SWM's captures exposed: the charset the server declared is
 honoured, and the JSON output carries the WARC path and the record type.
-Build it once (`mvnw -DskipTests package` in that folder; only Java is
-needed) and SWM finds the jar there. Java 11 or newer must be installed.
+Build it once in that folder with the Maven wrapper (`.\mvnw.cmd -q
+-DskipTests package` on Windows, `./mvnw -q -DskipTests package` on Linux or
+macOS; only Java is needed, the wrapper fetches Maven) and SWM finds the jar
+there. When the jar is missing, the dashboard's Settings › Indexer and the
+`index-warc` command state the exact command for the machine they run on.
+Java 11 or newer must be installed.
 
 From the dashboard, every crawl and recording job with WARC files has an
 **Index WARC** button. It runs the jar over the job's WARC files and writes

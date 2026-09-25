@@ -219,8 +219,8 @@ def validate_settings(payload: object) -> dict:
                     f"No java was found at {value}: give the JAVA_HOME folder "
                     "(the one holding bin/java) or the java executable itself.")
             if key == "jar" and not (Path(value).expanduser().is_file() and value.lower().endswith(".jar")):
-                raise ValueError(f"The jar {value} does not exist. Build it in the warc-indexer "
-                                 "folder (mvnw -DskipTests package) or point at a built jar.")
+                raise ValueError(f"The jar {value} does not exist. Point at a built jar, or "
+                                 f"build the repository's: {build_instruction()}.")
             if key == "config" and not Path(value).expanduser().is_file():
                 raise ValueError(f"The configuration file {value} does not exist.")
             if key == "memory" and not _MEMORY.match(value):
@@ -229,6 +229,17 @@ def validate_settings(payload: object) -> dict:
     if not accepted:
         raise ValueError("provide at least one of java, jar, config, memory")
     return accepted
+
+
+def build_instruction(os_name: Optional[str] = None) -> str:
+    """How to build the jar on this machine: the wrapper script for this
+    operating system, run in the repository's warc-indexer folder."""
+    folder = _repo_root() / "warc-indexer"
+    if (os_name or os.name) == "nt":
+        return (f"open a terminal in {folder} and run: .\\mvnw.cmd -q -DskipTests package "
+                "(only Java 11 or newer is needed; the wrapper fetches Maven itself)")
+    return (f"open a terminal in {folder} and run: ./mvnw -q -DskipTests package "
+            "(only Java 11 or newer is needed; the wrapper fetches Maven itself)")
 
 
 def capability(get_setting: GetSetting = None) -> dict:
@@ -253,9 +264,9 @@ def capability(get_setting: GetSetting = None) -> dict:
                             f"{JAR_ENV}) is not there: {dangling}. Correct the path, or "
                             "clear it to use the repository's own build.")
         else:
-            problems.append("The warc-indexer jar was not found. Build it with "
-                            "`mvnw -DskipTests package` in the repository's warc-indexer "
-                            "folder, or set its path under Settings › Indexer.")
+            problems.append(f"The warc-indexer jar was not found. Build it: "
+                            f"{build_instruction()}. Or set the path of a built jar under "
+                            "Settings › Indexer.")
     version = java_version(java) if java else None
     if java and not version:
         problems.append(f"Java at {java} could not be run.")
@@ -269,6 +280,7 @@ def capability(get_setting: GetSetting = None) -> dict:
                 "too. Set the configuration path under Settings › Indexer.")
     return {"available": bool(java and jar and version), "reason": " ".join(problems) or None,
             "note": note, "jar": str(jar) if jar else None, "java": java,
+            "build": build_instruction(),
             "java_version": version, "config": str(config) if config else None,
             "memory": memory_from(get_setting), "settings": settings_from(get_setting)}
 
