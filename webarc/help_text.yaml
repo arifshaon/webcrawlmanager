@@ -9,37 +9,37 @@
 
 # Automated crawl
 f-crawl-name: >-
-  A label for this job in the job list and in the file names it produces. Something you will recognise later, like the site and the month, is best.
+  The job's label in the job list and its file names. Something you will recognise later, like the site and the month.
 f-operator: >-
-  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+  Who is running this job: your library, team or name. Written into the archive so anyone opening it later knows who made it.
 f-seeds: >-
-  The pages the crawl starts from. It opens each one and follows links from there, within the limits set below. One is enough for most sites; add more for separate sections that do not link to each other.
+  The pages the crawl starts from; it follows links from each within the limits below. One is enough for most sites; add more for sections that do not link to each other.
 f-browser-mode: >-
-  Whether you see the browser while it works. Headless runs unseen and suits most sites. Choose a visible browser when a site asks you to log in or pass a check.
+  Headless runs unseen and suits most sites. Choose a visible browser when a site asks you to log in or pass a check.
 f-scope-strategy: >-
-  How far from the starting page the crawl may wander. Same host stays on that website only; wider choices also follow links to related sites.
+  How far from the seed the crawl may go. Same host stays on that website; wider choices also follow links to related sites.
 f-max-depth: >-
-  How many clicks away from the starting page the crawl may go. 0 saves only the starting page, 1 adds the pages it links to, and so on. Keep it small for a quick capture.
+  How many clicks from the seed the crawl may go: 0 saves only the seed page, 1 adds the pages it links to. Keep it small for a quick capture.
 f-max-pages: >-
-  A ceiling on how many pages are saved from each starting page, so a large site cannot run on for hours. The crawl stops when it gets there.
+  A ceiling on pages saved per seed, so a large site cannot run for hours.
 f-exclude: >-
-  Web addresses to skip, one pattern per line. Handy for leaving out downloads, log-out links or endless calendar pages. A page whose address matches is not saved.
+  URL patterns to skip, one regular expression per line: downloads, log-out links, endless calendars.
 f-delay: >-
-  A pause before each page, picked at random between these two numbers. It keeps the crawl polite, so the website is not overloaded and does not block you.
+  A pause before each page, picked at random between these two numbers, so the site is not overloaded and does not block you.
 f-page-timeout: >-
-  How long to wait for a page to finish loading before giving up on it and moving on. Raise it for slow sites.
+  How long to wait for a page to load before moving on. Raise it for slow sites.
 f-wait-until: >-
-  When a page counts as loaded. Network is idle waits until the page has stopped fetching things, which captures more on pages that keep loading after they open.
+  When a page counts as loaded. Network is idle waits until the page stops fetching, which captures more on pages that keep loading.
 f-page-options: >-
-  Switches for how each page is visited. The usual settings are already ticked; change them only if a site needs it.
+  How each page is visited. The usual settings are ticked; change them only if a site needs it.
 f-consent-preference: >-
-  What to click on cookie banners: accept or decline. Either way the banner is closed so the page behind it is captured, and the choice is noted in the record.
+  What to click on cookie banners. The banner is closed either way so the page behind it is captured, and the choice is noted in the record.
 f-warc-size: >-
-  Archive files are split when they reach this size, so no single file becomes too big to copy or open.
+  WARC files are split at this size, so no single file is too big to copy or open.
 f-warc-options: >-
-  Switches for how the archive files are written.
+  How the WARC files are written.
 f-storage: >-
-  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
 
 # Record session
 r-url: >-
@@ -47,11 +47,11 @@ r-url: >-
 r-name: >-
   A label for this recording in the job list and its folder. Left empty, it is taken from the website's name.
 r-operator: >-
-  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+  Who is running this job: your library, team or name. Written into the archive so anyone opening it later knows who made it.
 r-browser: >-
-  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+  Which Chrome does the work. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 r-storage: >-
-  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
 
 # Facebook Page capture
 fb-url: >-
@@ -59,11 +59,11 @@ fb-url: >-
 fb-name: >-
   A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the site and the month, is best. Left empty, one is made up from the target.
 fb-operator: >-
-  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+  Who is running this job: your library, team or name. Written into the archive so anyone opening it later knows who made it.
 fb-browser: >-
-  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+  Which Chrome does the work. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 fb-storage: >-
-  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
 fb-mode: >-
   What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.
 fb-dates: >-
@@ -81,13 +81,13 @@ ig-targets: >-
 ig-name: >-
   A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the site and the month, is best. Left empty, one is made up from the target.
 ig-operator: >-
-  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+  Who is running this job: your library, team or name. Written into the archive so anyone opening it later knows who made it.
 ig-listing: >-
   How the list of a profile's posts is found. Browser scrolls the profile like a person would and needs nothing extra. gallery-dl is a separate tool that can be faster; it must be installed, and if Instagram refuses it the capture falls back to the browser.
 ig-browser: >-
-  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+  Which Chrome does the work. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 ig-storage: >-
-  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
 ig-mode: >-
   What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.
 ig-surfaces: >-
@@ -107,13 +107,13 @@ x-targets: >-
 x-name: >-
   A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the account and the month, is best. Left empty, one is made up from the targets.
 x-operator: >-
-  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+  Who is running this job: your library, team or name. Written into the archive so anyone opening it later knows who made it.
 x-browser: >-
-  Which Chrome does the work. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+  Which Chrome does the work. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 x-search-product: >-
   Which results tab a hashtag or search reads. Latest lists posts newest first as X served them. Top is X's own ranked pick, which changes from one moment and account to the next.
 x-storage: >-
-  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder when this capture belongs somewhere else, such as an external drive.
+  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
 x-mode: >-
   What to collect: posts between two dates, the newest N posts, everything until you stop it or the timeline stops offering new posts, or only what has appeared since the last capture of this target.
 x-surfaces: >-
@@ -129,7 +129,7 @@ x-reply-max: >-
 
 # Settings
 storage-root: >-
-  Where new jobs put their files unless a job names its own folder. Jobs already made are not moved.
+  Where new jobs put their files. Jobs can override this location. Existing jobs are not moved.
 res-cpu: >-
   Below this much spare processing power, you are asked before a new job starts. Around 15 is a sensible starting point.
 res-memory: >-
@@ -139,7 +139,7 @@ res-disk: >-
 idx-java: >-
   Where Java is: the JAVA_HOME folder (the one holding bin/java) or the java executable itself. Leave empty to use JAVA_HOME or the java on the PATH. Java 11 or newer is needed to run the indexer.
 idx-jar: >-
-  The warc-indexer jar that indexes crawls and recordings, built in the repository's warc-indexer folder with the Maven wrapper there (.\mvnw.cmd -q -DskipTests package on Windows, ./mvnw -q -DskipTests package on Linux or macOS; only Java is needed). Leave empty to use that build. When the jar is missing, the message here says the exact command for this machine.
+  The warc-indexer jar, built in the repository's warc-indexer folder with its Maven wrapper (.\mvnw.cmd -q -DskipTests package on Windows, ./mvnw -q -DskipTests package on Linux or macOS). Leave empty to use that build; when it is missing, the message here gives the exact command.
 idx-config: >-
   The indexer configuration to run with. Leave empty for the swm-indexer.conf beside the jar, the setting the indexing was validated with.
 idx-memory: >-
@@ -169,13 +169,13 @@ yt-targets: >-
 yt-name: >-
   A label for this job in the job list and in the folder it writes to. Something you will recognise later, like the channel and the month, is best. Left empty, one is made up from the targets.
 yt-operator: >-
-  Who is running this job: your library, team or your own name. It is written into the archive so anyone opening it years from now knows who made it.
+  Who is running this job: your library, team or name. Written into the archive so anyone opening it later knows who made it.
 yt-browser: >-
-  Which Chrome does the work when a window is needed. Headed is a Chrome that SWM manages and is the usual choice. Native attaches to your own installed Chrome, for the rare site that only behaves there.
+  Which Chrome does the work when a window is needed. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 yt-resolution: >-
   The largest picture size to keep for each video. Video files are big, so a cap keeps a channel capture within a disk. Metadata only keeps everything but the video files themselves.
 yt-storage: >-
-  The folder where this job's files are kept. Leave it empty to use the default folder from Settings. Choose a folder with room: a channel of videos can take hundreds of gigabytes.
+  Where this job's files go. Leave empty for the default folder from Settings. Choose a folder with room: a channel of videos can take hundreds of gigabytes.
 yt-mode: >-
   What to collect: items between two dates, the newest N items on each surface, everything until you stop it or the listing ends, or only what has appeared since the last capture of this target.
 yt-surfaces: >-
@@ -205,9 +205,9 @@ ig-metadata: >-
 
 # Theme-based selection (automated crawl)
 theme: >-
-  Keep only the pages that are about one topic. Every page the crawl opens is judged from its own text, kept or left out, and written to a selection list with the reason, so the collection can be explained later. Without a theme, every page in scope is kept.
+  Keep only the pages about one topic. Each page is judged from its own text, kept or left out, and listed with the reason so the selection can be explained later. Without a theme, every page in scope is kept.
 theme-ai-input: >-
-  How much of a page the AI judge is sent. The default sends the address, headline and a short excerpt and asks for one word, a few hundred tokens per page, which suits a provider with a tokens-per-minute allowance. Address and title only is smaller still but judges from less. The full text asks for reasons and quoted evidence and costs the most.
+  How much of a page the AI judge is sent. The default sends the address, headline and a short excerpt (a few hundred tokens per page). Address and title only is smaller; the full text asks for reasons and evidence and costs the most.
 theme-name: >-
   A short name for the topic, shown on the job and written into the selection list.
 theme-brief: >-
@@ -243,9 +243,9 @@ tai-model: >-
 tai-api-version: >-
   Azure OpenAI only: the API version on the request, such as 2024-10-21. Leave empty for the default.
 tai-max-prompt: >-
-  The most tokens one question to the model may take, counting the theme's text and the page's excerpt. Left at 0, it is sized from the tokens-per-minute allowance, a twentieth of it, so a paced crawl fits. A page's excerpt is trimmed to fit first; long link lists are asked about in several smaller questions.
+  The most tokens one question to the model may take, theme text and page excerpt included. At 0 it is sized from the tokens-per-minute allowance. Long link lists are asked about in several smaller questions.
 tai-tpm: >-
-  The tokens-per-minute allowance your provider gives this deployment, so SWM paces its questions to stay under it and waits when the minute is full; an answer of 429 is waited out too. 0 means no pacing.
+  The tokens-per-minute allowance your provider gives this deployment. SWM paces its questions to stay under it and waits out a 429. 0 means no pacing.
 tai-key: >-
   The API key, kept in this dashboard's own database and never written into a capture. Leave the field empty to keep the stored key; the server's ANTHROPIC_API_KEY environment variable is used when none is stored.
 tai-max-calls: >-
@@ -253,12 +253,12 @@ tai-max-calls: >-
 
 # Collections
 job-collection: >-
-  The collection this job belongs to. Its files are placed under the collection's own directory, and it inherits the collection's description for anything it does not say itself. Every job belongs to one: leave it on Default for a job not filed elsewhere, pick a collection, or choose "New collection…" to make one here.
+  The collection this job belongs to: its files go under the collection's directory and it inherits the collection's description. Leave it on Default, pick one, or make one with New collection….
 c-name: >-
-  What the collection is called in lists and in the files it produces. Its identifier for directories and archive records is taken from this name when it is created and never changes afterwards, so rename freely.
+  The collection's name in lists and files. Its identifier for directories and archive records is fixed when it is created, so rename freely.
 c-storage: >-
-  Where the collection's directory is created. Leave it empty for the default folder from Settings. Every job run against the collection is placed under this directory.
+  Where the collection's directory is created. Leave empty for the default folder from Settings. Every job in the collection is placed under it.
 c-metadata: >-
-  A description of the whole collection, in the same fields a job has. Each job in the collection takes these values for any element it does not set itself, and carries a Relation naming the collection.
+  A description of the whole collection, in the same fields a job has. Each job inherits these values for any element it does not set itself, and carries a Relation naming the collection.
 c-dedup: >-
-  When on, a payload one job of the collection already holds (an image, a stylesheet, a script) is written as a reference to that copy rather than stored again. A job's own replay then brings in the jobs it refers to, and the collection's replay has everything. Deleting a job that others refer into leaves their pages without that content until re-crawled, and the delete warning says how many.
+  When on, a payload one job already holds (an image, a stylesheet, a script) is written as a revisit record pointing at that copy. A job's replay then brings in the jobs it refers to. Deleting a job others refer into leaves their pages without that content until re-crawled; the delete warning says how many.

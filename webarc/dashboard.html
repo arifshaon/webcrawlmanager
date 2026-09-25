@@ -455,7 +455,7 @@
     border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25); pointer-events: none;
     opacity: 0; transition: opacity .1s; }
   #tip-bubble.show { opacity: 1; }
-  .help { display: block; color: var(--muted); font-size: var(--t-xs); margin-top: 5px; }
+  .help { display: block; color: var(--muted); font-size: var(--t-sm); line-height: 1.45; margin-top: 5px; }
   input[type=text], input[type=url], input[type=number], input[type=date], input[type=search], select, textarea {
     font-family: var(--mono); font-size: var(--t-md); border: 1px solid var(--rule);
     background: var(--paper); color: var(--ink); border-radius: 8px; padding: 8px 11px; width: 100%;
@@ -471,7 +471,7 @@
   .check-row { display: flex; align-items: flex-start; gap: 9px; padding-top: 5px; }
   .check-row input { margin-top: 3px; }
   .check-copy strong { display: block; }
-  .check-copy span { color: var(--muted); font-size: var(--t-xs); }
+  .check-copy span { color: var(--muted); font-size: var(--t-sm); }
   .seed-editor-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 8px; }
   .seed-editor-row:last-child { margin-bottom: 0; }
   .remove-seed { min-width: 78px; }
@@ -824,7 +824,7 @@
           </div>
           <div class="section-body">
             <div id="seed-list"></div>
-            <span class="help">All guided-form settings below are applied as shared defaults to every seed.</span>
+            <span class="help">The settings below apply to every seed.</span>
           </div>
         </div>
         <div class="form-section">
@@ -863,7 +863,7 @@
               <label class="field-label" for="f-exclude">Excluded URL patterns <button type="button" class="tip" aria-label="What is this for?" data-help="f-exclude">?</button></label>
               <textarea id="f-exclude" rows="3">\.(zip|exe|dmg|iso)($|\?)
 /logout</textarea>
-              <span class="help">One regular expression per line. Matching URLs will not be crawled.</span>
+              <span class="help">One regular expression per line; matching URLs are not crawled.</span>
             </div>
           </div>
         </div>
@@ -967,7 +967,7 @@
                 <input type="number" id="f-delay-min" min="0" step="0.1" value="1.5" aria-label="Minimum delay">
                 <input type="number" id="f-delay-max" min="0" step="0.1" value="4.0" aria-label="Maximum delay">
               </div>
-              <span class="help">A random delay is selected between the minimum and maximum.</span>
+              <span class="help">A random pause between the two, before each page.</span>
             </div>
             <div class="field">
               <label class="field-label" for="f-page-timeout">Page timeout (seconds) <button type="button" class="tip" aria-label="What is this for?" data-help="f-page-timeout">?</button></label>
@@ -1006,7 +1006,7 @@
                 <option value="decline">Decline where offered — keeps trackers out of the archive</option>
                 <option value="accept">Accept — may pull advertising and analytics into the WARC</option>
               </select>
-              <span class="help">Recorded with the crawl either way: what is clicked changes what is archived.</span>
+              <span class="help">Recorded either way; the choice changes what is archived.</span>
             </div>
           </div>
         </div>
@@ -3707,8 +3707,7 @@ function renderStorageDefault(settings) {
   box.disabled = !choosable;
   $("#storage-save").disabled = !choosable;
   $("#storage-help").textContent = choosable
-    ? `Captures go to ${settings.effective_storage_root}. A crawl that names `
-      + `its own location overrides this; existing crawls are not moved.`
+    ? `Captures go to ${settings.effective_storage_root}. Jobs can override this location. Existing jobs are not moved.`
     : (settings.storage || {}).reason || "";
   document.querySelectorAll(".storage-dir").forEach(field => {
     field.disabled = !choosable;
