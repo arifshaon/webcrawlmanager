@@ -813,3 +813,32 @@ class RebuildLockTests(unittest.TestCase):
             srv._store().set_status(job["id"], "pending")               # launched, not yet running
             pending = client.post(f"/api/collections/{coll['id']}/rebuild-index")
             self.assertEqual(pending.status_code, 409, pending.text)
+
+
+class CollectionReplayTests(ServerTestCase):
+    def test_the_collection_replay_opens_at_the_start_pages(self):
+        from unittest import mock
+        coll = self.client.post("/api/collections", json={"name": "QNL"}).json()
+        for name, url in (("first", "https://a.example/"), ("second", "https://b.example/x")):
+            job = self.client.post("/api/crawls", json={
+                "name": name, "start": "wait", "collection_id": coll["id"],
+                "config": {"operator": "o", "seeds": [{"url": url}]}}).json()
+            (Path(job["output_dir"]) / f"{name}.warc.gz").write_bytes(b"\x1f\x8bxx")
+        with mock.patch("webarc.replay.build_replay_site", return_value=self.tmp / "site") as build, \
+                mock.patch("webarc.replay.build_start_page") as start, \
+                mock.patch("webarc.replay.ReplayServer") as server_cls:
+            server_cls.return_value.is_running.return_value = True
+            server_cls.return_value.replay_url.side_effect = (
+                lambda coll, page="index.html": f"http://replay/{coll}/{page}")
+            srv._PYWB = server_cls.return_value
+            try:
+                response = self.client.post(f"/api/collections/{coll['id']}/replay")
+            finally:
+                srv._PYWB = None
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["replay_url"], "http://replay/collection-qnl/seeds.html")
+        self.assertEqual(response.json()["start_pages"], 2)
+        self.assertEqual(len(build.call_args[0][0]), 2)
+        entries = start.call_args[0][2]
+        self.assertEqual([e["url"] for e in entries], ["https://b.example/x", "https://a.example/"])
+        self.assertEqual(start.call_args[0][1], "QNL")

@@ -2422,20 +2422,33 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return {"ok": True, **result}
 
     @app.post("/api/collections/{collection_id}/replay")
-    def replay_collection(collection_id: int):
-        """Replay every WARC of every job in the collection as one archive."""
+    def replay_collection(collection_id: int, request: Request):
+        """Replay every WARC of every job in the collection as one archive,
+        opened at a page listing the jobs' start pages by website."""
         global _PYWB
-        from .replay import ReplayServer, build_replay_site
+        from .replay import ReplayServer, build_replay_site, build_start_page
         row = _require_collection(collection_id)
         warcs: list[Path] = []
-        for job in _store().crawls_in_collection(collection_id):
+        entries: list[dict] = []
+        jobs = _store().crawls_in_collection(collection_id)
+        for job in sorted(jobs, key=lambda j: j["id"], reverse=True):
             job_dir = _crawl_dir(job)
             warcs += sorted(job_dir.glob("*.warc.gz")) + sorted(job_dir.glob("*.warc"))
+            kind = job.get("kind", "crawl")
+            # a social capture is read through its own pages, served by the
+            # dashboard, when they have been built
+            pages = job_dir / "pages" / "index.html"
+            href = (f"{str(request.base_url).rstrip('/')}/captures/{job['id']}/pages/index.html"
+                    if kind not in _WARC_INDEXABLE_KINDS and pages.is_file() else None)
+            for seed in _store().get_progress(job["id"]):
+                entries.append({"url": seed["seed_url"], "job": job["name"], "kind": kind,
+                                "date": job.get("created_at"), "href": href})
         if not warcs:
             raise HTTPException(409, "no WARC files in this collection yet")
         coll = f"collection-{row['slug']}"
         try:
-            build_replay_site(warcs, _REPLAY_ROOT / coll)
+            site = build_replay_site(warcs, _REPLAY_ROOT / coll)
+            build_start_page(site, row["name"], entries)
         except Exception as exc:
             raise HTTPException(500, f"replay setup failed: {exc}") from exc
         if _PYWB is None or not _PYWB.is_running():
@@ -2446,8 +2459,8 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 raise HTTPException(
                     500, f"the replay server could not start: {exc}") from exc
             _PYWB = server
-        return {"collection": coll, "replay_url": _PYWB.replay_url(coll),
-                "warc_files": len(warcs)}
+        return {"collection": coll, "replay_url": _PYWB.replay_url(coll, "seeds.html"),
+                "start_pages": len(entries), "warc_files": len(warcs)}
 
     @app.get("/api/crawls/{crawl_id}/changes")
     def crawl_changes(crawl_id: int):

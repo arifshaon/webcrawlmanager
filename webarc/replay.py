@@ -371,11 +371,79 @@ _INDEX_HTML = """<!DOCTYPE html>
   <script>{compat_js}</script>
 </head>
 <body>
-  <replay-web-page source="{archive}"{url_attr}
-    embed="default" replayBase="./replay/" loading="eager"></replay-web-page>
+  <script>
+    // A start page (seeds.html) links here with ?url=<page>: that page is
+    // opened rather than the archive's default entry.
+    (function () {{
+      var asked = new URLSearchParams(location.search).get("url");
+      var url = asked || {default_url};
+      var attr = url ? ' url="' + url.replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '"' : "";
+      document.write('<replay-web-page source="{archive}"' + attr +
+        ' embed="default" replayBase="./replay/" loading="eager"></replay-web-page>');
+    }})();
+  </script>
 </body>
 </html>
 """
+
+_START_HTML = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title} — start pages</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; padding: 0 1rem; color: #222; }}
+    h1 {{ font-size: 1.4rem; margin-bottom: .25rem; }}
+    p.lead {{ color: #555; margin-top: 0; }}
+    h2 {{ font-size: 1.05rem; margin: 1.5rem 0 .5rem; border-bottom: 1px solid #ddd; padding-bottom: .25rem; }}
+    ul {{ list-style: none; padding: 0; margin: 0; }}
+    li {{ padding: .35rem 0; display: flex; gap: .75rem; align-items: baseline; flex-wrap: wrap; }}
+    li a {{ word-break: break-all; }}
+    li small {{ color: #666; }}
+    p.all {{ margin-top: 2rem; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  <p class="lead">The pages the collection's jobs were started from. Open one and browse the archive from there; this replay is for checking a capture, not for publication.</p>
+  {sections}
+  <p class="all"><a href="index.html">Every captured URL, as the replay tool lists them</a></p>
+</body>
+</html>
+"""
+
+
+def build_start_page(site_dir: Path, title: str, entries: list[dict]) -> Path:
+    """seeds.html beside a replay site's index.html: the entry pages of the
+    collection grouped by website, newest capture first, each opening the
+    replay at that page. An entry is {url, job, date, kind, href?}: an
+    href (a social capture's own pages, served by the dashboard) is linked
+    as it is; otherwise the replay is opened at the url."""
+    from html import escape
+    from urllib.parse import quote, urlsplit
+
+    groups: dict[str, list[dict]] = {}
+    for entry in entries:
+        host = (urlsplit(entry.get("url") or "").hostname or "other").lower()
+        groups.setdefault(host, []).append(entry)
+    sections = []
+    for host in sorted(groups):
+        items = []
+        for entry in sorted(groups[host], key=lambda e: str(e.get("date") or ""), reverse=True):
+            href = entry.get("href") or ("index.html?url=" + quote(entry["url"], safe=""))
+            note = " · ".join(x for x in (
+                entry.get("kind") if entry.get("kind") not in (None, "crawl") else None,
+                entry.get("job"), str(entry.get("date") or "")[:16].replace("T", " ")) if x)
+            items.append(f'<li><a href="{escape(href, quote=True)}">{escape(entry["url"])}</a>'
+                         f'<small>{escape(note)}</small></li>')
+        sections.append(f"<h2>{escape(host)}</h2><ul>{''.join(items)}</ul>")
+    if not sections:
+        sections.append("<p>No start pages are recorded for this collection's jobs.</p>")
+    path = Path(site_dir) / "seeds.html"
+    path.write_text(_START_HTML.format(title=escape(title), sections="\n  ".join(sections)),
+                    encoding="utf-8")
+    return path
 
 
 def collection_name(crawl_id: int | str) -> str:
@@ -534,7 +602,8 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
         ' (e) => e.waitUntil(self.clients.claim()));\n',
         encoding="utf-8")
 
-    url_attr = f'\n    url="{seed_url}"' if seed_url else ""
+    import json as _json
+    default_url = _json.dumps(seed_url or "").replace("</", "<\\/")
     compat_js = _REPLAY_COMPAT_JS
     if _is_x_seed(seed_url):
         compat_js = _X_SESSION_COOKIES_JS + compat_js
@@ -544,7 +613,7 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
             "__SWM_YOUTUBE_MEDIA__", _json.dumps(youtube_media).replace("</", "<\\/"))
     (site_dir / "index.html").write_text(
         _INDEX_HTML.format(coll=site_dir.name, ui_src=ui_src,
-                           url_attr=url_attr, archive=archive_name,
+                           default_url=default_url, archive=archive_name,
                            compat_js=compat_js),
         encoding="utf-8")
     log.info("Built replay site for %d WARC(s) at %s",
@@ -720,8 +789,8 @@ class ReplayServer:
     def is_running(self) -> bool:
         return self._httpd is not None
 
-    def replay_url(self, coll: str) -> str:
-        return f"http://{self.host}:{self.port}/{coll}/index.html"
+    def replay_url(self, coll: str, page: str = "index.html") -> str:
+        return f"http://{self.host}:{self.port}/{coll}/{page}"
 
     def stop(self) -> None:
         """Stop serving; returns at once, whatever a browser still holds open."""

@@ -138,3 +138,38 @@ class XReplayTests(unittest.TestCase):
         self.assertIn("#movie_player", index)
         self.assertNotIn("__SWM_YOUTUBE_MEDIA__", index)
         self.assertNotIn("swm-youtube-playback", self.index_for("https://www.youtube.com/@qnl"))
+
+
+class StartPageTests(unittest.TestCase):
+    """A collection's replay opens at a page of its jobs' start pages, each
+    opening the archive at that page."""
+
+    def test_the_replay_page_opens_the_page_asked_for_in_the_query(self):
+        from webarc.replay import _INDEX_HTML
+        page = _INDEX_HTML.format(coll="c", ui_src="ui.js", default_url='"https://s/"',
+                                  archive="a.warc.gz", compat_js="")
+        self.assertIn('new URLSearchParams(location.search).get("url")', page)
+        self.assertIn('var url = asked || "https://s/"', page)
+        self.assertIn("document.write('<replay-web-page source=\"a.warc.gz\"'", page)
+
+    def test_the_start_page_groups_the_seeds_by_website_newest_first(self):
+        from webarc.replay import build_start_page
+        with tempfile.TemporaryDirectory() as tmp:
+            path = build_start_page(Path(tmp), "QNL 2026", [
+                {"url": "https://a.example/", "job": "first", "kind": "crawl",
+                 "date": "2026-09-01T10:00:00+00:00"},
+                {"url": "https://a.example/news?x=1&y=2", "job": "second", "kind": "crawl",
+                 "date": "2026-09-02T10:00:00+00:00"},
+                {"url": "https://www.facebook.com/qnl", "job": "fb", "kind": "facebook",
+                 "date": "2026-09-03T10:00:00+00:00",
+                 "href": "http://127.0.0.1:8000/captures/7/pages/index.html"},
+            ])
+            html = path.read_text(encoding="utf-8")
+        self.assertEqual(path.name, "seeds.html")
+        self.assertIn("<h2>a.example</h2>", html)
+        self.assertIn("<h2>www.facebook.com</h2>", html)
+        self.assertLess(html.index("second"), html.index("first"))           # newest first
+        self.assertIn('href="index.html?url=https%3A%2F%2Fa.example%2Fnews%3Fx%3D1%26y%3D2"', html)
+        self.assertIn('href="http://127.0.0.1:8000/captures/7/pages/index.html"', html)
+        self.assertIn("facebook · fb", html)
+        self.assertIn('<a href="index.html">', html)

@@ -867,7 +867,10 @@ Every collection has:
 From the dashboard, the **Collections** page lists every collection with its
 job count by status, size on disk and last activity, and offers *Jobs* (the
 job list filtered to that collection), *Describe* (its metadata), *Replay*
-(every WARC in the collection as one archive) and *Delete*. A new collection
+(every WARC in the collection as one archive, opened at a page listing the
+jobs' start pages by website, newest first, so a curator can walk in from
+where a crawl began rather than from a list of every captured URL) and
+*Delete*. A new collection
 is made on that page, or from any job form with **New collection…** beside
 the collection picker. The job list can be filtered by collection, and each
 job's row names the collection it belongs to.
