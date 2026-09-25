@@ -162,6 +162,8 @@
   header .clock { font-family: var(--mono); font-size: var(--t-sm); color: var(--muted); }
   .shell { display: grid; grid-template-columns: 200px minmax(0, 1fr);
     align-items: start; }
+  .shell > * { min-width: 0; }
+  .help, .msg, .fb-phase, .coll-desc, .cur { overflow-wrap: anywhere; }
   .sidebar { position: sticky; top: 57px; display: flex; flex-direction: column;
     gap: 4px; padding: 20px 12px; border-right: 1px solid var(--rule);
     min-height: calc(100vh - 57px); background: var(--paper); }
@@ -195,7 +197,7 @@
     border-radius: var(--radius); padding: 16px 18px 18px; box-shadow: var(--shadow); }
   .storage-default-row { display: flex; gap: 8px; align-items: center;
     margin-top: 6px; flex-wrap: wrap; }
-  .storage-default-row input { flex: 1 1 320px; font-family: var(--mono);
+  .storage-default-row input { flex: 1 1 200px; min-width: 0; font-family: var(--mono);
     font-size: var(--t-sm); }
   .storage-default .help { display: block; margin-top: 6px; }
   .md-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
@@ -274,8 +276,9 @@
     border-radius: var(--radius); padding: 16px 18px 18px; box-shadow: var(--shadow); }
   .resource-settings .levels { display: flex; gap: 18px; flex-wrap: wrap;
     margin-top: 10px; align-items: flex-end; }
-  .resource-settings .levels label { display: flex; flex-direction: column;
+  .resource-settings .levels label { display: flex; flex-direction: column; min-width: 0; max-width: 100%;
     gap: 4px; font-size: var(--t-sm); color: var(--muted); }
+  .resource-settings .levels input { max-width: 100%; }
   .resource-settings .levels input[type=number] { width: 6em; font-family: var(--mono); }
   .resource-settings .help { display: block; margin-top: 8px; }
   #resource-overlay { display: none; position: fixed; inset: 0; z-index: 998;
@@ -329,7 +332,8 @@
     .fb-phase details { flex-basis:100%; }
     .fb-phase pre { white-space:pre-wrap; word-break:break-word; font-size: var(--t-xs); margin:.3rem 0 0;
       max-height:12rem; overflow:auto; }
-    #indexer-settings input[type=text] { min-width:26rem; max-width:100%; }
+    #indexer-settings input[type=text] { width: min(26rem, 100%); max-width: 100%; }
+    #indexer-settings .levels label { flex: 1 1 100%; }
     #indexer-settings.attention { outline:2px solid #dc2626; outline-offset:4px; border-radius:8px; }
   #busy-overlay { display: none; position: fixed; inset: 0; z-index: 999;
     background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center; }
@@ -374,7 +378,7 @@
   .storage-row button { white-space: nowrap; flex: none; }
   button { font-family: var(--ui); border-radius: 8px; cursor: pointer;
     transition: background .12s, border-color .12s, color .12s, box-shadow .12s; }
-  button.act, button.secondary {
+  button.act, button.secondary, summary.act {
     font-size: var(--t-sm); font-weight: 500; border: 1px solid var(--rule);
     background: var(--paper); color: var(--ink); padding: 7px 12px;
   }
@@ -428,7 +432,7 @@
     display: flex; align-items: center; gap: 14px; padding: 12px 16px;
     background: var(--surface); border-bottom: 1px solid var(--rule);
   }
-  .mode-tabs { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px;
+  .mode-tabs { display: inline-flex; flex-wrap: wrap; max-width: 100%; gap: 2px; padding: 3px; border-radius: 10px;
     background: var(--done-bg); }
   .mode-tab {
     border: 0; border-radius: 8px; padding: 6px 13px; background: transparent;
@@ -501,7 +505,7 @@
     opacity: 0; transition: opacity .1s; }
   #tip-bubble.show { opacity: 1; }
   .help { display: block; color: var(--muted); font-size: var(--t-sm); line-height: 1.45; margin-top: 5px; }
-  input[type=text], input[type=url], input[type=number], input[type=date], input[type=search], select, textarea {
+  input[type=text], input[type=url], input[type=number], input[type=date], input[type=search], input[type=password], select, textarea {
     font-family: var(--mono); font-size: var(--t-md); border: 1px solid var(--rule);
     background: var(--paper); color: var(--ink); border-radius: 8px; padding: 8px 11px; width: 100%;
     transition: border-color .12s, box-shadow .12s;
@@ -535,22 +539,85 @@
     margin-top: 10px; }
   .mode-explanation { padding: 9px 11px; background: var(--surface);
     border-radius: 5px; color: var(--muted); font-size: var(--t-sm); }
+  /* ---- the compact overview: one line of figures, the cards a tap away ---- */
+  .overview-compact { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline;
+    background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 10px 14px; font-family: var(--mono); font-size: var(--t-sm);
+    color: var(--muted); }
+  .overview-compact b { color: var(--ink); font-weight: 600; }
+  .overview-compact b.low { color: var(--stop); }
+  .overview-toggle { font-size: var(--t-sm); padding: 5px 10px; }
+  /* ---- tablet: the sidebar becomes a row of tabs, the overview a strip ---- */
+  @media (max-width: 1024px) {
+    main { padding: 20px 20px 56px; }
+  }
+  @media (max-width: 900px) {
+    body:not(.overview-expanded) #overview { display: none; }
+    body:not(.overview-expanded) #customise { display: none; }
+    #overview-compact[hidden] { display: none; }
+    #overview-compact:not([hidden]) { display: flex; }
+    #overview-toggle:not([hidden]) { display: inline-block; }
+    body.overview-expanded #overview-compact { display: none; }
+  }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
-    .sidebar { position: static; flex-direction: row; min-height: 0;
+    header { padding: 12px 16px; }
+    .sidebar { position: sticky; top: 0; z-index: 4; flex-direction: row; min-height: 0;
       border-right: 0; border-bottom: 1px solid var(--rule);
-      padding: 8px 12px; overflow-x: auto; }
+      padding: 6px 10px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .nav-item { width: auto; white-space: nowrap; }
-    .sidebar { top: 0; }
   }
+  /* ---- phone ---- */
   @media (max-width: 760px) {
-    .storage { grid-template-columns: repeat(2, 1fr); }
-    .crawl .row { grid-template-columns: 4px 1fr auto; }
+    main { padding: 16px 16px 48px; }
+    .crawl .row { grid-template-columns: 4px 1fr auto; padding-right: 12px; }
     .counts { display: none; }
     .form-grid, .inline-fields { grid-template-columns: 1fr; }
     .editor-head { align-items: flex-start; flex-direction: column; }
     .mode-note { margin-left: 0; }
     .form-foot { flex-wrap: wrap; }
+    .guided { padding: 12px; }
+    .actions { padding: 0 12px 12px; }
+    .act-group { flex-wrap: wrap; }
+    .act-group .act { border-radius: 8px; margin-left: 0; }
+    .act-group { gap: 6px; }
+    .seeds { padding: 0 12px 12px; }
+    .coll { padding: 12px; }
+    .cards { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .card { padding: 10px 12px 12px; min-height: 0; }
+    .card .v { font-size: var(--t-lg); }
+  }
+  @media (max-width: 480px) {
+    header { flex-wrap: wrap; gap: 8px 12px; }
+    header .tools { margin-left: auto; }
+    header .clock { display: none; }
+    main { padding: 12px 12px 40px; }
+    .overview-head { flex-wrap: wrap; }
+    .filter-bar > * { flex: 1 1 100%; }
+    .filter-bar .jf-dates { display: flex; }
+    .filter-bar .jf-count { flex-basis: auto; }
+    .filter-bar #jf-search { flex: 1 1 60%; }
+    .filter-bar .jf-toggle { display: inline-block; flex: 0 0 auto; }
+    .filter-bar:not(.open) > :not(#jf-search):not(.jf-toggle):not(.jf-count) { display: none; }
+    .section-head { flex-wrap: wrap; }
+    .section-head .section-hint { flex-basis: 100%; padding-left: 36px; }
+    .advanced > summary .section-hint { padding-left: 0; }
+  }
+  .jf-toggle { display: none; }
+  /* ---- a finger, not a pointer: larger controls, tools always visible ---- */
+  @media (pointer: coarse) {
+    button.act, button.secondary, button.primary, summary.act, .nav-item, .appearance > summary,
+    .customise > summary, .more .menu button, .md-tab { min-height: 44px; }
+    input[type=text], input[type=url], input[type=number], input[type=date], input[type=search],
+    input[type=password], select { min-height: 44px; }
+    .mode-tab { min-height: 44px; }
+    .skip { min-height: 44px; display: inline-flex; align-items: center; }
+    .card-tools { opacity: 1; position: static; margin-left: auto; }
+    .card-tools button { width: 36px; height: 36px; }
+    .section-toggle { width: 44px; height: 44px; }
+    .tip { width: 24px; height: 24px; }
+    .skip:focus { padding: 12px 16px; }
+    .counts a { padding: 8px 0; }
   }
   @media (prefers-reduced-motion: reduce) { .b-running::before { animation: none; } }
 
@@ -658,11 +725,13 @@
   <section class="view" id="view-jobs">
     <div class="overview-head">
       <h2 class="eyebrow">Overview</h2>
+      <button type="button" class="secondary overview-toggle" id="overview-toggle" aria-expanded="false" aria-controls="overview" hidden>Show cards</button>
       <details class="customise" id="customise">
         <summary aria-label="Customise the overview: show, hide and order its cards">Customise</summary>
         <div class="menu" id="customise-menu"></div>
       </details>
     </div>
+    <div class="overview-compact" id="overview-compact" aria-label="Overview summary" hidden></div>
     <div class="cards" id="overview" aria-label="Overview cards"></div>
     <span class="help" id="resources-note"></span>
     <h2 class="eyebrow">Jobs</h2>
@@ -695,6 +764,7 @@
       </span>
       <button type="button" class="secondary" id="jf-clear">Clear</button>
       <span class="jf-count" id="jf-count"></span>
+      <button type="button" class="secondary jf-toggle" id="jf-toggle" aria-expanded="false" aria-controls="job-filters">Filters</button>
     </div>
     <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
   </section>
@@ -3336,8 +3406,44 @@ function cardTitle(id, res) {
 }
 function cardMenuTitle(card) { return `${card.title} (${card.group.toLowerCase()})`; }
 let overviewDragging = null;          // the card id being dragged, while a drag is under way
+// On a narrow screen the overview is one line of figures; the cards, with
+// their customisation, are a tap away, and the choice is kept.
+const OVERVIEW_EXPANDED_KEY = "swm.overview.expanded";
+function overviewExpanded() { try { return localStorage.getItem(OVERVIEW_EXPANDED_KEY) === "1"; } catch (e) { return false; } }
+function setOverviewExpanded(on) {
+  try { localStorage.setItem(OVERVIEW_EXPANDED_KEY, on ? "1" : "0"); } catch (e) {}
+  document.body.classList.toggle("overview-expanded", on);
+  const button = $("#overview-toggle");
+  button.textContent = on ? "Compact view" : "Show cards";
+  button.setAttribute("aria-expanded", on ? "true" : "false");
+}
+function renderOverviewCompact(res, storage, crawls) {
+  const snap = res.snapshot || {};
+  const cpu = snap.cpu || {}, mem = snap.memory || {}, disk = snap.disk || {};
+  const th = res.thresholds || {};
+  const low = (free, limit) => th.enabled !== false && free != null && limit != null && free < limit ? ' class="low"' : "";
+  const measured = snap.measured !== false;
+  const active = crawls.filter(c => ["running","paused","blocked","stopping"].includes(c.status)).length;
+  const waiting = crawls.filter(c => c.status === "waiting").length;
+  $("#overview-compact").innerHTML = [
+    `CPU <b${low(cpu.free_percent, th.cpu_free_percent)}>${!measured || cpu.free_percent == null ? "…" : fmtPercent(cpu.free_percent)}</b> free`,
+    `Memory <b${low(mem.free_percent, th.memory_free_percent)}>${!measured || mem.free_percent == null ? "…" : fmtPercent(mem.free_percent)}</b> free`,
+    `Disk <b${low(disk.free_percent, th.disk_free_percent)}>${fmtBytes(disk.free)}</b> free`,
+    `<b>${active}</b> active job${active === 1 ? "" : "s"}${waiting ? ` · <b>${waiting}</b> waiting` : ""}`,
+  ].map(x => `<span>${x}</span>`).join("");
+}
+$("#overview-toggle").addEventListener("click", () => setOverviewExpanded(!overviewExpanded()));
+$("#jf-toggle").addEventListener("click", () => {
+  const open = $("#job-filters").classList.toggle("open");
+  $("#jf-toggle").setAttribute("aria-expanded", open ? "true" : "false");
+  $("#jf-toggle").textContent = open ? "Hide filters" : "Filters";
+});
+$("#overview-toggle").hidden = false;
+$("#overview-compact").hidden = false;
+setOverviewExpanded(overviewExpanded());
 function renderOverview(res, storage, crawls, collections) {
   lastOverview = [res, storage, crawls, collections];
+  renderOverviewCompact(res, storage, crawls);
   if (overviewDragging) return;        // the refresh must not rebuild the board under a drag
   const bodies = cardBodies(res, storage, crawls, collections);
   const order = overviewOrder();

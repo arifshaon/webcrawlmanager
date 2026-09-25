@@ -1298,6 +1298,19 @@ seeds:
 
 `swm metadata export <job folder>` writes the sheet for a finished job.
 
+### Reading a job's row
+
+The run controls (Pause, Resume, Stop; Start now and Cancel for a waiting
+job) sit together; **Replay** (or **Open pages** and **Replay WARC** for a
+social capture) stands out; Metadata, Index WARC or Index, Selection and
+Page changes are under **More**; **Delete** sits apart at the right and asks
+twice, naming what depends on the job. The automated crawl form shows crawl
+details, seed URLs, and the collection, browser mode and scope strategy;
+link depth and page limits, exclusions, delays, timeout, wait behaviour,
+robots, scrolling, WARC size, deduplication and the storage location are
+under **Advanced crawl settings**. Every section folds with the chevron
+before its title.
+
 ### Appearance and the overview
 
 **Appearance**, top right, sets the theme (match the system, light or dark),
@@ -1311,7 +1324,11 @@ The **Overview** on the Jobs page is a board of cards (CPU, memory and disk
 free, what running jobs use, captured total, job count, storage free and
 used, collections). Drag a card, or use the arrows on its corner, to reorder;
 × hides it; **Customise** brings hidden cards back or resets the layout. The
-layout is kept in the browser.
+layout is kept in the browser. On a tablet or phone the overview is one
+line (CPU, memory and disk free, active jobs) with **Show cards** a tap
+away, the sidebar becomes a row of tabs, the job filters fold behind
+**Filters**, forms go single-column, and every control is at least 44px
+tall under a finger.
 
 ### Finding a job in the list
 
