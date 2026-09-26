@@ -1324,11 +1324,9 @@ The **Overview** on the Jobs page is a board of cards (CPU, memory and disk
 free, what running jobs use, captured total, job count, storage free and
 used, collections). Drag a card, or use the arrows on its corner, to reorder;
 × hides it; **Customise** brings hidden cards back or resets the layout. The
-layout is kept in the browser. On a tablet or phone the overview is one
-line (CPU, memory and disk free, active jobs) with **Show cards** a tap
-away, the sidebar becomes a row of tabs, the job filters fold behind
-**Filters**, forms go single-column, and every control is at least 44px
-tall under a finger.
+layout is kept in the browser. In a narrow window the overview is one
+line (CPU, memory and disk free, active jobs) with **Show cards** beside
+it, the sidebar becomes a row of tabs, and forms go single-column.
 
 ### Finding a job in the list
 

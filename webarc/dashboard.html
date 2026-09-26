@@ -587,38 +587,6 @@
     .card { padding: 10px 12px 12px; min-height: 0; }
     .card .v { font-size: var(--t-lg); }
   }
-  @media (max-width: 480px) {
-    header { flex-wrap: wrap; gap: 8px 12px; }
-    header .tools { margin-left: auto; }
-    header .clock { display: none; }
-    main { padding: 12px 12px 40px; }
-    .overview-head { flex-wrap: wrap; }
-    .filter-bar > * { flex: 1 1 100%; }
-    .filter-bar .jf-dates { display: flex; }
-    .filter-bar .jf-count { flex-basis: auto; }
-    .filter-bar #jf-search { flex: 1 1 60%; }
-    .filter-bar .jf-toggle { display: inline-block; flex: 0 0 auto; }
-    .filter-bar:not(.open) > :not(#jf-search):not(.jf-toggle):not(.jf-count) { display: none; }
-    .section-head { flex-wrap: wrap; }
-    .section-head .section-hint { flex-basis: 100%; padding-left: 36px; }
-    .advanced > summary .section-hint { padding-left: 0; }
-  }
-  .jf-toggle { display: none; }
-  /* ---- a finger, not a pointer: larger controls, tools always visible ---- */
-  @media (pointer: coarse) {
-    button.act, button.secondary, button.primary, summary.act, .nav-item, .appearance > summary,
-    .customise > summary, .more .menu button, .md-tab { min-height: 44px; }
-    input[type=text], input[type=url], input[type=number], input[type=date], input[type=search],
-    input[type=password], select { min-height: 44px; }
-    .mode-tab { min-height: 44px; }
-    .skip { min-height: 44px; display: inline-flex; align-items: center; }
-    .card-tools { opacity: 1; position: static; margin-left: auto; }
-    .card-tools button { width: 36px; height: 36px; }
-    .section-toggle { width: 44px; height: 44px; }
-    .tip { width: 24px; height: 24px; }
-    .skip:focus { padding: 12px 16px; }
-    .counts a { padding: 8px 0; }
-  }
   @media (prefers-reduced-motion: reduce) { .b-running::before { animation: none; } }
 
   /* ---- accessibility helpers ---- */
@@ -764,7 +732,6 @@
       </span>
       <button type="button" class="secondary" id="jf-clear">Clear</button>
       <span class="jf-count" id="jf-count"></span>
-      <button type="button" class="secondary jf-toggle" id="jf-toggle" aria-expanded="false" aria-controls="job-filters">Filters</button>
     </div>
     <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
   </section>
@@ -3433,11 +3400,6 @@ function renderOverviewCompact(res, storage, crawls) {
   ].map(x => `<span>${x}</span>`).join("");
 }
 $("#overview-toggle").addEventListener("click", () => setOverviewExpanded(!overviewExpanded()));
-$("#jf-toggle").addEventListener("click", () => {
-  const open = $("#job-filters").classList.toggle("open");
-  $("#jf-toggle").setAttribute("aria-expanded", open ? "true" : "false");
-  $("#jf-toggle").textContent = open ? "Hide filters" : "Filters";
-});
 $("#overview-toggle").hidden = false;
 $("#overview-compact").hidden = false;
 setOverviewExpanded(overviewExpanded());
