@@ -14,6 +14,8 @@
       if (saved.theme === "light" || saved.theme === "dark") root.setAttribute("data-theme", saved.theme);
       if (saved.contrast === "high") root.setAttribute("data-contrast", "high");
       if (saved.text === "large" || saved.text === "larger") root.setAttribute("data-text", saved.text);
+      var w = parseInt(localStorage.getItem("swm.sidebar.width") || "", 10);
+      if (w >= 150 && w <= 360) root.style.setProperty("--sidebar-w", w + "px");
     } catch (e) { /* storage unavailable: the system's look applies */ }
   })();
 </script>
@@ -160,8 +162,17 @@
     background: linear-gradient(135deg, var(--accent), var(--run)); flex: none; }
   header .mark b { color: var(--accent); font-weight: 700; }
   header .clock { font-family: var(--mono); font-size: var(--t-sm); color: var(--muted); }
-  .shell { display: grid; grid-template-columns: 200px minmax(0, 1fr);
-    align-items: start; }
+  .shell { display: grid; grid-template-columns: var(--sidebar-w, 200px) minmax(0, 1fr);
+    align-items: start; position: relative; }
+  /* the divider between the menu and the content: drag it, or focus it and use the arrow keys */
+  .sidebar-resize { position: fixed; top: 57px; bottom: 0; left: calc(var(--sidebar-w, 200px) - 4px);
+    width: 8px; cursor: col-resize; z-index: 6; background: transparent; border: 0; padding: 0; }
+  .sidebar-resize::after { content: ""; position: absolute; top: 0; bottom: 0; left: 3px; width: 2px;
+    background: transparent; transition: background .12s; }
+  .sidebar-resize:hover::after, .sidebar-resize:focus-visible::after, body.resizing .sidebar-resize::after {
+    background: var(--accent); }
+  .sidebar-resize:focus-visible { outline: none; }
+  body.resizing { cursor: col-resize; user-select: none; }
   .shell > * { min-width: 0; }
   .help, .msg, .fb-phase, .coll-desc, .cur { overflow-wrap: anywhere; }
   .sidebar { position: sticky; top: 57px; display: flex; flex-direction: column;
@@ -181,7 +192,6 @@
   /* the content takes the whole width the window gives it */
   main { margin: 0; padding: 24px 28px 64px; }
   /* forms stay at a readable measure however wide the window */
-  #view-new, #view-settings, #collection-form { max-width: 1100px; }
   .view.hidden { display: none; }
   .view > .eyebrow:first-child { margin-top: 0; }
   .eyebrow {
@@ -492,8 +502,13 @@
   .advanced[open] > summary { border-bottom: 1px dashed var(--rule); }
   .advanced-body { padding: 14px 14px 0; }
   .advanced-body .form-section:last-child { margin-bottom: 14px; }
-  .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-  .field.wide { grid-column: 1 / -1; }
+  /* as many columns as the width allows (two on an ordinary window, more on
+     a wide one); a section with fewer fields stretches them across the row */
+  .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 14px; }
+  /* a wide field takes two columns: the whole row on an ordinary window, half of it on a wide one */
+  .field.wide { grid-column: span 2; }
+  .field.full { grid-column: 1 / -1; }
+  .field.full > .check-row { display: inline-flex; width: min(100%, 420px); vertical-align: top; margin-right: 18px; }
   label.field-label { display: block; font-weight: 600; margin-bottom: 5px; }
   .tip { display: inline-flex; align-items: center; justify-content: center;
     width: 20px; height: 20px; margin-left: 5px; padding: 0; border-radius: 50%;
@@ -548,6 +563,7 @@
   }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
+    .sidebar-resize { display: none; }
     header { padding: 12px 16px; }
     .sidebar { position: sticky; top: 0; z-index: 4; flex-direction: row; min-height: 0;
       border-right: 0; border-bottom: 1px solid var(--rule);
@@ -560,6 +576,7 @@
     .crawl .row { grid-template-columns: 4px 1fr auto; padding-right: 12px; }
     .counts { display: none; }
     .form-grid, .inline-fields { grid-template-columns: 1fr; }
+    .field.wide { grid-column: 1 / -1; }
     .editor-head { align-items: flex-start; flex-direction: column; }
     .mode-note { margin-left: 0; }
     .form-foot { flex-wrap: wrap; }
@@ -670,6 +687,9 @@
   </div>
 </header>
 <div class="shell">
+<div class="sidebar-resize" id="sidebar-resize" role="separator" aria-orientation="vertical"
+  aria-label="Resize the menu: drag, or use the left and right arrow keys; double-click to reset"
+  aria-valuemin="150" aria-valuemax="360" aria-valuenow="200" tabindex="0"></div>
 <nav class="sidebar" aria-label="Sections">
   <button type="button" class="nav-item active" data-view="jobs">Jobs<span class="nav-count" id="nav-active"></span></button>
   <button type="button" class="nav-item" data-view="collections">Collections</button>
@@ -1067,6 +1087,14 @@
               </select>
             </div>
             <div class="field">
+              <label class="field-label" for="f-consent-preference">Consent choice <button type="button" class="tip" aria-label="What is this for?" data-help="f-consent-preference">?</button></label>
+              <select id="f-consent-preference">
+                <option value="decline">Decline where offered — keeps trackers out of the archive</option>
+                <option value="accept">Accept — may pull advertising and analytics into the WARC</option>
+              </select>
+              <span class="help">Recorded either way; the choice changes what is archived.</span>
+            </div>
+            <div class="field full">
               <label class="field-label">Options <button type="button" class="tip" aria-label="What is this for?" data-help="f-page-options">?</button></label>
               <label class="check-row">
                 <input type="checkbox" id="f-obey-robots" checked>
@@ -1084,14 +1112,6 @@
                 <input type="checkbox" id="f-consent" checked>
                 <span class="check-copy"><strong>Dismiss cookie banners</strong><span>Clear consent overlays so the page underneath is captured.</span></span>
               </label>
-            </div>
-            <div class="field">
-              <label class="field-label" for="f-consent-preference">Consent choice <button type="button" class="tip" aria-label="What is this for?" data-help="f-consent-preference">?</button></label>
-              <select id="f-consent-preference">
-                <option value="decline">Decline where offered — keeps trackers out of the archive</option>
-                <option value="accept">Accept — may pull advertising and analytics into the WARC</option>
-              </select>
-              <span class="help">Recorded either way; the choice changes what is archived.</span>
             </div>
           </div>
         </div>
@@ -1189,7 +1209,7 @@
               <button type="button" class="secondary browse-btn" data-target="r-storage">Browse…</button>
             </div>
           </div>
-          <div class="field wide">
+          <div class="field full">
             <div class="rec-warning">
               Everything loaded during the session is written to the archive —
               including cookies, sign-ins, form submissions and private content.
@@ -1324,7 +1344,7 @@
               <div class="cost-warning"><b>Comments are expensive.</b> Facebook paginates comments separately for each post. This can add hundreds of requests, greatly increase runtime and raise the likelihood of throttling or verification.</div>
             </div>
           </div>
-          <div class="field wide">
+          <div class="field full">
             <div class="rec-warning">
               SWM never asks for your Facebook password. Chrome retains its own session cookies in the dedicated local profile; SWM redacts Cookie/Authorization and Set-Cookie headers plus recognised login/session fields before writing WARC. The browser opens with automatic scrolling paused: log in or resolve verification directly in Chrome, make sure the requested Page is open, then select <b>Start / resume scrolling</b>. WARC capture remains active while scrolling is paused.
             </div>
@@ -1472,7 +1492,7 @@
               <div class="cost-warning"><b>Comments are where the rate limit lands.</b> Every post is its own pagination, so a profile of 300 posts with comments on is 300 further request sequences. Expect the run to be paused by Instagram and resumed; it is built for that.</div>
             </div>
           </div>
-          <div class="field wide">
+          <div class="field full">
             <div class="rec-warning">
               Use a dedicated institutional Instagram account for capture, not a personal one: background collection is the pattern Instagram's automation detection acts on, and it acts on the account. Sign in once in the dedicated Instagram browser profile (the window opens the first time a capture needs it); SWM reads that session when a job starts and holds it in memory only. SWM never asks for the password and never writes the session anywhere else.
             </div>
@@ -1619,7 +1639,7 @@
               <div class="cost-warning"><b>Conversations are where the rate limit lands.</b> Every post is its own page and its own pagination. Expect the run to be held by X and to continue when the limit resets; it reads the reset time X sends.</div>
             </div>
           </div>
-          <div class="field wide">
+          <div class="field full">
             <div class="rec-warning">
               Use a dedicated institutional X account for capture, not a personal one: X's checks act on the account. Sign in once in the dedicated X browser profile (the window opens the first time a capture needs it); SWM reads that session when a job starts and holds it in memory only. SWM never asks for the password and never writes the session anywhere else. Signing in by hand is the way that holds up; automating the sign-in form is what draws challenges.
             </div>
@@ -1760,7 +1780,7 @@
               <div class="cost-warning"><b>Comments take time.</b> A video with tens of thousands of comments takes hours through yt-dlp. The cap keeps a run bounded; the record says how many YouTube reported and how many were kept.</div>
             </div>
           </div>
-          <div class="field wide">
+          <div class="field full">
             <div class="rec-warning">
               Use a dedicated institutional Google account for capture, not a personal one. YouTube answers many networks' anonymous requests with a bot check; when it does, the window opens for you to sign in, and SWM lends that session to yt-dlp for the run and deletes the copy at the end. YouTube may restrict an account used this way. Nothing in a capture ever likes, votes, comments or subscribes.
             </div>
@@ -3273,6 +3293,43 @@ $$(".form-section > .section-head").forEach(head => {
   });
   head.insertBefore(button, head.firstChild);
 });
+// The menu's width: drag the divider, or focus it and use the arrow keys
+// (Shift for larger steps); a double-click puts it back. Kept in the browser.
+(function () {
+  const MIN = 150, MAX = 360, DEFAULT = 200, KEY = "swm.sidebar.width";
+  const handle = $("#sidebar-resize");
+  const root = document.documentElement;
+  const current = () => parseInt(getComputedStyle(root).getPropertyValue("--sidebar-w"), 10) || DEFAULT;
+  const set = (w, keep = true) => {
+    w = Math.max(MIN, Math.min(MAX, Math.round(w)));
+    root.style.setProperty("--sidebar-w", w + "px");
+    handle.setAttribute("aria-valuenow", String(w));
+    if (keep) { try { localStorage.setItem(KEY, String(w)); } catch (e) {} }
+  };
+  handle.setAttribute("aria-valuenow", String(current()));
+  handle.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+    const move = ev => set(ev.clientX, false);
+    const up = ev => {
+      set(ev.clientX);
+      document.body.classList.remove("resizing");
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+  handle.addEventListener("keydown", e => {
+    const step = e.shiftKey ? 40 : 10;
+    if (e.key === "ArrowLeft") { set(current() - step); e.preventDefault(); }
+    else if (e.key === "ArrowRight") { set(current() + step); e.preventDefault(); }
+    else if (e.key === "Home") { set(MIN); e.preventDefault(); }
+    else if (e.key === "End") { set(MAX); e.preventDefault(); }
+  });
+  handle.addEventListener("dblclick", () => { set(DEFAULT); try { localStorage.removeItem(KEY); } catch (e) {} });
+})();
 applyAppearance(loadAppearance());
 $("#appearance-form").addEventListener("change", saveAppearance);
 document.addEventListener("click", e => {

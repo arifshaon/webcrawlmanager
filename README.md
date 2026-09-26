@@ -1324,8 +1324,12 @@ The **Overview** on the Jobs page is a board of cards (CPU, memory and disk
 free, what running jobs use, captured total, job count, storage free and
 used, collections). Drag a card, or use the arrows on its corner, to reorder;
 × hides it; **Customise** brings hidden cards back or resets the layout. The
-layout is kept in the browser. In a narrow window the sidebar becomes a
-row of tabs and forms go single-column.
+layout is kept in the browser. Every page uses the width of the window;
+job forms lay their fields out in as many columns as fit. The divider
+between the menu and the content can be dragged (or focused and moved with
+the arrow keys); a double-click resets it, and the width is kept in the
+browser. In a narrow window the menu becomes a row of tabs and forms go
+single-column.
 
 ### Finding a job in the list
 
