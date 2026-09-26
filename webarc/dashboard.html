@@ -404,10 +404,10 @@
   .counts a { padding: 4px 0; display: inline-block; }
   .empty { padding: 40px; text-align: center; color: var(--muted); }
   .coll-chip { background: var(--accent-bg); color: var(--accent); }
-  .coll { display: flex; flex-wrap: wrap; gap: 10px 18px; padding: 14px 18px;
+  .coll { display: flex; flex-direction: column; gap: 12px; padding: 14px 18px;
     border-bottom: 1px solid var(--rule); }
   .coll:last-child { border-bottom: 0; }
-  .coll-main { flex: 1 1 360px; min-width: 0; }
+  .coll-main { min-width: 0; }
   .coll-title { font-weight: 600; font-size: var(--t-md); display: flex; flex-wrap: wrap;
     align-items: baseline; gap: 4px 10px; }
   .coll-slug { font-family: var(--mono); font-size: var(--t-xs); color: var(--faint); font-weight: 400; }
@@ -415,8 +415,8 @@
   .coll-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 8px;
     font-family: var(--mono); font-size: var(--t-sm); color: var(--muted); }
   .coll-meta b { color: var(--ink); font-weight: 600; }
-  .coll-actions { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
-    justify-content: flex-end; flex: 0 1 auto; max-width: 100%; }
+  .coll-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .coll-actions .spacer { flex: 1; }
   .coll-notes { margin-top: 6px; display: grid; gap: 3px; }
   .coll-notes .warn { color: var(--stop); }
   .panel { background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
@@ -539,25 +539,9 @@
     margin-top: 10px; }
   .mode-explanation { padding: 9px 11px; background: var(--surface);
     border-radius: 5px; color: var(--muted); font-size: var(--t-sm); }
-  /* ---- the compact overview: one line of figures, the cards a tap away ---- */
-  .overview-compact { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline;
-    background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius);
-    box-shadow: var(--shadow); padding: 10px 14px; font-family: var(--mono); font-size: var(--t-sm);
-    color: var(--muted); }
-  .overview-compact b { color: var(--ink); font-weight: 600; }
-  .overview-compact b.low { color: var(--stop); }
-  .overview-toggle { font-size: var(--t-sm); padding: 5px 10px; }
   /* ---- tablet: the sidebar becomes a row of tabs, the overview a strip ---- */
   @media (max-width: 1024px) {
     main { padding: 20px 20px 56px; }
-  }
-  @media (max-width: 900px) {
-    body:not(.overview-expanded) #overview { display: none; }
-    body:not(.overview-expanded) #customise { display: none; }
-    #overview-compact[hidden] { display: none; }
-    #overview-compact:not([hidden]) { display: flex; }
-    #overview-toggle:not([hidden]) { display: inline-block; }
-    body.overview-expanded #overview-compact { display: none; }
   }
   @media (max-width: 860px) {
     .shell { grid-template-columns: 1fr; }
@@ -693,13 +677,11 @@
   <section class="view" id="view-jobs">
     <div class="overview-head">
       <h2 class="eyebrow">Overview</h2>
-      <button type="button" class="secondary overview-toggle" id="overview-toggle" aria-expanded="false" aria-controls="overview" hidden>Show cards</button>
       <details class="customise" id="customise">
         <summary aria-label="Customise the overview: show, hide and order its cards">Customise</summary>
         <div class="menu" id="customise-menu"></div>
       </details>
     </div>
-    <div class="overview-compact" id="overview-compact" aria-label="Overview summary" hidden></div>
     <div class="cards" id="overview" aria-label="Overview cards"></div>
     <span class="help" id="resources-note"></span>
     <h2 class="eyebrow">Jobs</h2>
@@ -2958,7 +2940,8 @@ function renderCollections() {
         <button type="button" class="secondary" onclick="replayCollection(${Number(c.id)})">Replay</button>
         <button type="button" class="secondary" onclick="indexCollectionWarcs(${Number(c.id)})" ${Number(c.active_jobs) || (c.warc_index && c.warc_index.status === "running") ? "disabled" : ""} title="Run warc-indexer over every crawl's and recording's WARC files in the collection; each document carries the collection's name">${c.warc_index && c.warc_index.status === "running" ? "Indexing…" : c.warc_index && c.warc_index.status === "done" ? `Re-index WARCs · ${Number(c.warc_index.documents || 0).toLocaleString()}` : c.warc_index && c.warc_index.status === "failed" ? "Index WARCs · retry" : "Index WARCs"}</button>
         <button type="button" class="secondary" onclick="rebuildIndex(${Number(c.id)})" ${Number(c.active_jobs) ? "disabled" : ""} title="Read the collection's WARC files back into its payload index: for jobs made before the index existed, or an index that was lost">Rebuild index</button>
-        <button type="button" class="secondary danger" onclick="delCollection(${Number(c.id)})">Delete</button>
+        <span class="spacer"></span>
+        <button type="button" class="act ghost danger" onclick="delCollection(${Number(c.id)})" title="Delete this collection; you are told what it holds and asked to confirm">Delete</button>
       </div>
     </article>`;
   }).join("");
@@ -3373,39 +3356,8 @@ function cardTitle(id, res) {
 }
 function cardMenuTitle(card) { return `${card.title} (${card.group.toLowerCase()})`; }
 let overviewDragging = null;          // the card id being dragged, while a drag is under way
-// On a narrow screen the overview is one line of figures; the cards, with
-// their customisation, are a tap away, and the choice is kept.
-const OVERVIEW_EXPANDED_KEY = "swm.overview.expanded";
-function overviewExpanded() { try { return localStorage.getItem(OVERVIEW_EXPANDED_KEY) === "1"; } catch (e) { return false; } }
-function setOverviewExpanded(on) {
-  try { localStorage.setItem(OVERVIEW_EXPANDED_KEY, on ? "1" : "0"); } catch (e) {}
-  document.body.classList.toggle("overview-expanded", on);
-  const button = $("#overview-toggle");
-  button.textContent = on ? "Compact view" : "Show cards";
-  button.setAttribute("aria-expanded", on ? "true" : "false");
-}
-function renderOverviewCompact(res, storage, crawls) {
-  const snap = res.snapshot || {};
-  const cpu = snap.cpu || {}, mem = snap.memory || {}, disk = snap.disk || {};
-  const th = res.thresholds || {};
-  const low = (free, limit) => th.enabled !== false && free != null && limit != null && free < limit ? ' class="low"' : "";
-  const measured = snap.measured !== false;
-  const active = crawls.filter(c => ["running","paused","blocked","stopping"].includes(c.status)).length;
-  const waiting = crawls.filter(c => c.status === "waiting").length;
-  $("#overview-compact").innerHTML = [
-    `CPU <b${low(cpu.free_percent, th.cpu_free_percent)}>${!measured || cpu.free_percent == null ? "…" : fmtPercent(cpu.free_percent)}</b> free`,
-    `Memory <b${low(mem.free_percent, th.memory_free_percent)}>${!measured || mem.free_percent == null ? "…" : fmtPercent(mem.free_percent)}</b> free`,
-    `Disk <b${low(disk.free_percent, th.disk_free_percent)}>${fmtBytes(disk.free)}</b> free`,
-    `<b>${active}</b> active job${active === 1 ? "" : "s"}${waiting ? ` · <b>${waiting}</b> waiting` : ""}`,
-  ].map(x => `<span>${x}</span>`).join("");
-}
-$("#overview-toggle").addEventListener("click", () => setOverviewExpanded(!overviewExpanded()));
-$("#overview-toggle").hidden = false;
-$("#overview-compact").hidden = false;
-setOverviewExpanded(overviewExpanded());
 function renderOverview(res, storage, crawls, collections) {
   lastOverview = [res, storage, crawls, collections];
-  renderOverviewCompact(res, storage, crawls);
   if (overviewDragging) return;        // the refresh must not rebuild the board under a drag
   const bodies = cardBodies(res, storage, crawls, collections);
   const order = overviewOrder();
