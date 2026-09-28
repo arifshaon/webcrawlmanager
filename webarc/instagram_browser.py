@@ -1311,6 +1311,29 @@ _WINDOW_DRIVE_JS = r"""
 }
 """
 
+# Open one comment's hidden replies ("View replies (2)", "View all 4
+# replies", "View more replies"), looking only inside the thread. Instagram
+# sends a comment's replies only when this is pressed; an opened comment's
+# control reads "Hide replies" and is left alone.
+_REPLIES_JS = r"""
+() => {
+""" + _POST_ROOT_JS + r"""
+  const thread = window.__swmCommentContainer;
+  const scope = thread && thread.isConnected ? thread : postRoot();
+  const wanted = /^[-—–\s]*view (all |more )?(\d[\d,.]* )?(more )?repl(y|ies)/;
+  for (const el of scope.querySelectorAll('button, [role="button"]')) {
+    const label = (el.getAttribute('aria-label') || el.innerText || '')
+      .trim().toLowerCase();
+    if (!label || label.length > 60 || !wanted.test(label)) continue;
+    const box = el.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) continue;
+    el.click();
+    return true;
+  }
+  return false;
+}
+"""
+
 # Press the post's "load more comments" control, if one is shown. Controls
 # that name comments count anywhere in the post; a bare "+" or a plain
 # "load more" / "view more" only inside the thread itself, since elsewhere
@@ -1325,7 +1348,7 @@ _CLICK_JS = r"""
   for (const el of root.querySelectorAll('button, [role="button"], svg[aria-label]')) {
     const label = (el.getAttribute('aria-label') || el.innerText || '')
       .trim().toLowerCase();
-    if (!label || label.length > 60) continue;
+    if (!label || label.length > 60 || /repl(y|ies)/.test(label)) continue;
     const inThread = thread && thread.isConnected && thread.contains(el);
     if (!named.test(label) && !(inThread && plain.test(label))) continue;
     const target = el.closest('button, [role="button"]') || el;
@@ -1489,7 +1512,9 @@ class _ScrollingComments:
 
     Instagram loads the next page of a thread when its own scroll area is
     wheeled to the bottom, or when its "load more comments" control is
-    pressed. Each round does both, then waits for the page to arrive.
+    pressed; a comment's replies only when its "View replies" is pressed.
+    Each round does all of these (replies only when asked for), one
+    comment's replies at a time, then waits for what arrives.
 
     Pages arrive unevenly, so the thread is given up on by time rather than
     by a count of rounds: after PATIENCE_SECONDS in which nothing new was
@@ -1580,8 +1605,9 @@ class _ScrollingComments:
         self.client._settle(random.uniform(low, high))
 
     def _load_more(self) -> bool:
-        """Wheel the thread, drive it to its bottom, press "load more", and
-        wait for what that asked for. True when anything was done."""
+        """Wheel the thread, drive it to its bottom, press "load more" and,
+        when replies are wanted, one comment's "View replies"; then wait for
+        what that asked for. True when anything was done."""
         page = self.client._page
         before = len(self._pool())
         acted = False
@@ -1615,6 +1641,13 @@ class _ScrollingComments:
                 self._pause(0.7, 1.1)
         except Exception as exc:
             log.debug("Instagram load-more control not pressed: %s", exc)
+        if self.include_replies:
+            try:
+                if page.evaluate(_REPLIES_JS):
+                    acted = True
+                    self._pause(0.7, 1.1)
+            except Exception as exc:
+                log.debug("Instagram replies not opened: %s", exc)
         waited = 0.0
         while len(self._pool()) <= before and waited < self.ARRIVAL_SECONDS:
             self.client._settle(0.2)

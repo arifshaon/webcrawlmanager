@@ -744,9 +744,11 @@ class _LoopPage:
 
     def __init__(self):
         self.evaluated = 0
+        self.scripts = []
 
-    def evaluate(self, *_args):
+    def evaluate(self, script, *_args):
         self.evaluated += 1
+        self.scripts.append(script)
         return None
 
 
@@ -854,6 +856,15 @@ class CommentLoopTests(unittest.TestCase):
 
         self.assertGreater(client.settled, 0)
 
+    def test_replies_are_opened_only_when_asked_for(self):
+        from webarc.instagram_browser import _REPLIES_JS
+        for replies in (True, False):
+            with self.subTest(replies=replies):
+                client = _LoopClient(stall_rounds=1, more=False)
+                list(self.scrolling(client, replies=replies))
+
+                self.assertEqual(_REPLIES_JS in client._page.scripts, replies)
+
     def test_the_engines_stop_reaches_the_browser_through_gallery_dl(self):
         from webarc.instagram_gallery import GalleryListingClient
         inner = InstagramBrowserClient(BrowserConfig(mode="headed"))
@@ -898,6 +909,13 @@ _PERMALINK_PAGE = f"""<!doctype html><html><body style="margin:0">{_NAV}
   <h2>More posts from qnl</h2>
   <article><ul id="grid">{"".join(f"<li>post {n}</li>" for n in range(30))}</ul></article>
 </main></body></html>"""
+
+
+_REPLIES_PAGE = _PERMALINK_PAGE.replace(
+    '<div role="button" id="plus"',
+    '<div role="button" id="opened" onclick="window.clicked=\'opened\'">Hide replies</div>'
+    '<div role="button" id="replies" onclick="window.clicked=\'replies\'">—— View replies (4)</div>'
+    '<div role="button" id="plus"')
 
 
 class CommentScriptTests(unittest.TestCase):
@@ -993,6 +1011,29 @@ class CommentScriptTests(unittest.TestCase):
 
     def test_a_plus_is_not_pressed_before_a_thread_is_found(self):
         page = self.page(_PERMALINK_PAGE)
+
+        self.assertEqual(self.click(page), (False, None))
+
+    def test_a_comments_hidden_replies_are_opened(self):
+        from webarc.instagram_browser import _REPLIES_JS
+        page = self.page(_REPLIES_PAGE)
+        self.thread_of(page)
+
+        self.assertTrue(page.evaluate(_REPLIES_JS))
+        self.assertEqual(page.evaluate("window.clicked"), "replies")
+
+    def test_opened_replies_are_not_closed_again(self):
+        from webarc.instagram_browser import _REPLIES_JS
+        page = self.page(_REPLIES_PAGE.replace('id="replies"', 'id="replies" hidden'))
+        self.thread_of(page)
+
+        self.assertFalse(page.evaluate(_REPLIES_JS))
+        self.assertIsNone(page.evaluate("window.clicked"))
+
+    def test_load_more_leaves_reply_controls_alone(self):
+        page = self.page(_REPLIES_PAGE.replace('id="plus"', 'id="plus" hidden')
+                         .replace("View replies (4)", "View more replies"))
+        self.thread_of(page)
 
         self.assertEqual(self.click(page), (False, None))
 
