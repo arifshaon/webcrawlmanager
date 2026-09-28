@@ -13,6 +13,7 @@ choice, kept with its other appearance settings.
     {"schema": "swm-ui-theme-v1", "name": "Harbour", "version": "1.0",
      "author": "...", "description": "...",
      "icon_style": "mono",            # or "color"
+     "icon_size": "normal",           # or "large": a tile beside a job's name
      "colors": {"light": {"accent": "#0E7490", ...},
                 "dark":  {"accent": "#67E8F9", ...}},
      "icons": {"instagram": "icons/camera.svg"}}   # optional
@@ -58,6 +59,7 @@ ICON_ROLES = ("crawl", "recording", "facebook", "instagram", "x", "youtube",
               "collection")
 MODES = ("light", "dark")
 ICON_STYLES = ("mono", "color")
+ICON_SIZES = ("normal", "large")
 
 MAX_ZIP_BYTES = 2 * 1024 * 1024
 MAX_UNPACKED_BYTES = 5 * 1024 * 1024
@@ -101,6 +103,7 @@ class Theme:
     author: str = ""
     description: str = ""
     icon_style: str = "mono"
+    icon_size: str = "normal"
     colors: dict = field(default_factory=lambda: {m: {} for m in MODES})
     icons: dict = field(default_factory=dict)        # role -> Path
     problems: list = field(default_factory=list)     # what was left out
@@ -111,6 +114,7 @@ class Theme:
             "id": self.id, "name": self.name, "version": self.version,
             "author": self.author, "description": self.description,
             "builtin": self.builtin, "icon_style": self.icon_style,
+            "icon_size": self.icon_size,
             "icons": sorted(self.icons), "modes": [m for m in MODES if self.colors.get(m)],
             "problems": list(self.problems), "warnings": list(self.warnings),
         }
@@ -248,6 +252,11 @@ def load_theme(folder: Path, builtin: bool = False,
         theme.icon_style = style
     else:
         theme.problems.append(f"icon_style {style!r} is not one of {', '.join(ICON_STYLES)}")
+    size = doc.get("icon_size", "normal")
+    if size in ICON_SIZES:
+        theme.icon_size = size
+    else:
+        theme.problems.append(f"icon_size {size!r} is not one of {', '.join(ICON_SIZES)}")
     allowed = set((base.colors["light"] if base else {}) or {})
     colours = doc.get("colors") or {}
     if not isinstance(colours, dict):

@@ -44,6 +44,17 @@ class BuiltInThemeTests(unittest.TestCase):
                 self.assertEqual(theme.warnings, [])
         self.assertEqual(sorted(themes[0].icons), sorted(ICON_ROLES))
 
+    def test_the_tile_themes_draw_their_own_large_colour_icons(self):
+        themes = {t.id: t for t in list_themes(None)}
+
+        for theme_id in ("aurora", "nebula"):
+            with self.subTest(theme_id):
+                theme = themes[theme_id]
+                self.assertEqual((theme.icon_style, theme.icon_size), ("color", "large"))
+                self.assertEqual(sorted(theme.icons), sorted(ICON_ROLES))
+                self.assertEqual(sorted(theme.colors), ["dark", "light"])
+                self.assertEqual(theme.describe()["icon_size"], "large")
+
     def test_the_standard_theme_lists_the_dashboards_own_colours(self):
         """Theme authors start from it, so it must match the page exactly."""
         html = DASHBOARD.read_text(encoding="utf-8")
@@ -131,7 +142,7 @@ class HandMadeFolderTests(unittest.TestCase):
 
     def test_what_fails_is_left_out_and_named(self):
         path = self.folder("harbour", {
-            "name": "Harbour", "icon_style": "sparkly",
+            "name": "Harbour", "icon_style": "sparkly", "icon_size": "huge",
             "colors": {"light": {"accent": "#0E7490", "ink": "url(http://x)", "glow": "#fff"}}},
             {"crawl": ICON, "instagram": b'<svg xmlns="http://www.w3.org/2000/svg" onload="x()"/>'})
 
@@ -141,7 +152,9 @@ class HandMadeFolderTests(unittest.TestCase):
         self.assertEqual(sorted(theme.icons), ["crawl"])
         self.assertEqual(theme.icon_style, "mono")
         joined = " ".join(theme.problems)
-        for named in ("colors.light.ink", "colors.light.glow", "icons/instagram.svg", "icon_style"):
+        self.assertEqual(theme.icon_size, "normal")
+        for named in ("colors.light.ink", "colors.light.glow", "icons/instagram.svg", "icon_style",
+                      "icon_size"):
             self.assertIn(named, joined)
 
     def test_a_missing_or_refused_icon_comes_from_the_standard_theme(self):
@@ -303,7 +316,7 @@ class ServerTests(unittest.TestCase):
     def test_the_list_names_the_themes_and_where_installed_ones_go(self):
         found = self.client.get("/api/appearance/themes").json()
 
-        self.assertEqual([t["id"] for t in found["themes"]], ["default", "midnight"])
+        self.assertEqual([t["id"] for t in found["themes"]], ["default", "aurora", "midnight", "nebula"])
         self.assertEqual(found["roles"], list(ICON_ROLES))
         self.assertEqual(Path(found["folder"]), self.installed.resolve())
 

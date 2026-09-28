@@ -1336,8 +1336,11 @@ single-column.
 
 A theme gives the dashboard its colours and the icon shown for each job type
 (crawl, recording, Facebook, Instagram, X, YouTube) and for a collection.
-SWM ships two: **SWM standard** and **Midnight**, a dark navy and cyan
-palette for the dark colour mode. Choose one under **Appearance → Theme**;
+SWM ships four: **SWM standard**; **Midnight**, a dark navy and cyan
+palette for the dark colour mode; **Aurora**, white cards on a soft
+blue-grey with a vivid blue accent; and **Nebula**, indigo-black with violet
+accents. Aurora and Nebula have light and dark palettes and full-colour
+icon tiles set beside each job's name. Choose one under **Appearance → Theme**;
 the choice is this browser's own, like the rest of Appearance.
 
 **Settings → Dashboard themes** lists the themes with their icons, installs
@@ -1357,7 +1360,7 @@ harbour/
 ```json
 {"schema": "swm-ui-theme-v1", "name": "Harbour", "version": "1.0",
  "author": "Reading Room", "description": "Teal and slate.",
- "icon_style": "mono",
+ "icon_style": "mono", "icon_size": "normal",
  "colors": {"light": {"accent": "#0E7490", "accent-hover": "#155E75"},
             "dark":  {"accent": "#67E8F9"}},
  "icons": {"instagram": "icons/camera.svg"}}
@@ -1371,6 +1374,8 @@ the easiest place to start (download it from Settings). An icon the theme
 leaves out comes from the standard theme. With `"icon_style": "mono"` an
 icon is drawn in its job type's colour, taken from the palette, so it
 follows light, dark and high contrast; with `"color"` it is shown as drawn.
+`"icon_size": "large"` sets each job's icon as a tile beside its name and
+the line below, rather than a small icon before the name.
 High contrast always keeps the dashboard's own colours.
 
 A theme cannot run anything. Colours must be plain colour values (`#hex`,

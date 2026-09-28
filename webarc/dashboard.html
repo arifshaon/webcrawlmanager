@@ -19,6 +19,7 @@
       var theme = /^[a-z0-9][a-z0-9-]{0,39}$/.test(saved.uiTheme || "") ? saved.uiTheme : "default";
       root.setAttribute("data-ui-theme", theme);
       if (saved.iconStyle === "color") root.setAttribute("data-icons", "color");
+      if (saved.iconSize === "large") root.setAttribute("data-icon-size", "large");
       ["crawl", "recording", "facebook", "instagram", "x", "youtube", "collection"].forEach(function (role) {
         root.style.setProperty("--icon-" + role, 'url("/appearance/themes/' + theme + '/icons/' + role + '.svg")');
       });
@@ -487,6 +488,10 @@
     -webkit-mask: var(--icon) center / contain no-repeat; mask: var(--icon) center / contain no-repeat; }
   :root[data-icons="color"] .kind-icon { background: var(--icon) center / contain no-repeat;
     -webkit-mask: none; mask: none; }
+  /* a "large" theme sets a job's icon as a tile beside its name and the line below */
+  :root[data-icon-size="large"] .crawl .row > div:nth-child(2) { display: flow-root; }
+  :root[data-icon-size="large"] .crawl .name .kind-icon { float: left; width: 36px; height: 36px;
+    margin: 2px 12px 0 0; }
   .kind-crawl      { --icon: var(--icon-crawl);      --kind: var(--accent); }
   .kind-recording  { --icon: var(--icon-recording);  --kind: var(--stop); }
   .kind-facebook   { --icon: var(--icon-facebook);   --kind: var(--fb); }
@@ -3346,7 +3351,7 @@ function applyAppearance(a) {
   if (a.theme === "light" || a.theme === "dark") root.setAttribute("data-theme", a.theme); else root.removeAttribute("data-theme");
   if (a.contrast === "high") root.setAttribute("data-contrast", "high"); else root.removeAttribute("data-contrast");
   if (a.text === "large" || a.text === "larger") root.setAttribute("data-text", a.text); else root.removeAttribute("data-text");
-  applyUiTheme(validThemeId(a.uiTheme), a.iconStyle);
+  applyUiTheme(validThemeId(a.uiTheme), a.iconStyle, a.iconSize);
   const form = $("#appearance-form");
   if (!form) return;
   form.theme.value = a.theme === "light" || a.theme === "dark" ? a.theme : "system";
@@ -3358,7 +3363,8 @@ function saveAppearance() {
   const form = $("#appearance-form");
   const chosen = uiThemes.find(t => t.id === form.uiTheme.value);
   const a = {theme: form.theme.value, contrast: form.contrast.checked ? "high" : "normal", text: form.text.value,
-             uiTheme: chosen ? chosen.id : "default", iconStyle: chosen ? chosen.icon_style : "mono"};
+             uiTheme: chosen ? chosen.id : "default", iconStyle: chosen ? chosen.icon_style : "mono",
+             iconSize: chosen ? chosen.icon_size : "normal"};
   try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(a)); } catch (e) { /* per-browser convenience only */ }
   applyAppearance(a);
   renderUiThemes();
@@ -3376,10 +3382,11 @@ function kindIcon(role) {
   const label = KIND_LABELS[role] || role;
   return `<span class="kind-icon kind-${role}" role="img" aria-label="${label}" title="${label}"></span>`;
 }
-function applyUiTheme(id, iconStyle) {
+function applyUiTheme(id, iconStyle, iconSize) {
   const root = document.documentElement;
   root.setAttribute("data-ui-theme", id);
   if (iconStyle === "color") root.setAttribute("data-icons", "color"); else root.removeAttribute("data-icons");
+  if (iconSize === "large") root.setAttribute("data-icon-size", "large"); else root.removeAttribute("data-icon-size");
   ICON_ROLES.forEach(role => root.style.setProperty(`--icon-${role}`, `url("${themeIconUrl(id, role)}")`));
   let link = document.getElementById("ui-theme-css");
   if (id === "default") { if (link) link.remove(); return; }
@@ -3402,8 +3409,9 @@ async function loadUiThemes() {
   select.innerHTML = uiThemes.map(t =>
     `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}${t.builtin ? "" : " (installed)"}</option>`).join("");
   const current = uiThemes.find(t => t.id === validThemeId(saved.uiTheme));
-  if (!current || current.icon_style !== (saved.iconStyle || "mono")) {
-    // a theme removed since, or one whose icon style changed: settle it
+  if (!current || current.icon_style !== (saved.iconStyle || "mono")
+      || current.icon_size !== (saved.iconSize || "normal")) {
+    // a theme removed since, or one whose icons changed: settle it
     select.value = current ? current.id : "default";
     saveAppearance();
     return;
