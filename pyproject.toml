@@ -41,4 +41,5 @@ webarc = "webarc.cli:main"
 packages = ["webarc"]
 
 [tool.setuptools.package-data]
-webarc = ["dashboard.html", "dashboard_hardening.js", "help_text.yaml"]
+webarc = ["dashboard.html", "dashboard_hardening.js", "help_text.yaml",
+          "ui_themes/*/theme.json", "ui_themes/*/icons/*.svg"]

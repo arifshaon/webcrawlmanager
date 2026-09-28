@@ -262,3 +262,5 @@ c-metadata: >-
   A description of the whole collection, in the same fields a job has. Each job inherits these values for any element it does not set itself, and carries a Relation naming the collection.
 c-dedup: >-
   When on, a payload one job already holds (an image, a stylesheet, a script) is written as a revisit record pointing at that copy. A job's replay then brings in the jobs it refers to. Deleting a job others refer into leaves their pages without that content until re-crawled; the delete warning says how many.
+theme-install: >-
+  A theme is a zip of one folder holding theme.json and an icons folder of SVG files, one per job type. Download a theme below to see the layout, change it, give it a new name and install it. Themes cannot run anything: colours must be plain colour values and icons plain drawings, or the theme is refused.

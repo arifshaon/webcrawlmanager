@@ -1313,9 +1313,10 @@ before its title.
 
 ### Appearance and the overview
 
-**Appearance**, top right, sets the theme (match the system, light or dark),
-a high-contrast variant, and the text size (default, large or larger); the
-choice is kept in the browser and applied before the page paints. Every
+**Appearance**, top right, sets the dashboard theme, the colours (match the
+system, light or dark), a high-contrast variant, and the text size (default,
+large or larger); the choice is kept in the browser and applied before the
+page paints. Every
 colour pair in both themes meets WCAG AA contrast, no text is set below
 12px, the page has a heading structure and a skip link, and the whole
 dashboard checks clean against axe-core's WCAG 2.2 AA rules.
@@ -1330,6 +1331,55 @@ between the menu and the content can be dragged (or focused and moved with
 the arrow keys); a double-click resets it, and the width is kept in the
 browser. In a narrow window the menu becomes a row of tabs and forms go
 single-column.
+
+### Dashboard themes
+
+A theme gives the dashboard its colours and the icon shown for each job type
+(crawl, recording, Facebook, Instagram, X, YouTube) and for a collection.
+SWM ships two: **SWM standard** and **Midnight**, a dark navy and cyan
+palette for the dark colour mode. Choose one under **Appearance → Theme**;
+the choice is this browser's own, like the rest of Appearance.
+
+**Settings → Dashboard themes** lists the themes with their icons, installs
+a new one from a `.zip`, downloads any theme as a starting point, and
+removes installed ones. Installed themes are kept in `ui-themes/` beside the
+dashboard's database; a theme folder copied there by hand is picked up too.
+
+A theme is one folder:
+
+```
+harbour/
+  theme.json
+  icons/crawl.svg  recording.svg  facebook.svg  instagram.svg
+        x.svg  youtube.svg  collection.svg
+```
+
+```json
+{"schema": "swm-ui-theme-v1", "name": "Harbour", "version": "1.0",
+ "author": "Reading Room", "description": "Teal and slate.",
+ "icon_style": "mono",
+ "colors": {"light": {"accent": "#0E7490", "accent-hover": "#155E75"},
+            "dark":  {"accent": "#67E8F9"}},
+ "icons": {"instagram": "icons/camera.svg"}}
+```
+
+Only `name` is required. The folder name is the theme's id; a theme
+installed from a zip takes its id from `id` in `theme.json`, or else from
+its name. Colours replace the dashboard's own token by token, separately for
+light and dark; the standard theme's `theme.json` lists every token and is
+the easiest place to start (download it from Settings). An icon the theme
+leaves out comes from the standard theme. With `"icon_style": "mono"` an
+icon is drawn in its job type's colour, taken from the palette, so it
+follows light, dark and high contrast; with `"color"` it is shown as drawn.
+High contrast always keeps the dashboard's own colours.
+
+A theme cannot run anything. Colours must be plain colour values (`#hex`,
+`rgb()`, `hsl()`), so a theme cannot add CSS of its own; icons must be plain
+SVG drawings, with no scripts, event handlers, foreign content or
+references outside the file, and are only ever shown as images. A zip that
+fails any check is refused whole, with the reasons; a folder copied in by
+hand keeps what passes, and Settings says what was left out. Settings also
+flags any colour pair below WCAG AA contrast (4.5:1).
 
 ### Finding a job in the list
 

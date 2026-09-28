@@ -1,0 +1,38 @@
+{
+  "schema": "swm-ui-theme-v1",
+  "name": "Midnight",
+  "version": "1.0",
+  "author": "SWM",
+  "description": "Deep navy with cyan and violet accents, for the dark colour mode. In light mode the standard colours apply; icons are the standard ones.",
+  "icon_style": "mono",
+  "colors": {
+    "dark": {
+      "bg": "#060A14",
+      "paper": "#0D1424",
+      "surface": "#141E35",
+      "ink": "#E8EEF9",
+      "muted": "#B4C0D6",
+      "faint": "#94A3BD",
+      "rule": "#22304B",
+      "accent": "#22D3EE",
+      "accent-hover": "#67E8F9",
+      "accent-bg": "#0B2F3D",
+      "on-accent": "#04121A",
+      "ring": "rgba(34, 211, 238, .35)",
+      "run": "#34D399",
+      "run-bg": "#0B3529",
+      "pause": "#FBBF24",
+      "pause-bg": "#35290A",
+      "stop": "#F87171",
+      "stop-bg": "#40171B",
+      "block": "#C4A5FD",
+      "block-bg": "#2A1B47",
+      "done": "#CBD5E1",
+      "done-bg": "#22304B",
+      "fb": "#93C5FD",
+      "fb-bg": "#1B3354",
+      "ig": "#F0ABFC",
+      "ig-bg": "#3E1745"
+    }
+  }
+}

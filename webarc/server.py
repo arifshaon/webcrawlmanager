@@ -1058,6 +1058,74 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from . import help as help_module
         return help_module.load_help(Path(_store().db_path).resolve().parent)
 
+    # -- dashboard themes: colours and job-type icons, one folder each ----------
+    def _themes_dir() -> Path:
+        from . import appearance
+        return appearance.install_dir(_store().db_path)
+
+    @app.get("/api/appearance/themes")
+    def list_ui_themes():
+        from . import appearance
+        return {"themes": [t.describe() for t in appearance.list_themes(_themes_dir())],
+                "roles": list(appearance.ICON_ROLES),
+                "folder": str(_themes_dir())}
+
+    @app.get("/appearance/themes/{theme_id}/theme.css")
+    def ui_theme_css(theme_id: str):
+        from fastapi.responses import Response
+        from . import appearance
+        theme = appearance.find_theme(theme_id, _themes_dir())
+        if theme is None:
+            raise HTTPException(404, "No such theme")
+        return Response(appearance.stylesheet(theme), media_type="text/css",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/appearance/themes/{theme_id}/icons/{role}.svg")
+    def ui_theme_icon(theme_id: str, role: str):
+        from fastapi.responses import FileResponse
+        from . import appearance
+        path = appearance.icon_path(theme_id, role, _themes_dir())
+        if path is None:
+            raise HTTPException(404, "No such icon")
+        # shown only as an image; opened on its own it still may not run
+        # anything or reach anything
+        return FileResponse(path, media_type="image/svg+xml", headers={
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
+
+    @app.post("/api/appearance/themes")
+    async def install_ui_theme(request: Request, replace: bool = False):
+        """Install a theme from a zip sent as the request body."""
+        from . import appearance
+        data = await request.body()
+        try:
+            theme = appearance.install_zip(data, _themes_dir(), replace=replace)
+        except appearance.ThemeExists as exc:
+            raise HTTPException(409, str(exc))
+        except appearance.ThemeError as exc:
+            raise HTTPException(400, f"The theme was not installed: {exc}")
+        return JSONResponse(status_code=201, content=theme.describe())
+
+    @app.delete("/api/appearance/themes/{theme_id}")
+    def remove_ui_theme(theme_id: str):
+        from . import appearance
+        try:
+            appearance.remove_theme(theme_id, _themes_dir())
+        except appearance.ThemeError as exc:
+            raise HTTPException(404 if "no such" in str(exc) else 400, str(exc))
+        return {"removed": theme_id}
+
+    @app.get("/api/appearance/themes/{theme_id}/download")
+    def download_ui_theme(theme_id: str):
+        from fastapi.responses import Response
+        from . import appearance
+        theme = appearance.find_theme(theme_id, _themes_dir())
+        if theme is None:
+            raise HTTPException(404, "No such theme")
+        return Response(appearance.zip_theme(theme), media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="swm-theme-{theme.id}.zip"'})
+
     @app.get("/api/capabilities")
     def capabilities():
         visible = _recording_capability()
