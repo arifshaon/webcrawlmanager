@@ -782,6 +782,9 @@ class GalleryListingClient:
         ``stopping()`` says whether a stop was requested."""
         self.tick = tick
         self.stopping = stopping
+        forward = getattr(self.inner, "attach_engine_controls", None)
+        if callable(forward):
+            forward(tick, stopping)
 
     def record_listings_to(self, opener: Callable[[str], object]) -> None:
         """``opener(tool)`` gives a place in the package for one listing's
