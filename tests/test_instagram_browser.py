@@ -864,27 +864,45 @@ class CommentLoopTests(unittest.TestCase):
         self.assertTrue(inner.stopping())
 
 
-_THREAD_PAGE = """<!doctype html><html><body style="margin:0">
-<nav><ul><li>Home</li><li>Search</li><li>Explore</li><li>Reels</li><li>Messages</li>
-<li>Notifications</li><li>Profile</li></ul>
+_NAV = """<nav><ul><li>Home</li><li>Search</li><li>Explore</li><li>Reels</li>
+<li>Messages</li><li>Notifications</li><li>Profile</li></ul>
 <div role="button" id="create" onclick="window.clicked='create'">+</div>
-<div role="button" id="feed" onclick="window.clicked='feed'">View all 40 comments</div></nav>
+<div role="button" id="more-nav" onclick="window.clicked='more-nav'">View more</div></nav>"""
+
+_COMMENT_ITEMS = "".join(
+    f"<li style='height:60px'><a href='/p/Cx/c/{n}/'>comment {n}</a></li>"
+    for n in range(20))
+
+# a post opened over a profile: the profile's feed behind, the post in a dialog
+_THREAD_PAGE = f"""<!doctype html><html><body style="margin:0">{_NAV}
+<main><div role="button" id="feed" onclick="window.clicked='feed'">View all 40 comments</div></main>
 <div role="dialog"><article>
   <ul id="carousel"><li>slide</li></ul>
   <div id="thread" style="height:300px;overflow-y:auto">
-    <ul id="comments">%s</ul>
+    <ul id="comments">{_COMMENT_ITEMS}</ul>
     <div role="button" id="plus" onclick="window.clicked='plus'">+</div>
   </div>
   <div role="button" id="labelled" onclick="window.clicked='labelled'">
     <svg aria-label="Load more comments" width="20" height="20"></svg></div>
-</article></div></body></html>""" % "".join(
-    f"<li style='height:60px'><a href='/p/Cx/c/{n}/'>comment {n}</a></li>"
-    for n in range(20))
+</article></div></body></html>"""
+
+# a post's own page, as comments are read from: no article around the post,
+# its comments in a column of their own, and a longer grid of the account's
+# other posts below
+_PERMALINK_PAGE = f"""<!doctype html><html><body style="margin:0">{_NAV}
+<main><div id="post"><div id="media" style="height:200px">photo</div>
+  <div id="thread" style="height:300px;overflow-y:auto">
+    <ul id="comments">{_COMMENT_ITEMS}</ul>
+    <div role="button" id="plus" onclick="window.clicked='plus'">+</div>
+  </div></div>
+  <h2>More posts from qnl</h2>
+  <article><ul id="grid">{"".join(f"<li>post {n}</li>" for n in range(30))}</ul></article>
+</main></body></html>"""
 
 
 class CommentScriptTests(unittest.TestCase):
-    """The in-page scripts against a real page: they look only inside the
-    open post, and a bare "+" counts only inside the thread."""
+    """The in-page scripts against a real page: they find this post's
+    thread, and never press the navigation's controls."""
 
     @classmethod
     def setUpClass(cls):
@@ -910,51 +928,77 @@ class CommentScriptTests(unittest.TestCase):
         page.set_content(html)
         return page
 
-    def test_the_thread_is_the_scroll_area_around_the_comments(self):
+    def thread_of(self, page):
         from webarc.instagram_browser import _COMMENT_CONTAINER_JS
-        page = self.page()
+        point = page.evaluate(_COMMENT_CONTAINER_JS, "Cx")
+        return point, page.evaluate(
+            "window.__swmCommentContainer && window.__swmCommentContainer.id")
 
-        point = page.evaluate(_COMMENT_CONTAINER_JS)
+    def click(self, page):
+        from webarc.instagram_browser import _CLICK_JS
+        return page.evaluate(_CLICK_JS), page.evaluate("window.clicked")
+
+    def test_the_thread_in_a_dialog_is_the_scroll_area_around_the_comments(self):
+        point, found = self.thread_of(self.page())
 
         self.assertTrue(point["inView"])
-        self.assertEqual(page.evaluate("window.__swmCommentContainer.id"), "thread")
+        self.assertEqual(found, "thread")
+
+    def test_on_the_posts_own_page_the_thread_is_found_without_an_article(self):
+        """Comments are read on /p/CODE/, where the post is not in an
+        article and a longer list of other posts follows it."""
+        point, found = self.thread_of(self.page(_PERMALINK_PAGE))
+
+        self.assertTrue(point["inView"])
+        self.assertEqual(found, "thread")
 
     def test_driving_the_thread_scrolls_it_not_the_window(self):
-        from webarc.instagram_browser import _COMMENT_CONTAINER_JS, _COMMENT_DRIVE_JS
-        page = self.page()
-        page.evaluate(_COMMENT_CONTAINER_JS)
+        from webarc.instagram_browser import _COMMENT_DRIVE_JS
+        page = self.page(_PERMALINK_PAGE)
+        self.thread_of(page)
 
         self.assertTrue(page.evaluate(_COMMENT_DRIVE_JS))
         self.assertGreater(page.evaluate("document.getElementById('thread').scrollTop"), 0)
+        self.assertEqual(page.evaluate("window.scrollY"), 0)
+
+    def test_the_last_thread_is_kept_while_it_is_on_the_page(self):
+        page = self.page(_PERMALINK_PAGE)
+        self.thread_of(page)
+        page.evaluate("document.querySelectorAll('#comments a').forEach(a => a.remove())")
+
+        _, found = self.thread_of(page)
+
+        self.assertEqual(found, "thread")
 
     def test_the_plus_inside_the_thread_is_pressed_not_the_create_button(self):
-        from webarc.instagram_browser import _CLICK_JS, _COMMENT_CONTAINER_JS
-        page = self.page()
-        page.evaluate(_COMMENT_CONTAINER_JS)
+        for html in (_THREAD_PAGE, _PERMALINK_PAGE):
+            with self.subTest(page="dialog" if html is _THREAD_PAGE else "permalink"):
+                page = self.page(html)
+                self.thread_of(page)
 
-        self.assertTrue(page.evaluate(_CLICK_JS))
-        self.assertEqual(page.evaluate("window.clicked"), "plus")
+                self.assertEqual(self.click(page), (True, "plus"))
 
     def test_a_labelled_control_is_pressed_by_its_label(self):
-        from webarc.instagram_browser import _CLICK_JS, _COMMENT_CONTAINER_JS
         page = self.page(_THREAD_PAGE.replace('id="plus"', 'id="plus" hidden'))
-        page.evaluate(_COMMENT_CONTAINER_JS)
+        self.thread_of(page)
 
-        self.assertTrue(page.evaluate(_CLICK_JS))
-        self.assertEqual(page.evaluate("window.clicked"), "labelled")
+        self.assertEqual(self.click(page), (True, "labelled"))
 
     def test_nothing_outside_the_post_is_pressed(self):
-        from webarc.instagram_browser import _CLICK_JS
         page = self.page(_THREAD_PAGE.replace('id="plus"', 'id="plus" hidden')
                          .replace('id="labelled"', 'id="labelled" hidden'))
+        self.thread_of(page)
 
-        self.assertFalse(page.evaluate(_CLICK_JS))
-        self.assertIsNone(page.evaluate("window.clicked"))
+        self.assertEqual(self.click(page), (False, None))
 
-    def test_without_a_post_there_is_no_thread_and_nothing_is_pressed(self):
-        from webarc.instagram_browser import _CLICK_JS, _COMMENT_CONTAINER_JS
-        page = self.page(_THREAD_PAGE.split('<div role="dialog">')[0] + "</body></html>")
+    def test_a_plus_is_not_pressed_before_a_thread_is_found(self):
+        page = self.page(_PERMALINK_PAGE)
 
-        self.assertIsNone(page.evaluate(_COMMENT_CONTAINER_JS))
-        self.assertFalse(page.evaluate(_CLICK_JS))
-        self.assertIsNone(page.evaluate("window.clicked"))
+        self.assertEqual(self.click(page), (False, None))
+
+    def test_without_a_thread_that_scrolls_nothing_is_aimed_at(self):
+        point, found = self.thread_of(self.page(
+            _PERMALINK_PAGE.replace("height:300px;overflow-y:auto", "")))
+
+        self.assertIsNone(point)
+        self.assertIsNone(found)

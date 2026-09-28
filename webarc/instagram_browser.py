@@ -1237,42 +1237,48 @@ async ({url, credentials}) => {
 }
 """
 
-# The open post: its dialog over a profile, or the article of a permalink.
-# Comment scripts look only inside it, never at the rest of the page.
+# Where a post's comment scripts look: the dialog when a post is open over
+# a profile, else the page's main column. Instagram's navigation -- its own
+# "+" (create a post) among it -- sits outside both.
 _POST_ROOT_JS = r"""
   const postRoot = () => document.querySelector('div[role="dialog"]')
-      || document.querySelector('main article') || document.querySelector('article');
+      || document.querySelector('main') || document.body;
 """
 
 # Find the element that scrolls the comment thread and say where to aim the
-# wheel. The thread's own links (/p/CODE/c/ID/) mark it best; failing
-# those, the post's longest list. The walk up stops at the post, so the
-# page behind a dialog is never taken for the thread.
+# wheel. This post's own comment links (/p/CODE/c/ID/) mark the thread
+# best; then any comment link, then the dialog's or post's longest list.
+# The last thread found is kept while it is still on the page, so a round
+# in which Instagram is re-rendering it does not lose it.
 _COMMENT_CONTAINER_JS = r"""
-() => {
+(shortcode) => {
 """ + _POST_ROOT_JS + r"""
-  window.__swmCommentContainer = null;
   const root = postRoot();
-  if (!root) return null;
   const scrollable = el => {
     const overflowY = window.getComputedStyle(el).overflowY;
     return (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
         && el.scrollHeight > el.clientHeight + 10;
   };
-  const lists = Array.from(root.querySelectorAll('ul'))
+  const longest = scope => Array.from(scope.querySelectorAll('ul'))
     .sort((a, b) => b.querySelectorAll(':scope > li').length
-                    - a.querySelectorAll(':scope > li').length);
-  const seeds = [root.querySelector('a[href*="/c/"]'), lists[0]];
+                    - a.querySelectorAll(':scope > li').length)[0];
+  const own = shortcode ? Array.from(root.querySelectorAll('a[href*="/c/"]'))
+    .find(a => a.getAttribute('href').includes('/' + shortcode + '/c/')) : null;
+  const dialog = document.querySelector('div[role="dialog"]');
+  const article = root.querySelector('article');
+  const seeds = [own, root.querySelector('a[href*="/c/"]'),
+                 dialog && longest(dialog), article && longest(article)];
   let container = null;
   for (const seed of seeds) {
-    for (let el = seed && seed.parentElement; el; el = el.parentElement) {
+    for (let el = seed && seed.parentElement; el && el !== document.body; el = el.parentElement) {
       if (scrollable(el)) { container = el; break; }
-      if (el === root) break;
     }
     if (container) break;
   }
-  if (!container) return null;
+  const kept = window.__swmCommentContainer;
+  if (!container && kept && kept.isConnected) container = kept;
   window.__swmCommentContainer = container;
+  if (!container) return null;
   const box = container.getBoundingClientRect();
   if (box.width === 0 || box.height === 0) return null;
   const x = box.left + box.width / 2;
@@ -1294,8 +1300,8 @@ _COMMENT_DRIVE_JS = r"""
 }
 """
 
-# Where no thread scrolls on its own -- a narrow permalink, where the
-# comments run down the page -- the window is scrolled instead.
+# Where no thread scrolls on its own -- comments that run down the page --
+# the window is scrolled instead.
 _WINDOW_DRIVE_JS = r"""
 () => {
   const before = window.scrollY;
@@ -1305,22 +1311,23 @@ _WINDOW_DRIVE_JS = r"""
 }
 """
 
-# Press the post's own "load more comments" control, if one is shown. A
-# bare "+" counts only inside the thread: elsewhere it is Instagram's
-# create-a-post button.
+# Press the post's "load more comments" control, if one is shown. Controls
+# that name comments count anywhere in the post; a bare "+" or a plain
+# "load more" / "view more" only inside the thread itself, since elsewhere
+# they are other controls (a "+" in the navigation creates a post).
 _CLICK_JS = r"""
 () => {
 """ + _POST_ROOT_JS + r"""
   const root = postRoot();
-  if (!root) return false;
-  const wanted = /(load|view) more comments|view all [\d.,]+ comments/;
+  const named = /(load|view) more comments|view all [\d.,]+ comments|view comments/;
+  const plain = /^\+$|load more|view more/;
   const thread = window.__swmCommentContainer;
   for (const el of root.querySelectorAll('button, [role="button"], svg[aria-label]')) {
     const label = (el.getAttribute('aria-label') || el.innerText || '')
       .trim().toLowerCase();
     if (!label || label.length > 60) continue;
-    const plus = label === '+' && thread && thread.contains(el);
-    if (!plus && !wanted.test(label)) continue;
+    const inThread = thread && thread.isConnected && thread.contains(el);
+    if (!named.test(label) && !(inThread && plain.test(label))) continue;
     const target = el.closest('button, [role="button"]') || el;
     const box = target.getBoundingClientRect();
     if (box.width === 0 || box.height === 0) continue;
@@ -1579,7 +1586,7 @@ class _ScrollingComments:
         before = len(self._pool())
         acted = False
         try:
-            point = page.evaluate(_COMMENT_CONTAINER_JS)
+            point = page.evaluate(_COMMENT_CONTAINER_JS, self.shortcode)
         except Exception as exc:
             log.debug("Instagram comment thread not located: %s", exc)
             point = None
