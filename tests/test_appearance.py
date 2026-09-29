@@ -104,6 +104,17 @@ class BoardLayoutTests(unittest.TestCase):
         self.assertIn("ofReported(fb.comments_exported, fb.comments_available", self.rows)
         self.assertIn("ofReported(fb.media_captured, fb.media_expected", self.rows)
 
+    def test_no_job_list_container_clips_its_more_menu(self):
+        """A job's More menu opens past the row's (and the list's) bottom edge:
+        neither may clip what overflows it."""
+        css = self.html[:self.html.index("</style>")]
+        for rule in re.findall(r"([^{}]*\.(?:crawl|manifest)\b[^{}]*)\{([^}]*)\}", css):
+            selector, body = rule
+            if "overflow" in body and ".brow" not in selector and ".row" not in selector \
+                    and ".seed" not in selector and ".cur" not in selector:
+                with self.subTest(selector=selector.strip()):
+                    self.assertNotRegex(body, r"overflow\s*:\s*(hidden|clip|auto|scroll)")
+
     def test_one_job_search_and_new_job_in_the_header(self):
         self.assertNotIn('id="board-search"', self.html)
         header = self.html[self.html.index("<header"):self.html.index("</header>")]

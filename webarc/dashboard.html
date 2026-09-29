@@ -891,7 +891,11 @@
   [data-layout="board"]:not([data-jobview="cards"]) .bhead { display: grid; }
   [data-layout="board"]:not([data-jobview="cards"]) .crawl:not(.open) > :not(.brow) { display: none; }
   [data-layout="board"]:not([data-jobview="cards"]) .crawl { border: 1px solid var(--rule); border-radius: 12px;
-    margin-top: 8px; background: var(--paper); overflow: hidden; }
+    margin-top: 8px; background: var(--paper); }
+  /* the row does not clip (its More menu opens past its edge); the summary
+     line rounds its own corners so its hover and status gutter follow them */
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl > .brow { border-radius: 11px; overflow: hidden; }
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl.open > .brow { border-radius: 11px 11px 0 0; }
   [data-layout="board"]:not([data-jobview="cards"]) .crawl:last-child { border-bottom: 1px solid var(--rule); }
   [data-layout="board"]:not([data-jobview="cards"]) .crawl.open > :not(.brow) { padding-left: 18px; padding-right: 18px; }
   [data-layout="board"]:not([data-jobview="cards"]) .crawl.open > .seeds { padding-bottom: 14px; }
