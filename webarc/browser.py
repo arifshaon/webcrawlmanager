@@ -67,8 +67,9 @@ def disable_cache(page: Page):
         cdp = page.context.new_cdp_session(page)
         # without the Network domain enabled on this session the setting only
         # stops revalidation: the memory cache still hands over resources
-        # nobody fetched
-        cdp.send("Network.enable")
+        # nobody fetched. Nothing is read through this session, so it keeps
+        # no copies of response bodies (Playwright's own session reads them).
+        cdp.send("Network.enable", {"maxTotalBufferSize": 0, "maxResourceBufferSize": 0})
         cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
         return cdp
     except Exception as exc:
@@ -271,9 +272,11 @@ class BrowserDriver:
         arrived: dict = {}
 
         def note_document(response) -> None:
+            # a redirect is not the page: only a final answer counts
             try:
                 if response.request.is_navigation_request() \
-                        and response.frame == page.main_frame:
+                        and response.frame == page.main_frame \
+                        and not 300 <= response.status < 400:
                     arrived["response"] = response
             except Exception:
                 pass

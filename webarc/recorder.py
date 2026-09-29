@@ -467,14 +467,19 @@ class RecordingSession:
 
     # -- page lifecycle -----------------------------------------------------
     def _on_page(self, page) -> None:
-        # covers user-opened tabs, popups, and target=_blank links
-        from .browser import disable_cache
+        # covers user-opened tabs, popups, and target=_blank links; once per
+        # page, however it is announced
         if not hasattr(self, "_cache_off"):
             self._cache_off = {}
-        if page not in self._cache_off:
-            self._cache_off[page] = disable_cache(page)
+        if page in self._cache_off:
+            return
+        self._cache_off[page] = None
+        # the listeners first, so no navigation slips past while the cache
+        # is being turned off
         page.on("framenavigated", self._on_frame_navigated)
         page.on("download", self._on_download)
+        from .browser import disable_cache
+        self._cache_off[page] = disable_cache(page)
 
     @staticmethod
     def _download_headers(filename: str) -> dict[str, str]:
@@ -645,6 +650,7 @@ class RecordingSession:
             self._on_page(page)
 
         page = context.pages[0] if context.pages else context.new_page()
+        self._on_page(page)            # set up before it navigates, not when announced
         if navigate:
             try:
                 page.goto(self.start_url, wait_until="load",

@@ -24,6 +24,14 @@ class _Site(SimpleHTTPRequestHandler):
     served: list = []
 
     def do_GET(self):
+        if self.path.startswith("/hang"):
+            time.sleep(8)                     # a page that never arrives in time
+            return
+        if self.path.startswith("/moved"):
+            self.send_response(302)
+            self.send_header("Location", "/hang")
+            self.end_headers()
+            return
         if self.path.startswith("/poll"):
             time.sleep(0.2)
             try:
@@ -116,6 +124,58 @@ class CaptureBrowserTests(unittest.TestCase):
             quiet = driver.visit(page, self.url("a.html"))
             self.assertEqual(quiet.status, 200)
             self.assertFalse(driver.last_unsettled)
+
+    def test_a_redirect_whose_page_never_arrives_is_a_failure_not_a_visit(self):
+        with self.driver(page_timeout=3) as driver:
+            page = driver.new_page(lambda r: None)
+
+            self.assertIsNone(driver.visit(page, self.url("moved")))
+            self.assertFalse(driver.last_unsettled)
+
+    def test_a_recording_counts_every_page_and_archives_what_was_fetched(self):
+        """Three pages opened in a recording share a stylesheet, script and
+        logo: all three pages are counted, and the WARC holds each shared
+        file once in full and then as revisits -- never an empty 304."""
+        from playwright.sync_api import sync_playwright
+        from warcio.archiveiterator import ArchiveIterator
+        from webarc.capture import WarcSession
+        from webarc.config import WarcConfig
+        from webarc.recorder import RecordingSession
+
+        with tempfile.TemporaryDirectory() as out:
+            warc = WarcSession(Path(out), "rec", self.url("a.html"), 1, "test", WarcConfig(dedup=True))
+            session = RecordingSession(self.url("a.html"), BrowserConfig(mode="headless"), warc,
+                                       tick_seconds=0.2)
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True, executable_path=self.chrome)
+                context = browser.new_context()
+                pages = iter(["b.html", "c.html"])
+
+                def person_browses():          # the "person", between the recorder's polls
+                    step = next(pages, None)
+                    if step is None:
+                        return "stop"
+                    context.pages[0].goto(self.url(step), wait_until="load")
+                    context.pages[0].wait_for_timeout(300)
+                    return None
+
+                session.control_poll = person_browses
+                session.run_with_context(context)
+                warc.close()
+                browser.close()
+            records = []
+            for path in Path(out).glob("*.warc.gz"):
+                with open(path, "rb") as f:
+                    records += [(r.rec_type, r.http_headers.get_statuscode(),
+                                 r.rec_headers.get_header("WARC-Target-URI").rsplit("/", 1)[-1])
+                                for r in ArchiveIterator(f) if r.rec_type in ("response", "revisit")]
+
+        self.assertEqual(session.visited, 3)
+        self.assertNotIn("304", [code for _, code, _ in records])
+        for resource in ("style.css", "app.js", "logo.png"):
+            with self.subTest(resource):
+                self.assertEqual(sorted(t for t, _, name in records if name == resource),
+                                 ["response", "revisit", "revisit"])
 
     def test_a_page_that_never_arrives_is_still_a_failure(self):
         probe = socket.socket()
