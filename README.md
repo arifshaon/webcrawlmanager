@@ -1346,7 +1346,10 @@ jobs started each day, the busiest collections, a job table showing what was
 captured against what the platform reported (comments 126 / 128, media
 41 / 41), sorting, a table or card view, and the machine's disk, CPU and
 memory at the foot of the menu. The job table's ⋮ opens a job's actions and
-details. The status chart's colours are fixed rather than themed, chosen so
+details. **New job** sits in the header. Tiles and panels can be dragged by
+the handle on their top edge (tiles among tiles, panels among panels) or
+hidden with its ×; **Customise** orders them by keyboard, brings hidden ones
+back and resets the layout, which is kept in the browser. The status chart's colours are fixed rather than themed, chosen so
 every pair stays distinct for colour-blind readers, and its counts are
 always written beside it; the activity chart can be shown as a table. Choose one under **Appearance → Theme**;
 the choice is this browser's own, like the rest of Appearance.

@@ -747,7 +747,7 @@
   [data-layout="board"] .jf-count { display: none; }
   [data-layout="board"] .filter-bar input, [data-layout="board"] .filter-bar .jf-date { font-family: var(--ui); }
   [data-layout="board"] body { font-size: var(--t-md); }
-  /* header: the mark, a search across the jobs, the clock */
+  /* header: the mark, then New job, the clock and Appearance on the right */
   [data-layout="board"] header { padding: 9px 24px; min-height: 57px; gap: 20px; }
   [data-layout="board"] header .mark { font-size: calc(19px * var(--scale)); letter-spacing: -.015em; }
   [data-layout="board"] header .mark::before { width: 30px; height: 30px; border-radius: 0;
@@ -755,14 +755,6 @@
     -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z'/%3E%3C/svg%3E") center / contain no-repeat;
     mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z'/%3E%3C/svg%3E") center / contain no-repeat; }
   [data-layout="board"] header .clock { font-family: var(--ui); font-variant-numeric: tabular-nums; }
-  .board-search { flex: 0 1 520px; margin: 0 auto; display: flex; align-items: center; gap: 10px;
-    border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); padding: 0 12px;
-    color: var(--muted); }
-  .board-search svg { width: 18px; height: 18px; flex: none; }
-  .board-search input { border: 0; background: transparent; padding: 9px 0; font: inherit;
-    font-size: var(--t-md); color: var(--ink); width: 100%; min-width: 0; }
-  .board-search input:focus { outline: none; }
-  .board-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
   /* the menu: icons, counts, and the machine's state at the foot */
   [data-layout="board"] .sidebar { padding: 18px 12px; gap: 6px; }
   [data-layout="board"] .nav-item { padding: 10px 14px; gap: 12px; font-size: calc(15px * var(--scale));
@@ -785,8 +777,11 @@
   .side-card .line b { color: var(--ink); font-weight: 600; }
   [data-layout="board"] main { padding: 20px 24px 64px; }
   /* ---- stat tiles and panels ---- */
-  .board-top { display: grid; gap: 16px; margin-bottom: 18px; }
-  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 16px; align-items: stretch; }
+  .board-top { display: grid; gap: 22px; margin-bottom: 18px; }
+  .tiles, .panels { display: flex; flex-wrap: wrap; gap: 22px 16px; align-items: stretch; }
+  .tiles > .tile { flex: 1 1 0; min-width: min(100%, 220px); }
+  .panels > .panel { flex: 1 1 0; min-width: min(100%, 320px); }
+  .panels > .panel-activity { flex-grow: 1.4; }
   .tile { position: relative; display: flex; gap: 14px; align-items: flex-start; padding: 18px;
     border-radius: 16px; border: 1px solid var(--rule); min-width: 0; box-shadow: var(--shadow);
     background: linear-gradient(135deg, color-mix(in srgb, var(--tile) var(--tile-mix), var(--paper)), var(--paper) 75%); }
@@ -800,19 +795,39 @@
   .tile .spark { position: absolute; right: 16px; top: 16px; width: 88px; height: 36px; overflow: visible; }
   .tile-jobs { --tile: var(--block); } .tile-active { --tile: var(--run); }
   .tile-colls { --tile: var(--ig); } .tile-pages { --tile: var(--pause); }
-  .new-job-btn { align-self: start; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
-    background: var(--accent); color: var(--on-accent); border: 0; border-radius: 12px;
-    padding: 12px 20px; font-size: calc(16px * var(--scale)); font-weight: 600;
+  .new-job-btn { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+    background: var(--accent); color: var(--on-accent); border: 0; border-radius: 10px;
+    padding: 8px 16px; font-size: calc(15px * var(--scale)); font-weight: 600;
     box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
   .new-job-btn:hover { background: var(--accent-hover); }
-  .new-job-btn svg { width: 20px; height: 20px; }
-  .panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
-  .panel { background: var(--paper); border: 1px solid var(--rule); border-radius: 16px; padding: 18px 20px;
+  .new-job-btn svg { width: 18px; height: 18px; }
+  .panel { position: relative; background: var(--paper); border: 1px solid var(--rule); border-radius: 16px; padding: 18px 20px;
     box-shadow: var(--shadow); min-width: 0; }
+  .board-head { display: flex; align-items: center; gap: 12px; margin: 0 0 18px; }
+  .board-head .eyebrow { margin: 0; font-family: var(--ui); }
+  /* a card's handle: a pill on its top edge, shown on hover or focus, that
+     never covers the card's content; ordering by keyboard is in Customise */
+  .bcard-tools { position: absolute; top: -13px; left: 50%; transform: translateX(-50%); z-index: 2;
+    display: flex; align-items: center; gap: 2px; padding: 1px 3px; border-radius: 999px;
+    background: var(--paper); border: 1px solid var(--rule); box-shadow: var(--shadow);
+    opacity: 0; transition: opacity .12s; }
+  .bcard:hover > .bcard-tools, .bcard:focus-within > .bcard-tools, .bcard.dragging > .bcard-tools { opacity: 1; }
+  .bcard-tools .grip { cursor: grab; color: var(--muted); padding: 0 8px; font-size: 15px; letter-spacing: -1px; }
+  .bcard-tools button { font: inherit; font-size: var(--t-sm); line-height: 1; width: 24px; height: 24px;
+    border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
+  .bcard-tools button:hover { background: var(--surface); color: var(--ink); }
+  #board-customise-menu .row button.icon { width: 30px; padding: 4px 0; }
+  #board-customise-menu .row.is-hidden span { color: var(--muted); text-decoration: line-through; }
+  #board-customise-menu .menu-group { font-weight: 600; margin-top: 4px; }
+  .bcard.dragging { opacity: .5; cursor: grabbing; }
+  .bcard.drop-before { box-shadow: -4px 0 0 var(--accent), var(--shadow); outline: 2px solid var(--accent); outline-offset: 2px; }
+  .bcard.drop-after { box-shadow: 4px 0 0 var(--accent), var(--shadow); outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { .bcard-tools { transition: none; } }
   .panel-head { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
   .panel-head h2 { margin: 0; font-size: calc(17px * var(--scale)); font-weight: 600; color: var(--ink); }
-  .panel-head .panel-tool { margin-left: auto; }
+  .panel-head .panel-tool { margin-left: auto; white-space: nowrap; flex: none; }
   .panel-sub { font-size: var(--t-sm); color: var(--muted); font-weight: 400; }
+  .panel-head h2 .panel-sub { display: block; margin-top: 2px; }
   .donut-wrap { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
   .donut { width: 136px; height: 136px; flex: none; }
   .donut .total { font-size: 26px; font-weight: 700; fill: var(--ink); }
@@ -906,17 +921,10 @@
     font-size: 20px; line-height: 1; display: grid; place-items: center; }
   .kebab:hover, .kebab[aria-expanded="true"] { background: var(--surface); color: var(--ink); }
   /* narrower windows: tiles and panels wrap, and the list shows as cards */
-  @media (max-width: 1180px) {
-    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .tiles .new-job-btn { grid-column: 1 / -1; justify-self: start; }
-    .panels { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-    .panels .panel-activity { grid-column: 1 / -1; order: 3; }
-  }
   @media (max-width: 1000px) {
     [data-layout="board"] .crawl > .row { display: grid !important; }
     [data-layout="board"] .brow, [data-layout="board"] .bhead, .view-toggle { display: none !important; }
     [data-layout="board"] .crawl:not(.open) > :not(.brow):not(.row) { display: revert !important; }
-    .panels { grid-template-columns: minmax(0, 1fr); }
   }
   @media (forced-colors: active) {
     .cols .bar, .side-card .meter span { forced-color-adjust: none; background: CanvasText; }
@@ -927,8 +935,8 @@
 <a class="skip" href="#main">Skip to content</a>
 <header>
   <h1 class="mark">Simple Webcrawl Manager <b>(SWM)</b></h1>
-  <label class="board-search board-only"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input type="search" id="board-search" placeholder="Search jobs by name or #id" aria-label="Search jobs by name or number" autocomplete="off"></label>
   <div class="tools">
+    <button type="button" class="new-job-btn board-only" onclick="showView('new')"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New job</button>
     <span class="clock" id="clock" role="timer" aria-label="Current time, UTC"></span>
     <details class="appearance" id="appearance">
       <summary aria-label="Appearance: theme, colours, contrast and text size">Appearance</summary>
@@ -973,6 +981,13 @@
 </nav>
 <main id="main">
   <section class="view" id="view-jobs">
+    <div class="board-head board-only">
+      <h2 class="eyebrow">Overview</h2>
+      <details class="customise" id="board-customise">
+        <summary aria-label="Customise the overview: show, hide and order its tiles and panels">Customise</summary>
+        <div class="menu" id="board-customise-menu"></div>
+      </details>
+    </div>
     <div class="board-top board-only" id="board-top"></div>
     <div class="overview-head classic-only">
       <h2 class="eyebrow">Overview</h2>
@@ -3777,7 +3792,7 @@ $("#appearance-form").addEventListener("change", saveAppearance);
 loadUiThemes();
 document.addEventListener("click", e => {
   if (!e.target.isConnected) return;          // a button the click itself re-rendered is not "outside"
-  ["#appearance", "#customise"].forEach(sel => { const d = $(sel); if (d && d.open && !d.contains(e.target)) d.open = false; });
+  ["#appearance", "#customise", "#board-customise"].forEach(sel => { const d = $(sel); if (d && d.open && !d.contains(e.target)) d.open = false; });
   $$("details.more[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; });
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") { $$("details[open]").forEach(d => { if (d.classList.contains("appearance") || d.classList.contains("customise")) d.open = false; }); } });
@@ -4236,6 +4251,119 @@ function socialPosts(c) {
   return (Number(d.posts_exported) || 0) + (Number(d.videos_exported) || 0);
 }
 let lastBoardHtml = "";
+// which tiles and panels the board shows, and in what order; kept in this
+// browser. Tiles and panels are ordered within their own row.
+const BOARD_KEY = "swm.board";
+const BOARD_CARDS = [
+  {id: "jobs", group: "tiles", title: "Total jobs"},
+  {id: "active", group: "tiles", title: "Active jobs"},
+  {id: "colls", group: "tiles", title: "Collections tile"},
+  {id: "pages", group: "tiles", title: "Pages and posts"},
+  {id: "status", group: "panels", title: "Job status"},
+  {id: "activity", group: "panels", title: "Recent activity"},
+  {id: "collections", group: "panels", title: "Collections panel"},
+];
+const boardTitle = id => (BOARD_CARDS.find(c => c.id === id) || {title: id}).title;
+let boardLayout = (() => {
+  try {
+    const v = JSON.parse(localStorage.getItem(BOARD_KEY) || "null");
+    if (v && Array.isArray(v.order) && Array.isArray(v.hidden)) return v;
+  } catch (e) {}
+  return {order: BOARD_CARDS.map(c => c.id), hidden: []};
+})();
+let boardDragging = null;          // the card being dragged, while a drag is under way
+function boardOrder(group) {
+  const ids = BOARD_CARDS.filter(c => c.group === group).map(c => c.id);
+  const order = boardLayout.order.filter(id => ids.includes(id));
+  ids.forEach(id => { if (!order.includes(id)) order.push(id); });   // one added since
+  return order;
+}
+function saveBoard() {
+  boardLayout = {order: [...boardOrder("tiles"), ...boardOrder("panels")],
+                 hidden: boardLayout.hidden.filter(id => BOARD_CARDS.some(c => c.id === id))};
+  try { localStorage.setItem(BOARD_KEY, JSON.stringify(boardLayout)); } catch (e) {}
+  renderBoard(true);
+}
+function boardMove(id, delta) {
+  const group = (BOARD_CARDS.find(c => c.id === id) || {}).group;
+  const order = boardOrder(group);
+  const i = order.indexOf(id), j = i + delta;
+  if (i < 0 || j < 0 || j >= order.length) return;
+  boardPlace(id, delta < 0 ? order[j] : order[j + 1] || null);
+  saveBoard();
+  const menu = $("#board-customise-menu");
+  const same = menu.querySelector(`[data-move="${id}:${delta}"]:not([disabled])`)
+    || menu.querySelector(`[data-move="${id}:${-delta}"]`);
+  if (same) same.focus();
+}
+function boardPlace(id, beforeId) {
+  const group = (BOARD_CARDS.find(c => c.id === id) || {}).group;
+  const order = boardOrder(group).filter(x => x !== id);
+  const at = beforeId ? order.indexOf(beforeId) : order.length;
+  order.splice(at < 0 ? order.length : at, 0, id);
+  const other = group === "tiles" ? boardOrder("panels") : boardOrder("tiles");
+  boardLayout.order = group === "tiles" ? [...order, ...other] : [...other, ...order];
+}
+function boardHide(id) { if (!boardLayout.hidden.includes(id)) boardLayout.hidden.push(id); saveBoard(); focusToggle(id); }
+function boardShow(id) { boardLayout.hidden = boardLayout.hidden.filter(x => x !== id); saveBoard(); focusToggle(id); }
+function focusToggle(id) {
+  const toggle = $(`#board-customise-menu [data-toggle="${id}"]`);
+  if (toggle && $("#board-customise").open) toggle.focus();
+}
+function boardReset() { boardLayout = {order: BOARD_CARDS.map(c => c.id), hidden: []}; saveBoard(); }
+// Dragging: a tile moves among the tiles, a panel among the panels. It lands
+// where it is dropped -- before a card that comes earlier, after one that
+// comes later, at the end on empty space in its row. The board is not
+// rebuilt while a drag is under way; the arrows do the same by keyboard.
+function wireBoardDrag(top) {
+  const cards = () => [...top.querySelectorAll(".bcard")];
+  const clearMarks = () => cards().forEach(c => c.classList.remove("drop-before", "drop-after"));
+  const sameRow = card => boardDragging && card.dataset.group === boardDragging.group;
+  const placement = card => {
+    const row = [...card.parentElement.querySelectorAll(".bcard")].map(c => c.dataset.card);
+    return row.indexOf(boardDragging.id) > row.indexOf(card.dataset.card) ? "before" : "after";
+  };
+  cards().forEach(card => {
+    card.addEventListener("dragstart", e => {
+      if (e.target !== card) return;
+      boardDragging = {id: card.dataset.card, group: card.dataset.group};
+      e.dataTransfer.setData("text/plain", card.dataset.card);
+      e.dataTransfer.effectAllowed = "move";
+      setTimeout(() => card.classList.add("dragging"), 0);
+    });
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging"); clearMarks(); boardDragging = null;
+      renderBoard(true);                    // catch up on what the refresh skipped
+    });
+    card.addEventListener("dragover", e => {
+      if (!sameRow(card) || boardDragging.id === card.dataset.card) return;
+      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+      clearMarks(); card.classList.add(placement(card) === "before" ? "drop-before" : "drop-after");
+    });
+    card.addEventListener("drop", e => {
+      if (!sameRow(card)) return;
+      e.preventDefault(); e.stopPropagation();
+      const {id} = boardDragging;
+      if (id !== card.dataset.card) {
+        const row = [...card.parentElement.querySelectorAll(".bcard")].map(c => c.dataset.card);
+        const before = placement(card) === "before" ? card.dataset.card : row[row.indexOf(card.dataset.card) + 1] || null;
+        boardPlace(id, before === id ? null : before);
+      }
+      boardDragging = null; saveBoard();
+    });
+  });
+  top.querySelectorAll("[data-group].tiles, [data-group].panels").forEach(row => {
+    row.addEventListener("dragover", e => {
+      if (boardDragging && row.dataset.group === boardDragging.group) { e.preventDefault(); }
+    });
+    row.addEventListener("drop", e => {
+      if (!boardDragging || row.dataset.group !== boardDragging.group) return;
+      e.preventDefault();
+      boardPlace(boardDragging.id, null);
+      boardDragging = null; saveBoard();
+    });
+  });
+}
 function renderBoard(force) {
   const top = $("#board-top");
   if (!top || !isBoard()) return;
@@ -4250,37 +4378,69 @@ function renderBoard(force) {
     ? socialPosts(c) : Number((c.totals || {}).visited) || 0), 0);
   const activeColls = collections.reduce((n, c) => n + (Number(c.active_jobs) || 0), 0);
   const trend = jobsPerDay(crawls, 14).map(d => d.count);
-  const tile = (cls, icon, value, label, sub, spark = "") => `<div class="tile ${cls}">
+  const tile = (id, cls, icon, value, label, sub, spark = "") => ({id, html: `
       <span class="tile-icon" aria-hidden="true">${uiIcon(icon)}</span>
       <div class="tile-body"><span class="tile-value">${value}</span><span class="tile-label">${label}</span>
-        <span class="tile-sub">${sub}</span></div>${spark}</div>`;
+        <span class="tile-sub">${sub}</span></div>${spark}`, cls: `tile ${cls}`});
   const groups = STATUS_GROUPS.map(g => ({...g, count: count(g.of)}));
   const busiest = [...collections].sort((a, b) => String(b.last_activity || "").localeCompare(String(a.last_activity || ""))).slice(0, 3);
-  const html = `<div class="tiles">
-      ${tile("tile-jobs", "jobs", crawls.length, "Total jobs", `${active} active · ${completed} completed`,
-        `<span class="sr-only">Jobs started over the last 14 days, oldest first: ${trend.join(", ")}.</span>${sparkline(trend)}`)}
-      ${tile("tile-active", "play", active, "Active jobs", running ? `${running} running now` : "none running now")}
-      ${tile("tile-colls", "folder", collections.length, "Collections", `${activeColls} active job${activeColls === 1 ? "" : "s"}`)}
-      ${tile("tile-pages", "pages", compactNumber(pages), "Pages and posts", `captured · ${fmtBytes((storage || {}).total_bytes || 0)}`)}
-      <button type="button" class="new-job-btn" onclick="showView('new')">${uiIcon("plus")}New job</button>
-    </div>
-    <div class="panels">
-      <section class="panel" aria-labelledby="p-status"><div class="panel-head"><h2 id="p-status">Job status</h2></div>
+  const bodies = {
+    "jobs": tile("jobs", "tile-jobs", "jobs", crawls.length, "Total jobs", `${active} active · ${completed} completed`,
+      `<span class="sr-only">Jobs started over the last 14 days, oldest first: ${trend.join(", ")}.</span>${sparkline(trend)}`),
+    "active": tile("active", "tile-active", "play", active, "Active jobs", running ? `${running} running now` : "none running now"),
+    "colls": tile("colls", "tile-colls", "folder", collections.length, "Collections", `${activeColls} active job${activeColls === 1 ? "" : "s"}`),
+    "pages": tile("pages", "tile-pages", "pages", compactNumber(pages), "Pages and posts", `captured · ${fmtBytes((storage || {}).total_bytes || 0)}`),
+    "status": {cls: "panel", head: `<h2 id="p-status">Job status</h2>`, labelled: "p-status", html: `
         <div class="donut-wrap">${donut(groups, crawls.length)}
           <ul class="legend">${groups.map(g => `<li><span class="key" style="background:${g.color}" aria-hidden="true"></span>${g.label}<b>${g.count}</b></li>`).join("")}</ul>
-        </div></section>
-      <section class="panel panel-activity" aria-labelledby="p-activity"><div class="panel-head">
-          <h2 id="p-activity">Recent activity <span class="panel-sub">· jobs started, last 7 days</span></h2>
-          <button type="button" class="secondary panel-tool" onclick="toggleActivityTable()" aria-pressed="${activityAsTable}">${activityAsTable ? "Show chart" : "Show as table"}</button></div>
-        ${activityChart(jobsPerDay(crawls, 7))}</section>
-      <section class="panel" aria-labelledby="p-colls"><div class="panel-head"><h2 id="p-colls">Collections</h2>
-          <button type="button" class="linkish panel-tool" onclick="showView('collections')">View all ${uiIcon("arrow").replace('<svg ', '<svg width="16" height="16" style="vertical-align:-3px" ')}</button></div>
-        <div class="coll-list">${busiest.length ? busiest.map(c => `<button type="button" class="coll-item" onclick="showView('collections')">
+        </div>`},
+    "activity": {cls: "panel panel-activity", labelled: "p-activity", head: `
+          <h2 id="p-activity">Recent activity <span class="panel-sub">Jobs started, last 7 days</span></h2>
+          <button type="button" class="secondary panel-tool" onclick="toggleActivityTable()" aria-pressed="${activityAsTable}">${activityAsTable ? "Show chart" : "Show as table"}</button>`,
+      html: activityChart(jobsPerDay(crawls, 7))},
+    "collections": {cls: "panel", labelled: "p-colls", head: `<h2 id="p-colls">Collections</h2>
+          <button type="button" class="linkish panel-tool" onclick="showView('collections')">View all ${uiIcon("arrow").replace('<svg ', '<svg width="16" height="16" style="vertical-align:-3px" ')}</button>`,
+      html: `<div class="coll-list">${busiest.length ? busiest.map(c => `<button type="button" class="coll-item" onclick="showView('collections')">
             <span class="kind-icon kind-collection" aria-hidden="true"></span>
             <span><b>${escapeHtml(c.name)}</b><span class="sub">${Number(c.jobs) || 0} job${Number(c.jobs) === 1 ? "" : "s"} · ${fmtBytes(Number(c.bytes) || 0)}</span></span></button>`).join("")
-          : `<p class="panel-sub">No collections yet.</p>`}</div></section>
-    </div>`;
-  if (force || html !== lastBoardHtml) { top.innerHTML = html; lastBoardHtml = html; }
+          : `<p class="panel-sub">No collections yet.</p>`}</div>`},
+  };
+  const tools = id => `<span class="bcard-tools">
+      <span class="grip" title="Drag to move (or reorder under Customise)" aria-hidden="true">⠿</span>
+      <button type="button" onclick="boardHide('${id}')" aria-label="Hide ${boardTitle(id)}" title="Hide (bring it back from Customise)">×</button></span>`;
+  const group = name => {
+    const shown = boardOrder(name).filter(id => !boardLayout.hidden.includes(id));
+    return shown.map((id, i) => {
+      const b = bodies[id];
+      return name === "tiles"
+        ? `<div class="${b.cls} bcard" data-card="${id}" data-group="tiles" draggable="true">${b.html}${tools(id)}</div>`
+        : `<section class="${b.cls} bcard" data-card="${id}" data-group="panels" draggable="true" aria-labelledby="${b.labelled}">
+            ${tools(id)}<div class="panel-head">${b.head}</div>${b.html}</section>`;
+    }).join("");
+  };
+  const tilesHtml = group("tiles"), panelsHtml = group("panels");
+  const html = (tilesHtml ? `<div class="tiles" data-group="tiles">${tilesHtml}</div>` : "")
+    + (panelsHtml ? `<div class="panels" data-group="panels">${panelsHtml}</div>` : "")
+    || `<div class="empty">Every tile and panel is hidden. Bring them back from Customise.</div>`;
+  if (!boardDragging && (force || html !== lastBoardHtml)) {
+    top.innerHTML = html; lastBoardHtml = html; wireBoardDrag(top);
+  }
+  const menuRows = group => {
+    const order = boardOrder(group);
+    return order.map((id, i) => {
+      const title = escapeHtml(boardTitle(id)), off = boardLayout.hidden.includes(id);
+      return `<div class="row${off ? " is-hidden" : ""}"><span>${title}</span>
+        <button type="button" class="secondary icon" data-move="${id}:-1" onclick="boardMove('${id}', -1)" ${i === 0 ? "disabled" : ""} aria-label="Move ${title} earlier">↑</button>
+        <button type="button" class="secondary icon" data-move="${id}:1" onclick="boardMove('${id}', 1)" ${i === order.length - 1 ? "disabled" : ""} aria-label="Move ${title} later">↓</button>
+        <button type="button" class="secondary" data-toggle="${id}" onclick="${off ? "boardShow" : "boardHide"}('${id}')" aria-label="${off ? "Show" : "Hide"} ${title}">${off ? "Show" : "Hide"}</button></div>`;
+    }).join("");
+  };
+  const menu = `<div>Drag a tile or panel by the handle on its top edge, or order them here.</div>
+    <div class="menu-group">Tiles</div>${menuRows("tiles")}
+    <div class="menu-group">Panels</div>${menuRows("panels")}
+    <div class="row"><span></span><button type="button" class="secondary" onclick="boardReset()">Reset layout</button></div>`;
+  const menuBox = $("#board-customise-menu");
+  if (menuBox.innerHTML !== menu) menuBox.innerHTML = menu;   // not pulled from under a click
   // the menu: totals beside Jobs and Collections, the machine at its foot
   $("#nav-jobs-total").textContent = crawls.length ? String(crawls.length) : "";
   $("#nav-colls-total").textContent = collections.length ? String(collections.length) : "";
@@ -4352,16 +4512,6 @@ function sortJobs(list) {
   else sorted.sort((a, b) => Number(b.id) - Number(a.id));
   return sorted;
 }
-// the header's search box is the job filter's own search, in two places
-$("#board-search").addEventListener("input", () => {
-  $("#jf-search").value = $("#board-search").value;
-  $("#jf-search").dispatchEvent(new Event("input", {bubbles: true}));
-  if (!$("#view-jobs").classList.contains("hidden")) return;
-  showView("jobs");
-});
-$("#jf-search").addEventListener("input", () => {
-  if ($("#board-search").value !== $("#jf-search").value) $("#board-search").value = $("#jf-search").value;
-});
 // The list is filtered here, in the page, so the two-second refresh keeps
 // the figures live and the filter in place. The chosen filter survives a
 // reload through the browser's storage for this dashboard.

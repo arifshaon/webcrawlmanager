@@ -104,6 +104,22 @@ class BoardLayoutTests(unittest.TestCase):
         self.assertIn("ofReported(fb.comments_exported, fb.comments_available", self.rows)
         self.assertIn("ofReported(fb.media_captured, fb.media_expected", self.rows)
 
+    def test_one_job_search_and_new_job_in_the_header(self):
+        self.assertNotIn('id="board-search"', self.html)
+        header = self.html[self.html.index("<header"):self.html.index("</header>")]
+        self.assertIn('class="new-job-btn board-only"', header)
+
+    def test_every_tile_and_panel_can_be_moved_hidden_and_brought_back(self):
+        cards = re.findall(r'\{id: "([a-z]+)", group: "(tiles|panels)"', self.html)
+        self.assertEqual({g for _, g in cards}, {"tiles", "panels"})
+        for id_, _ in cards:
+            self.assertIn(f'"{id_}":', self.html)          # it has a body to render
+        for hook in ("boardMove(", "boardHide(", "boardShow(", "boardReset()", "wireBoardDrag(",
+                     'id="board-customise"', 'draggable="true"'):
+            self.assertIn(hook, self.html)
+        # the refresh must not rebuild the board under a drag
+        self.assertIn("if (!boardDragging && (force || html !== lastBoardHtml))", self.html)
+
     def test_the_status_chart_uses_its_validated_colours_and_labels_every_segment(self):
         for token in ("--viz-run", "--viz-done", "--viz-pause", "--viz-stop"):
             self.assertIn(f"var({token})", self.html)
