@@ -483,6 +483,8 @@ def crawl_seed(seed: SeedConfig, crawl: CrawlConfig, seed_idx: int,
                         controller.seed_status(seed_idx, RUNNING)
 
                 stats["visited"] += 1
+                if getattr(driver, "last_unsettled", False):
+                    stats["unsettled"] = stats.get("unsettled", 0) + 1
 
                 expand = True
                 if themed:

@@ -74,8 +74,12 @@ function crawlRow(c) {
   const changeLine = changeParts.length
     ? ` · pages: <a href="/api/crawls/${id}/changes" target="_blank" rel="noopener" title="Compared by words and links with the collection's last capture of each page; opens the page-by-page report">${changeParts.join(", ")}${Number(ch.not_visited) ? `, ${Number(ch.not_visited)} not visited` : ""}</a>`
     : "";
+  // what "reused" means, on hover: repeat downloads stored once
+  const reusedTitle = reused
+    ? `${reused} download${reused === 1 ? "" : "s"} matched a file already stored and ${reused === 1 ? "was" : "were"} kept as a reference rather than a second copy: ${Number(dd.revisits_within_job) || 0} repeated within this job (a stylesheet, script or image shared by its pages), ${Number(dd.revisits_across_jobs) || 0} already held by earlier jobs in the collection.`
+    : "No download matched a file already stored.";
   const dedupLine = (reused
-    ? ` · ${reused} reused${Number(dd.revisits_across_jobs) ? ` (${Number(dd.revisits_across_jobs)} held by other jobs)` : ""}`
+    ? ` · <span title="${escapeHtml(reusedTitle)}">${reused} reused${Number(dd.revisits_across_jobs) ? ` (${Number(dd.revisits_across_jobs)} held by other jobs)` : ""}</span>`
     : "") + changeLine;
   const seeds = Array.isArray(c.seeds) ? c.seeds : [];
   const fb = isSocial && seeds[0] && seeds[0].details
@@ -130,12 +134,12 @@ function crawlRow(c) {
   const ofReported = (got, stated, what) => n(stated)
     ? [`${n(got)} / ${n(stated)}`, what, `${n(got)} of the ${n(stated)} ${what.toLowerCase()} reported`]
     : [n(got), what, ""];
-  const cells = isRec ? [[visited, "Pages"], [n(c.warc_files), "WARC files"], [reused, "Reused"]]
+  const cells = isRec ? [[visited, "Pages"], [n(c.warc_files), "WARC files"], [reused, "Reused", reusedTitle]]
     : isYouTube ? [[n(fb.videos_exported), "Videos"], [n(fb.comments_exported), "Comments"], [n(fb.media_captured), "Files"]]
     : isX ? [[n(fb.posts_exported), "Posts"], [n(fb.context_posts), "Context"], ofReported(fb.media_captured, fb.media_expected, "Media")]
     : isInstagram ? [[n(fb.posts_exported), "Posts"], ofReported(fb.comments_exported, fb.comments_available, "Comments"), ofReported(fb.media_captured, fb.media_expected, "Media")]
     : isFacebook ? [[n(fb.posts_exported), "Posts"], ofReported(fb.comments_exported, fb.comments_available, "Comments"), [n(fb.media_captured), "Media"]]
-    : [[visited, "Pages"], [queued, "Queued"], [reused, "Reused"]];
+    : [[visited, "Pages"], [queued, "Queued"], [reused, "Reused", reusedTitle]];
   const boardRow = `
     <div class="brow" onclick="toggle(${id})">
       <div class="gutter g-${statusCss}"></div>

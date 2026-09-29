@@ -753,7 +753,12 @@ Core crawl capabilities include:
 - maximum depth and maximum page limits;
 - URL canonicalisation and frontier deduplication;
 - optional robots.txt handling;
-- randomised delays, scrolling, mouse movement and network-idle waits;
+- randomised delays, scrolling, mouse movement and network-idle waits (a page
+  that loads but never falls quiet -- analytics, polling, a chat widget -- is
+  still counted and followed when the wait runs out, and logged as unsettled);
+- the browser cache off while capturing, so every page's stylesheets, scripts
+  and images are fetched from the site and archived, never answered from the
+  cache or recorded as empty 304 replies (recordings do the same);
 - block-page detection and controlled back-off;
 - compressed WARC/1.1 output with request, response, warcinfo and revisit records.
 
@@ -915,7 +920,9 @@ Bytes are saved; nothing is lost, because a revisit is a standard WARC 1.1
 record (`identical-payload-digest` profile) that replay tools resolve. The
 same URL with different content is stored in full, so the index is also a
 history of each page. Each job's row on the dashboard says how many payloads
-it reused and how many of those other jobs hold; `dedup-summary.json` in the
+it reused and how many of those other jobs hold (hover the figure for the
+split). A first job in a new collection reuses too: the stylesheet, script
+and images its pages share are downloaded on every page and stored once; `dedup-summary.json` in the
 job's folder has the numbers. This is on by default for a new collection and
 can be turned off per collection (the checkbox on the form, or
 `--no-cross-job-dedup` on the command line), in which case every job stores
