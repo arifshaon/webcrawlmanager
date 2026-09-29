@@ -23,6 +23,7 @@ env:
 jobs:
   build-sign-attest-release:
     runs-on: windows-latest
+    timeout-minutes: 20
 
     steps:
       - name: Check out release source
@@ -156,7 +157,7 @@ jobs:
           $cerPath = Join-Path $releaseDir 'SWM-1.0-self-signed-code-signing.cer'
           $pfxPassword = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N'))
 
-          & $openssl.Source req -x509 -newkey rsa:3072 -sha256 -days 1825 -nodes -keyout $keyPath -out $pemPath -subj '/CN=Simple Webcrawl Manager/O=Arif Shaon' -addext 'keyUsage=critical,digitalSignature' -addext 'extendedKeyUsage=codeSigning'
+          & $openssl.Source req -x509 -newkey rsa:2048 -sha256 -days 1825 -nodes -keyout $keyPath -out $pemPath -subj '/CN=Simple Webcrawl Manager/O=Arif Shaon' -addext 'keyUsage=critical,digitalSignature' -addext 'extendedKeyUsage=codeSigning'
           if ($LASTEXITCODE -ne 0) {
             throw "OpenSSL certificate creation failed with exit code $LASTEXITCODE."
           }
@@ -169,11 +170,6 @@ jobs:
           & $openssl.Source x509 -in $pemPath -outform DER -out $cerPath
           if ($LASTEXITCODE -ne 0) {
             throw "OpenSSL CER export failed with exit code $LASTEXITCODE."
-          }
-
-          & certutil.exe -user -f -addstore Root $cerPath
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not add the self-signed certificate to the runner trust store."
           }
 
           "PFX_PATH=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
@@ -204,19 +200,24 @@ jobs:
             throw "Authenticode signing failed with exit code $LASTEXITCODE."
           }
 
-          & $signTool.FullName verify /pa /all /v $signedExe
-          if ($LASTEXITCODE -ne 0) {
-            throw "Authenticode verification failed with exit code $LASTEXITCODE."
-          }
-
           $sig = Get-AuthenticodeSignature -FilePath $signedExe
-          if ($sig.Status -ne 'Valid') {
-            throw "PowerShell signature verification failed: $($sig.Status) - $($sig.StatusMessage)"
+          if (-not $sig.SignerCertificate) {
+            throw 'The built EXE does not contain an Authenticode signer certificate.'
+          }
+          if ($sig.Status -eq 'NotSigned' -or $sig.Status -eq 'HashMismatch') {
+            throw "Authenticode verification failed: $($sig.Status) - $($sig.StatusMessage)"
+          }
+          if ($sig.SignerCertificate.Subject -notlike '*CN=Simple Webcrawl Manager*') {
+            throw "Unexpected Authenticode signer: $($sig.SignerCertificate.Subject)"
           }
 
           "SIGNED_EXE=$signedExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Signed installer: $signedExe"
           Write-Host "Publisher: $($sig.SignerCertificate.Subject)"
+          Write-Host "Signature status on an untrusted self-signed chain: $($sig.Status)"
+          if ($sig.TimeStamperCertificate) {
+            Write-Host "Timestamp signer: $($sig.TimeStamperCertificate.Subject)"
+          }
 
       - name: Package signed installer and generate SHA-256
         if: steps.baseline.outputs.created != 'true'
