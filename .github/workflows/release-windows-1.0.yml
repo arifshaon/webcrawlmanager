@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/release-windows-1.0.yml'
       - 'install/SWM-Setup-1.0.zip'
+      - 'install/SWM-Setup-1.0.ps1'
   workflow_dispatch:
 
 permissions:
@@ -78,13 +79,20 @@ jobs:
         if: steps.baseline.outputs.created != 'true'
         shell: powershell
         run: |
-          foreach ($script in @('.\install\install-windows.ps1', '.\install\run-bootstrap.ps1')) {
+          foreach ($script in @('.\install\install-windows.ps1', '.\install\run-bootstrap.ps1', '.\install\SWM-Setup-1.0.ps1')) {
             $text = Get-Content -LiteralPath $script -Raw
             [void][scriptblock]::Create($text)
           }
           if (-not (Test-Path -LiteralPath '.\install\SWM-Windows-Setup.iss')) {
             throw 'Inno Setup definition is missing.'
           }
+
+          $engineHash = (Get-FileHash -LiteralPath '.\install\install-windows.ps1' -Algorithm SHA256).Hash
+          $plainHash = (Get-FileHash -LiteralPath '.\install\SWM-Setup-1.0.ps1' -Algorithm SHA256).Hash
+          if ($engineHash -ne $plainHash) {
+            throw 'SWM-Setup-1.0.ps1 is not an exact copy of the proven install-windows.ps1 engine.'
+          }
+          Write-Host "Verified one-file PowerShell installer is byte-identical to install-windows.ps1: $plainHash"
 
       - name: Install Inno Setup 6
         if: steps.baseline.outputs.created != 'true'
@@ -226,7 +234,10 @@ jobs:
         run: |
           $releaseDir = Join-Path $PWD 'release'
           $zipPath = Join-Path $releaseDir "SWM-Setup-$env:SWM_VERSION.zip"
+          $psPath = Join-Path $releaseDir "SWM-Setup-$env:SWM_VERSION.ps1"
           $hashPath = Join-Path $releaseDir 'SHA256SUMS.txt'
+
+          Copy-Item -LiteralPath '.\install\SWM-Setup-1.0.ps1' -Destination $psPath -Force
 
           if (Test-Path -LiteralPath $zipPath) {
             Remove-Item -LiteralPath $zipPath -Force
@@ -236,21 +247,26 @@ jobs:
 
           $exeHash = (Get-FileHash -LiteralPath $env:SIGNED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
           $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $psHash = (Get-FileHash -LiteralPath $psPath -Algorithm SHA256).Hash.ToLowerInvariant()
           $certHash = (Get-FileHash -LiteralPath $env:CERT_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
 
           @(
             "$exeHash  SWM-Setup-$env:SWM_VERSION.exe",
             "$zipHash  SWM-Setup-$env:SWM_VERSION.zip",
+            "$psHash  SWM-Setup-$env:SWM_VERSION.ps1",
             "$certHash  SWM-1.0-self-signed-code-signing.cer"
           ) | Set-Content -LiteralPath $hashPath -Encoding ascii
 
           "SIGNED_ZIP=$zipPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PLAIN_PS1=$psPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "HASH_FILE=$hashPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "EXE_SHA256=$exeHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "ZIP_SHA256=$zipHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PS1_SHA256=$psHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           Write-Host "EXE SHA-256: $exeHash"
           Write-Host "ZIP SHA-256: $zipHash"
+          Write-Host "PS1 SHA-256: $psHash"
 
       - name: Attest signed EXE provenance
         if: steps.baseline.outputs.created != 'true'
@@ -263,6 +279,12 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: release/SWM-Setup-1.0.zip
+
+      - name: Attest one-file PowerShell installer provenance
+        if: steps.baseline.outputs.created != 'true'
+        uses: actions/attest@v4
+        with:
+          subject-path: release/SWM-Setup-1.0.ps1
 
       - name: Verify GitHub attestation
         if: steps.baseline.outputs.created != 'true'
@@ -286,13 +308,15 @@ jobs:
             '- Authenticode self-signed as Simple Webcrawl Manager / Arif Shaon.',
             '- RFC 3161 timestamp applied.',
             '- SHA-256 checksums are included in SHA256SUMS.txt.',
-            '- GitHub artifact attestations are published for the signed EXE and ZIP.',
+            '- GitHub artifact attestations are published for the signed EXE, ZIP, and one-file PowerShell installer.',
+            '- SWM-Setup-1.0.ps1 is a byte-identical copy of the proven PowerShell installation engine used by the EXE.',
             '- The public signing certificate is attached.',
             '',
             'Important: this is a self-signed Authenticode certificate. Windows does not trust it by default, so it does not provide the same SmartScreen publisher trust as a commercial CA-issued certificate.',
             '',
             "EXE SHA-256: $env:EXE_SHA256",
             "ZIP SHA-256: $env:ZIP_SHA256",
+            "PS1 SHA-256: $env:PS1_SHA256",
             '',
             'Verify GitHub provenance:',
             'gh attestation verify SWM-Setup-1.0.exe --repo arifshaon/webcrawlmanager'
@@ -309,6 +333,7 @@ jobs:
           $assets = @(
             "release\SWM-Setup-$env:SWM_VERSION.exe",
             "release\SWM-Setup-$env:SWM_VERSION.zip",
+            "release\SWM-Setup-$env:SWM_VERSION.ps1",
             'release\SHA256SUMS.txt',
             'release\SWM-1.0-self-signed-code-signing.cer'
           )
@@ -338,6 +363,7 @@ jobs:
           path: |
             release/SWM-Setup-1.0.exe
             release/SWM-Setup-1.0.zip
+            release/SWM-Setup-1.0.ps1
             release/SHA256SUMS.txt
             release/SWM-1.0-self-signed-code-signing.cer
             release/RELEASE_NOTES.md
