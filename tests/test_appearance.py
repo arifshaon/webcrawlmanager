@@ -51,6 +51,7 @@ class BuiltInThemeTests(unittest.TestCase):
             with self.subTest(theme_id):
                 theme = themes[theme_id]
                 self.assertEqual((theme.icon_style, theme.icon_size), ("color", "large"))
+                self.assertEqual((theme.layout, theme.font), ("board", "inter"))
                 self.assertEqual(sorted(theme.icons), sorted(ICON_ROLES))
                 self.assertEqual(sorted(theme.colors), ["dark", "light"])
                 self.assertEqual(theme.describe()["icon_size"], "large")
@@ -78,6 +79,36 @@ class BuiltInThemeTests(unittest.TestCase):
         self.assertGreaterEqual(len(lists), 2)          # the boot script and the page's
         for found in lists:
             self.assertEqual(tuple(json.loads(f"[{found}]")), ICON_ROLES)
+
+
+class BoardLayoutTests(unittest.TestCase):
+    """The board layout a theme may choose, as the page wires it."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = DASHBOARD.read_text(encoding="utf-8")
+        cls.rows = (DASHBOARD.parent / "dashboard_hardening.js").read_text(encoding="utf-8")
+
+    def test_the_layout_and_font_are_applied_before_the_first_paint(self):
+        boot = self.html[:self.html.index("</script>")]
+        self.assertIn('saved.layout === "board"', boot)
+        self.assertIn('saved.font === "inter"', boot)
+
+    def test_the_bundled_typeface_is_the_one_the_page_asks_for(self):
+        for name in appearance.FONT_FILES:
+            self.assertIn(f"/appearance/fonts/{name}", self.html)
+            self.assertTrue((appearance.FONTS_DIR / name).is_file())
+        self.assertTrue((appearance.FONTS_DIR / "Inter-OFL.txt").is_file())
+
+    def test_a_job_row_reports_captured_out_of_reported(self):
+        self.assertIn("ofReported(fb.comments_exported, fb.comments_available", self.rows)
+        self.assertIn("ofReported(fb.media_captured, fb.media_expected", self.rows)
+
+    def test_the_status_chart_uses_its_validated_colours_and_labels_every_segment(self):
+        for token in ("--viz-run", "--viz-done", "--viz-pause", "--viz-stop"):
+            self.assertIn(f"var({token})", self.html)
+        self.assertIn('<ul class="legend">', self.html)
+        self.assertIn("Show as table", self.html)
 
 
 class CheckTests(unittest.TestCase):
@@ -143,6 +174,7 @@ class HandMadeFolderTests(unittest.TestCase):
     def test_what_fails_is_left_out_and_named(self):
         path = self.folder("harbour", {
             "name": "Harbour", "icon_style": "sparkly", "icon_size": "huge",
+            "layout": "<style>", "font": "Comic Sans",
             "colors": {"light": {"accent": "#0E7490", "ink": "url(http://x)", "glow": "#fff"}}},
             {"crawl": ICON, "instagram": b'<svg xmlns="http://www.w3.org/2000/svg" onload="x()"/>'})
 
@@ -152,9 +184,9 @@ class HandMadeFolderTests(unittest.TestCase):
         self.assertEqual(sorted(theme.icons), ["crawl"])
         self.assertEqual(theme.icon_style, "mono")
         joined = " ".join(theme.problems)
-        self.assertEqual(theme.icon_size, "normal")
+        self.assertEqual((theme.icon_size, theme.layout, theme.font), ("normal", "classic", "system"))
         for named in ("colors.light.ink", "colors.light.glow", "icons/instagram.svg", "icon_style",
-                      "icon_size"):
+                      "icon_size", "layout", "font"):
             self.assertIn(named, joined)
 
     def test_a_missing_or_refused_icon_comes_from_the_standard_theme(self):
@@ -348,6 +380,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(removed.status_code, 200)
         self.assertEqual(self.client.get("/appearance/themes/harbour/theme.css").status_code, 404)
         self.assertEqual(self.client.delete("/api/appearance/themes/default").status_code, 400)
+
+    def test_only_the_fonts_swm_ships_are_served(self):
+        font = self.client.get("/appearance/fonts/inter-latin.woff2")
+
+        self.assertEqual(font.status_code, 200)
+        self.assertEqual(font.headers["content-type"], "font/woff2")
+        self.assertEqual(font.content[:4], b"wOF2")
+        for name in ("Inter-OFL.txt", "../appearance.py", "..%2Fappearance.py", "missing.woff2"):
+            with self.subTest(name):
+                self.assertEqual(self.client.get(f"/appearance/fonts/{name}").status_code, 404)
 
     def test_a_theme_downloads_as_a_zip(self):
         reply = self.client.get("/api/appearance/themes/midnight/download")

@@ -120,9 +120,36 @@ function crawlRow(c) {
   const name = escapeHtml(c.name || "Unnamed job");
   const created = escapeHtml(c.created_at || "");
   const seedsTotal = Number(c.seeds_total) || 0;
+  const role = isRec ? "recording" : isFacebook ? "facebook" : isInstagram ? "instagram" : isX ? "x" : isYouTube ? "youtube" : "crawl";
+  const kindText = isRec ? "Recording session" : isFacebook ? "Facebook Page capture"
+    : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)`
+    : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `Crawl · ${seedsTotal} seed(s)`;
+  // the board's table row: three figures a job of this type is judged by,
+  // captured out of reported where the platform said how many there are
+  const n = v => Number(v) || 0;
+  const ofReported = (got, stated, what) => n(stated)
+    ? [`${n(got)} / ${n(stated)}`, what, `${n(got)} of the ${n(stated)} ${what.toLowerCase()} reported`]
+    : [n(got), what, ""];
+  const cells = isRec ? [[visited, "Pages"], [n(c.warc_files), "WARC files"], [reused, "Reused"]]
+    : isYouTube ? [[n(fb.videos_exported), "Videos"], [n(fb.comments_exported), "Comments"], [n(fb.media_captured), "Files"]]
+    : isX ? [[n(fb.posts_exported), "Posts"], [n(fb.context_posts), "Context"], ofReported(fb.media_captured, fb.media_expected, "Media")]
+    : isInstagram ? [[n(fb.posts_exported), "Posts"], ofReported(fb.comments_exported, fb.comments_available, "Comments"), ofReported(fb.media_captured, fb.media_expected, "Media")]
+    : isFacebook ? [[n(fb.posts_exported), "Posts"], ofReported(fb.comments_exported, fb.comments_available, "Comments"), [n(fb.media_captured), "Media"]]
+    : [[visited, "Pages"], [queued, "Queued"], [reused, "Reused"]];
+  const boardRow = `
+    <div class="brow" onclick="toggle(${id})">
+      <div class="gutter g-${statusCss}"></div>
+      <div class="bjob">${kindIcon(role)}<div class="bname" title="${name}">${name}</div>
+        <div class="bmeta"><span>#${id}</span>${c.collection ? `<span class="theme-chip coll-chip" title="collection">${escapeHtml(c.collection.name)}</span>` : ""}<span>${kindText}</span></div></div>
+      ${cells.map(([value, label, title]) => `<div class="bstat"${title ? ` title="${escapeHtml(title)}"` : ""}><b>${escapeHtml(String(value))}</b><span>${label}</span></div>`).join("")}
+      <span class="badge b-${statusCss}">${status}</span>
+      <div class="bsize"><b>${fmtBytes(bytes)}</b><span title="${created}">${escapeHtml(relTime(c.created_at))}</span></div>
+      <button type="button" class="kebab" aria-expanded="${isOpen}" aria-label="Actions and details for ${name}"
+        onclick="event.stopPropagation(); toggle(${id}); this.setAttribute('aria-expanded', String(openState.has(${id})))">⋮</button>
+    </div>`;
 
   return `
-  <div class="crawl ${isOpen ? "open" : ""}" data-id="${id}">
+  <div class="crawl ${isOpen ? "open" : ""}" data-id="${id}">${boardRow}
     <div class="row" onclick="toggle(${id})">
       <div class="gutter g-${statusCss}"></div>
       <div>

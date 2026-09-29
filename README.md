@@ -1339,8 +1339,16 @@ A theme gives the dashboard its colours and the icon shown for each job type
 SWM ships four: **SWM standard**; **Midnight**, a dark navy and cyan
 palette for the dark colour mode; **Aurora**, white cards on a soft
 blue-grey with a vivid blue accent; and **Nebula**, indigo-black with violet
-accents. Aurora and Nebula have light and dark palettes and full-colour
-icon tiles set beside each job's name. Choose one under **Appearance → Theme**;
+accents. Aurora and Nebula have light and dark palettes, full-colour icon
+tiles, the Inter typeface, and the **board** layout: stat tiles (total and
+active jobs, collections, pages and posts captured), a job-status chart, the
+jobs started each day, the busiest collections, a job table showing what was
+captured against what the platform reported (comments 126 / 128, media
+41 / 41), sorting, a table or card view, and the machine's disk, CPU and
+memory at the foot of the menu. The job table's ⋮ opens a job's actions and
+details. The status chart's colours are fixed rather than themed, chosen so
+every pair stays distinct for colour-blind readers, and its counts are
+always written beside it; the activity chart can be shown as a table. Choose one under **Appearance → Theme**;
 the choice is this browser's own, like the rest of Appearance.
 
 **Settings → Dashboard themes** lists the themes with their icons, installs
@@ -1360,7 +1368,7 @@ harbour/
 ```json
 {"schema": "swm-ui-theme-v1", "name": "Harbour", "version": "1.0",
  "author": "Reading Room", "description": "Teal and slate.",
- "icon_style": "mono", "icon_size": "normal",
+ "icon_style": "mono", "icon_size": "normal", "layout": "classic", "font": "system",
  "colors": {"light": {"accent": "#0E7490", "accent-hover": "#155E75"},
             "dark":  {"accent": "#67E8F9"}},
  "icons": {"instagram": "icons/camera.svg"}}
@@ -1375,7 +1383,10 @@ leaves out comes from the standard theme. With `"icon_style": "mono"` an
 icon is drawn in its job type's colour, taken from the palette, so it
 follows light, dark and high contrast; with `"color"` it is shown as drawn.
 `"icon_size": "large"` sets each job's icon as a tile beside its name and
-the line below, rather than a small icon before the name.
+the line below, rather than a small icon before the name. `"layout"` is
+`"classic"` or `"board"`, and `"font"` is `"system"` or `"inter"` (the Inter
+typeface, shipped with SWM under the SIL Open Font License). Layouts and
+typefaces are built into SWM; a theme chooses one, it cannot bring its own.
 High contrast always keeps the dashboard's own colours.
 
 A theme cannot run anything. Colours must be plain colour values (`#hex`,

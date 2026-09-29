@@ -14,6 +14,8 @@ choice, kept with its other appearance settings.
      "author": "...", "description": "...",
      "icon_style": "mono",            # or "color"
      "icon_size": "normal",           # or "large": a tile beside a job's name
+     "layout": "classic",             # or "board": panels, charts and a job table
+     "font": "system",                # or "inter": the Inter typeface SWM ships
      "colors": {"light": {"accent": "#0E7490", ...},
                 "dark":  {"accent": "#67E8F9", ...}},
      "icons": {"instagram": "icons/camera.svg"}}   # optional
@@ -60,6 +62,12 @@ ICON_ROLES = ("crawl", "recording", "facebook", "instagram", "x", "youtube",
 MODES = ("light", "dark")
 ICON_STYLES = ("mono", "color")
 ICON_SIZES = ("normal", "large")
+# layouts and typefaces a theme may choose; each is built into SWM, so a
+# theme picks a look without bringing any CSS or code of its own
+LAYOUTS = ("classic", "board")
+FONTS = ("system", "inter")
+FONT_FILES = {"inter-latin.woff2", "inter-latin-ext.woff2"}
+FONTS_DIR = Path(__file__).resolve().parent / "fonts"
 
 MAX_ZIP_BYTES = 2 * 1024 * 1024
 MAX_UNPACKED_BYTES = 5 * 1024 * 1024
@@ -104,6 +112,8 @@ class Theme:
     description: str = ""
     icon_style: str = "mono"
     icon_size: str = "normal"
+    layout: str = "classic"
+    font: str = "system"
     colors: dict = field(default_factory=lambda: {m: {} for m in MODES})
     icons: dict = field(default_factory=dict)        # role -> Path
     problems: list = field(default_factory=list)     # what was left out
@@ -114,7 +124,7 @@ class Theme:
             "id": self.id, "name": self.name, "version": self.version,
             "author": self.author, "description": self.description,
             "builtin": self.builtin, "icon_style": self.icon_style,
-            "icon_size": self.icon_size,
+            "icon_size": self.icon_size, "layout": self.layout, "font": self.font,
             "icons": sorted(self.icons), "modes": [m for m in MODES if self.colors.get(m)],
             "problems": list(self.problems), "warnings": list(self.warnings),
         }
@@ -252,11 +262,12 @@ def load_theme(folder: Path, builtin: bool = False,
         theme.icon_style = style
     else:
         theme.problems.append(f"icon_style {style!r} is not one of {', '.join(ICON_STYLES)}")
-    size = doc.get("icon_size", "normal")
-    if size in ICON_SIZES:
-        theme.icon_size = size
-    else:
-        theme.problems.append(f"icon_size {size!r} is not one of {', '.join(ICON_SIZES)}")
+    for key, allowed_values in (("icon_size", ICON_SIZES), ("layout", LAYOUTS), ("font", FONTS)):
+        value = doc.get(key, allowed_values[0])
+        if value in allowed_values:
+            setattr(theme, key, value)
+        else:
+            theme.problems.append(f"{key} {value!r} is not one of {', '.join(allowed_values)}")
     allowed = set((base.colors["light"] if base else {}) or {})
     colours = doc.get("colors") or {}
     if not isinstance(colours, dict):

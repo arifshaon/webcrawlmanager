@@ -20,6 +20,8 @@
       root.setAttribute("data-ui-theme", theme);
       if (saved.iconStyle === "color") root.setAttribute("data-icons", "color");
       if (saved.iconSize === "large") root.setAttribute("data-icon-size", "large");
+      if (saved.layout === "board") root.setAttribute("data-layout", "board");
+      if (saved.font === "inter") root.setAttribute("data-font", "inter");
       ["crawl", "recording", "facebook", "instagram", "x", "youtube", "collection"].forEach(function (role) {
         root.style.setProperty("--icon-" + role, 'url("/appearance/themes/' + theme + '/icons/' + role + '.svg")');
       });
@@ -717,12 +719,215 @@
   .card .bar { height: 6px; background: var(--rule); border-radius: 3px; margin-top: 10px; overflow: hidden; }
   .card .bar span { display: block; height: 100%; background: var(--accent); }
   @media (prefers-reduced-motion: reduce) { .card-tools, .appearance > summary, .customise > summary { transition: none; } }
+  /* ==== typefaces a theme may choose (shipped with SWM) ==== */
+  @font-face { font-family: "SWM Inter"; font-style: normal; font-weight: 100 900; font-display: swap;
+    src: url("/appearance/fonts/inter-latin.woff2") format("woff2");
+    unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD; }
+  @font-face { font-family: "SWM Inter"; font-style: normal; font-weight: 100 900; font-display: swap;
+    src: url("/appearance/fonts/inter-latin-ext.woff2") format("woff2");
+    unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
+  :root[data-font="inter"] { --ui: "SWM Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+  /* ==== the board layout: a theme's choice; the classic layout is untouched ==== */
+  :root:not([data-layout="board"]) .board-only { display: none !important; }
+  :root[data-layout="board"] .classic-only { display: none !important; }
+  /* the status chart's colours are fixed, not themed: chosen with the palette
+     validator so every pair stays apart for colour-blind readers, and always
+     shown beside a label and count */
+  [data-layout="board"] { --radius: 16px; --tile-mix: 9%;
+    --viz-run: #15803D; --viz-done: #2563EB; --viz-pause: #F59E0B; --viz-stop: #DC2626; }
+  @media (prefers-color-scheme: dark) { [data-layout="board"]:not([data-theme="light"]) { --tile-mix: 22%;
+    --viz-run: #047857; --viz-done: #3B82F6; --viz-pause: #D97706; --viz-stop: #E11D48; } }
+  [data-layout="board"][data-theme="dark"] { --tile-mix: 22%;
+    --viz-run: #047857; --viz-done: #3B82F6; --viz-pause: #D97706; --viz-stop: #E11D48; }
+  /* the board sets everything in the UI face, as the mockups do; code keeps its own */
+  [data-layout="board"] { --mono: var(--ui); }
+  [data-layout="board"] code, [data-layout="board"] pre, [data-layout="board"] #config-yaml {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace; }
+  [data-layout="board"] .jf-count { display: none; }
+  [data-layout="board"] .filter-bar input, [data-layout="board"] .filter-bar .jf-date { font-family: var(--ui); }
+  [data-layout="board"] body { font-size: var(--t-md); }
+  /* header: the mark, a search across the jobs, the clock */
+  [data-layout="board"] header { padding: 9px 24px; min-height: 57px; gap: 20px; }
+  [data-layout="board"] header .mark { font-size: calc(19px * var(--scale)); letter-spacing: -.015em; }
+  [data-layout="board"] header .mark::before { width: 30px; height: 30px; border-radius: 0;
+    background: var(--accent);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z'/%3E%3C/svg%3E") center / contain no-repeat; }
+  [data-layout="board"] header .clock { font-family: var(--ui); font-variant-numeric: tabular-nums; }
+  .board-search { flex: 0 1 520px; margin: 0 auto; display: flex; align-items: center; gap: 10px;
+    border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); padding: 0 12px;
+    color: var(--muted); }
+  .board-search svg { width: 18px; height: 18px; flex: none; }
+  .board-search input { border: 0; background: transparent; padding: 9px 0; font: inherit;
+    font-size: var(--t-md); color: var(--ink); width: 100%; min-width: 0; }
+  .board-search input:focus { outline: none; }
+  .board-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+  /* the menu: icons, counts, and the machine's state at the foot */
+  [data-layout="board"] .sidebar { padding: 18px 12px; gap: 6px; }
+  [data-layout="board"] .nav-item { padding: 10px 14px; gap: 12px; font-size: calc(15px * var(--scale));
+    border-radius: 10px; }
+  [data-layout="board"] .nav-item.active { box-shadow: inset 3px 0 0 var(--accent); }
+  .nav-icon { display: inline-flex; width: 20px; height: 20px; flex: none; }
+  .nav-icon svg { width: 20px; height: 20px; }
+  .nav-total { margin-left: auto; font-size: var(--t-xs); font-weight: 600; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 999px;
+    padding: 0 8px; min-width: 26px; text-align: center; font-variant-numeric: tabular-nums; }
+  .nav-total:empty { display: none; }
+  .side-card { margin-top: auto; border: 1px solid var(--rule); border-radius: 14px; padding: 14px;
+    background: var(--surface); display: grid; gap: 8px; font-size: var(--t-sm); }
+  .side-card h2 { margin: 0; font-size: var(--t-md); font-weight: 600; color: var(--ink); }
+  .side-card .meter { height: 8px; border-radius: 999px; overflow: hidden;
+    background: color-mix(in srgb, var(--accent) 18%, var(--paper)); }
+  .side-card .meter span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+  .side-card .meter.low span { background: var(--stop); }
+  .side-card .line { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); }
+  .side-card .line b { color: var(--ink); font-weight: 600; }
+  [data-layout="board"] main { padding: 20px 24px 64px; }
+  /* ---- stat tiles and panels ---- */
+  .board-top { display: grid; gap: 16px; margin-bottom: 18px; }
+  .tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 16px; align-items: stretch; }
+  .tile { position: relative; display: flex; gap: 14px; align-items: flex-start; padding: 18px;
+    border-radius: 16px; border: 1px solid var(--rule); min-width: 0; box-shadow: var(--shadow);
+    background: linear-gradient(135deg, color-mix(in srgb, var(--tile) var(--tile-mix), var(--paper)), var(--paper) 75%); }
+  .tile-icon { width: 48px; height: 48px; border-radius: 14px; flex: none; display: grid; place-items: center;
+    color: var(--tile); background: color-mix(in srgb, var(--tile) calc(var(--tile-mix) + 8%), var(--paper)); }
+  .tile-icon svg { width: 24px; height: 24px; }
+  .tile-body { min-width: 0; display: grid; gap: 2px; }
+  .tile-value { font-size: calc(28px * var(--scale)); font-weight: 700; line-height: 1.1; letter-spacing: -.02em; color: var(--ink); }
+  .tile-label { font-size: calc(15px * var(--scale)); font-weight: 600; color: var(--ink); }
+  .tile-sub { font-size: var(--t-sm); color: var(--muted); }
+  .tile .spark { position: absolute; right: 16px; top: 16px; width: 88px; height: 36px; overflow: visible; }
+  .tile-jobs { --tile: var(--block); } .tile-active { --tile: var(--run); }
+  .tile-colls { --tile: var(--ig); } .tile-pages { --tile: var(--pause); }
+  .new-job-btn { align-self: start; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap;
+    background: var(--accent); color: var(--on-accent); border: 0; border-radius: 12px;
+    padding: 12px 20px; font-size: calc(16px * var(--scale)); font-weight: 600;
+    box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+  .new-job-btn:hover { background: var(--accent-hover); }
+  .new-job-btn svg { width: 20px; height: 20px; }
+  .panels { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+  .panel { background: var(--paper); border: 1px solid var(--rule); border-radius: 16px; padding: 18px 20px;
+    box-shadow: var(--shadow); min-width: 0; }
+  .panel-head { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; }
+  .panel-head h2 { margin: 0; font-size: calc(17px * var(--scale)); font-weight: 600; color: var(--ink); }
+  .panel-head .panel-tool { margin-left: auto; }
+  .panel-sub { font-size: var(--t-sm); color: var(--muted); font-weight: 400; }
+  .donut-wrap { display: flex; align-items: center; gap: 22px; flex-wrap: wrap; }
+  .donut { width: 136px; height: 136px; flex: none; }
+  .donut .total { font-size: 26px; font-weight: 700; fill: var(--ink); }
+  .donut .total-label { font-size: 13px; fill: var(--muted); }
+  .legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; flex: 1 1 140px; min-width: 0; }
+  .legend li { display: flex; align-items: center; gap: 10px; font-size: var(--t-md); color: var(--ink); }
+  .legend .key { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .legend b { margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .cols { position: relative; height: 150px; margin-left: 28px; }
+  .cols .grid { position: absolute; left: 0; right: 0; border-top: 1px solid var(--rule); }
+  .cols .grid span { position: absolute; right: calc(100% + 8px); top: -.7em; font-size: var(--t-xs);
+    color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cols .bars { position: absolute; inset: 0 0 0 0; display: flex; align-items: flex-end; }
+  .cols .col { flex: 1 1 0; height: 100%; display: flex; align-items: flex-end; justify-content: center;
+    position: relative; outline-offset: 2px; border-radius: 6px; }
+  .cols .col:hover .bar, .cols .col:focus-visible .bar { filter: brightness(1.15); }
+  .cols .bar { width: min(24px, 56%); background: var(--accent); border-radius: 4px 4px 0 0; min-height: 0; }
+  .cols .peak { position: absolute; font-size: var(--t-xs); font-weight: 600; color: var(--ink); }
+  .cols-x { display: flex; margin: 8px 0 0 28px; }
+  .cols-x span { flex: 1 1 0; text-align: center; font-size: var(--t-xs); color: var(--muted); white-space: nowrap; }
+  .viz-table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+  .viz-table th, .viz-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--rule); }
+  .viz-table td:last-child, .viz-table th:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  .coll-list { display: grid; gap: 10px; }
+  .coll-item { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; font: inherit;
+    border: 1px solid var(--rule); border-radius: 12px; background: var(--surface); padding: 10px 12px;
+    color: var(--ink); cursor: pointer; }
+  .coll-item:hover { border-color: var(--accent); }
+  .coll-item .kind-icon { width: 36px; height: 36px; margin: 0; }
+  .coll-item b { display: block; font-weight: 600; }
+  .coll-item span.sub { font-size: var(--t-sm); color: var(--muted); }
+  .viz-tip { position: fixed; z-index: 40; pointer-events: none; background: var(--paper); color: var(--ink);
+    border: 1px solid var(--rule); border-radius: 8px; box-shadow: var(--shadow); padding: 6px 10px;
+    font-size: var(--t-sm); white-space: nowrap; }
+  .viz-tip b { font-size: var(--t-md); }
+  .viz-tip span { color: var(--muted); }
+  /* ---- the filter row and the job table ---- */
+  [data-layout="board"] .filter-bar { background: transparent; }
+  [data-layout="board"] .filter-bar input, [data-layout="board"] .filter-bar select {
+    border-radius: 10px; min-height: 40px; background: var(--paper); }
+  .jobs-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 16px;
+    background: var(--paper); border: 1px solid var(--rule); border-bottom: 0;
+    border-radius: 16px 16px 0 0; padding: 16px 20px 12px; }
+  .jobs-head h2 { margin: 0 auto 0 0; font-size: calc(22px * var(--scale)); font-weight: 700;
+    letter-spacing: -.01em; color: var(--ink); }
+  .job-sort { display: flex; align-items: center; gap: 8px; font-size: var(--t-sm); color: var(--muted); }
+  .job-sort select { border-radius: 10px; min-height: 36px; }
+  .view-toggle { display: inline-flex; border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+  .view-toggle button { border: 0; background: var(--paper); color: var(--muted); padding: 7px 10px;
+    border-radius: 0; display: grid; place-items: center; }
+  .view-toggle button + button { border-left: 1px solid var(--rule); }
+  .view-toggle button svg { width: 18px; height: 18px; }
+  .view-toggle button[aria-pressed="true"] { background: var(--accent-bg); color: var(--accent); }
+  [data-layout="board"] .manifest { border-radius: 0 0 16px 16px; border-top: 0; padding: 0 12px 12px; }
+  [data-layout="board"] .manifest > .crawl:first-child > .row,
+  [data-layout="board"] .manifest > .crawl:last-child:not(.open) > .row { border-radius: 0; }
+  /* table rows: one line per job; the row's ⋮ (or a click) opens its actions and details */
+  .brow, .bhead { display: none; }
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl > .row { display: none; }
+  [data-layout="board"]:not([data-jobview="cards"]) .brow,
+  [data-layout="board"]:not([data-jobview="cards"]) .bhead { display: grid; }
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl:not(.open) > :not(.brow) { display: none; }
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl { border: 1px solid var(--rule); border-radius: 12px;
+    margin-top: 8px; background: var(--paper); overflow: hidden; }
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl:last-child { border-bottom: 1px solid var(--rule); }
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl.open > :not(.brow) { padding-left: 18px; padding-right: 18px; }
+  [data-layout="board"]:not([data-jobview="cards"]) .crawl.open > .seeds { padding-bottom: 14px; }
+  .brow, .bhead { grid-template-columns: 4px minmax(240px, 2.6fr) repeat(3, minmax(70px, .7fr)) minmax(118px, auto) minmax(90px, .8fr) 36px;
+    gap: 14px; align-items: center; }
+  .brow { padding: 10px 12px 10px 0; cursor: pointer; transition: background .12s; }
+  .brow:hover { background: var(--surface); }
+  .brow .gutter { width: 4px; align-self: stretch; min-height: 44px; border-radius: 0 3px 3px 0; }
+  .bhead { padding: 10px 12px 4px 0; font-size: var(--t-xs); font-weight: 600; color: var(--muted); }
+  .bhead .c { text-align: center; }
+  .bjob { display: flow-root; min-width: 0; }
+  .bjob .kind-icon { float: left; width: 38px; height: 38px; margin: 1px 12px 0 0; }
+  .bjob .bname { font-weight: 600; font-size: calc(15px * var(--scale)); color: var(--ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bjob .bmeta { font-size: var(--t-sm); color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 8px;
+    align-items: center; margin-top: 2px; }
+  .bjob .bmeta .coll-chip { font-family: var(--ui); font-size: var(--t-xs); }
+  .bstat { text-align: center; line-height: 1.25; }
+  .bstat b { display: block; font-size: calc(15px * var(--scale)); font-weight: 700; color: var(--ink);
+    font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bstat span { font-size: var(--t-xs); color: var(--muted); }
+  .brow .badge { justify-self: center; text-transform: uppercase; padding: 5px 12px; border-radius: 999px; }
+  .bsize { line-height: 1.3; font-size: var(--t-sm); }
+  .bsize b { display: block; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .bsize span { color: var(--muted); }
+  .kebab { width: 34px; height: 34px; border-radius: 50%; border: 0; background: transparent; color: var(--muted);
+    font-size: 20px; line-height: 1; display: grid; place-items: center; }
+  .kebab:hover, .kebab[aria-expanded="true"] { background: var(--surface); color: var(--ink); }
+  /* narrower windows: tiles and panels wrap, and the list shows as cards */
+  @media (max-width: 1180px) {
+    .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .tiles .new-job-btn { grid-column: 1 / -1; justify-self: start; }
+    .panels { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .panels .panel-activity { grid-column: 1 / -1; order: 3; }
+  }
+  @media (max-width: 1000px) {
+    [data-layout="board"] .crawl > .row { display: grid !important; }
+    [data-layout="board"] .brow, [data-layout="board"] .bhead, .view-toggle { display: none !important; }
+    [data-layout="board"] .crawl:not(.open) > :not(.brow):not(.row) { display: revert !important; }
+    .panels { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (forced-colors: active) {
+    .cols .bar, .side-card .meter span { forced-color-adjust: none; background: CanvasText; }
+  }
 </style>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header>
   <h1 class="mark">Simple Webcrawl Manager <b>(SWM)</b></h1>
+  <label class="board-search board-only"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg><input type="search" id="board-search" placeholder="Search jobs by name or #id" aria-label="Search jobs by name or number" autocomplete="off"></label>
   <div class="tools">
     <span class="clock" id="clock" role="timer" aria-label="Current time, UTC"></span>
     <details class="appearance" id="appearance">
@@ -760,23 +965,25 @@
   aria-label="Resize the menu: drag, or use the left and right arrow keys; double-click to reset"
   aria-valuemin="150" aria-valuemax="360" aria-valuenow="200" tabindex="0"></div>
 <nav class="sidebar" aria-label="Sections">
-  <button type="button" class="nav-item active" data-view="jobs">Jobs<span class="nav-count" id="nav-active"></span></button>
-  <button type="button" class="nav-item" data-view="collections">Collections</button>
-  <button type="button" class="nav-item" data-view="new">New job</button>
-  <button type="button" class="nav-item" data-view="settings">Settings</button>
+  <button type="button" class="nav-item active" data-view="jobs"><span class="nav-icon board-only" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/><path d="M4.5 12v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/></svg></span>Jobs<span class="nav-count classic-only" id="nav-active"></span><span class="nav-total board-only" id="nav-jobs-total"></span></button>
+  <button type="button" class="nav-item" data-view="collections"><span class="nav-icon board-only" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></svg></span>Collections<span class="nav-total board-only" id="nav-colls-total"></span></button>
+  <button type="button" class="nav-item" data-view="new"><span class="nav-icon board-only" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg></span>New job</button>
+  <button type="button" class="nav-item" data-view="settings"><span class="nav-icon board-only" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></span>Settings</button>
+  <div class="side-card board-only" id="side-machine"></div>
 </nav>
 <main id="main">
   <section class="view" id="view-jobs">
-    <div class="overview-head">
+    <div class="board-top board-only" id="board-top"></div>
+    <div class="overview-head classic-only">
       <h2 class="eyebrow">Overview</h2>
       <details class="customise" id="customise">
         <summary aria-label="Customise the overview: show, hide and order its cards">Customise</summary>
         <div class="menu" id="customise-menu"></div>
       </details>
     </div>
-    <div class="cards" id="overview" aria-label="Overview cards"></div>
+    <div class="cards classic-only" id="overview" aria-label="Overview cards"></div>
     <span class="help" id="resources-note"></span>
-    <h2 class="eyebrow">Jobs</h2>
+    <h2 class="eyebrow classic-only">Jobs</h2>
     <div class="filter-bar" id="job-filters">
       <input type="search" id="jf-search" placeholder="Search by name or #id" aria-label="Search jobs by name" autocomplete="off">
       <select id="jf-kind" aria-label="Job type">
@@ -807,7 +1014,26 @@
       <button type="button" class="secondary" id="jf-clear">Clear</button>
       <span class="jf-count" id="jf-count"></span>
     </div>
+    <div class="jobs-head board-only">
+      <h2 id="board-jobs-title">Jobs</h2>
+      <label class="job-sort">Sort
+        <select id="job-sort" aria-label="Sort jobs">
+          <option value="newest">Created (newest)</option>
+          <option value="oldest">Created (oldest)</option>
+          <option value="name">Name (A–Z)</option>
+          <option value="status">Status</option>
+          <option value="size">Size (largest)</option>
+        </select>
+      </label>
+      <div class="view-toggle" role="group" aria-label="Show jobs as">
+        <button type="button" data-jobview="table" aria-pressed="true" title="Table">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></svg><span class="sr-only">Table</span></button>
+        <button type="button" data-jobview="cards" aria-pressed="false" title="Cards">
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg><span class="sr-only">Cards</span></button>
+      </div>
+    </div>
     <div class="manifest" id="manifest"><div class="empty">Loading…</div></div>
+    <div class="viz-tip" id="viz-tip" role="tooltip" hidden></div>
   </section>
   <section class="view hidden" id="view-collections">
     <h2 class="eyebrow">Collections</h2>
@@ -3351,7 +3577,7 @@ function applyAppearance(a) {
   if (a.theme === "light" || a.theme === "dark") root.setAttribute("data-theme", a.theme); else root.removeAttribute("data-theme");
   if (a.contrast === "high") root.setAttribute("data-contrast", "high"); else root.removeAttribute("data-contrast");
   if (a.text === "large" || a.text === "larger") root.setAttribute("data-text", a.text); else root.removeAttribute("data-text");
-  applyUiTheme(validThemeId(a.uiTheme), a.iconStyle, a.iconSize);
+  applyUiTheme(validThemeId(a.uiTheme), a);
   const form = $("#appearance-form");
   if (!form) return;
   form.theme.value = a.theme === "light" || a.theme === "dark" ? a.theme : "system";
@@ -3364,7 +3590,8 @@ function saveAppearance() {
   const chosen = uiThemes.find(t => t.id === form.uiTheme.value);
   const a = {theme: form.theme.value, contrast: form.contrast.checked ? "high" : "normal", text: form.text.value,
              uiTheme: chosen ? chosen.id : "default", iconStyle: chosen ? chosen.icon_style : "mono",
-             iconSize: chosen ? chosen.icon_size : "normal"};
+             iconSize: chosen ? chosen.icon_size : "normal",
+             layout: chosen ? chosen.layout : "classic", font: chosen ? chosen.font : "system"};
   try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(a)); } catch (e) { /* per-browser convenience only */ }
   applyAppearance(a);
   renderUiThemes();
@@ -3382,11 +3609,17 @@ function kindIcon(role) {
   const label = KIND_LABELS[role] || role;
   return `<span class="kind-icon kind-${role}" role="img" aria-label="${label}" title="${label}"></span>`;
 }
-function applyUiTheme(id, iconStyle, iconSize) {
+function applyUiTheme(id, traits) {
   const root = document.documentElement;
+  const t = traits || {};
   root.setAttribute("data-ui-theme", id);
-  if (iconStyle === "color") root.setAttribute("data-icons", "color"); else root.removeAttribute("data-icons");
-  if (iconSize === "large") root.setAttribute("data-icon-size", "large"); else root.removeAttribute("data-icon-size");
+  const flag = (attr, on, value) => on ? root.setAttribute(attr, value) : root.removeAttribute(attr);
+  flag("data-icons", t.iconStyle === "color", "color");
+  flag("data-icon-size", t.iconSize === "large", "large");
+  const wasBoard = root.getAttribute("data-layout") === "board";
+  flag("data-layout", t.layout === "board", "board");
+  flag("data-font", t.font === "inter", "inter");
+  if (wasBoard !== (t.layout === "board") && typeof renderBoard === "function") renderBoard();
   ICON_ROLES.forEach(role => root.style.setProperty(`--icon-${role}`, `url("${themeIconUrl(id, role)}")`));
   let link = document.getElementById("ui-theme-css");
   if (id === "default") { if (link) link.remove(); return; }
@@ -3410,7 +3643,8 @@ async function loadUiThemes() {
     `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}${t.builtin ? "" : " (installed)"}</option>`).join("");
   const current = uiThemes.find(t => t.id === validThemeId(saved.uiTheme));
   if (!current || current.icon_style !== (saved.iconStyle || "mono")
-      || current.icon_size !== (saved.iconSize || "normal")) {
+      || current.icon_size !== (saved.iconSize || "normal")
+      || current.layout !== (saved.layout || "classic") || current.font !== (saved.font || "system")) {
     // a theme removed since, or one whose icons changed: settle it
     select.value = current ? current.id : "default";
     saveAppearance();
@@ -3883,11 +4117,251 @@ async function refresh() {
     fillCollectionPickers();
     renderCollections();
     renderJobList();
+    renderBoard();
   } catch (e) {
     $("#manifest").innerHTML = `<div class="empty">Server unreachable — ${e.message}</div>`;
   }
 }
 
+// --- the board layout (a theme's choice): stat tiles, a status donut, the
+// jobs started each day, the busiest collections, and the machine's state
+// in the menu. Every figure is read from the jobs, collections and machine
+// readings the page already has; nothing is drawn that is not measured.
+const UI_ICONS = {
+  jobs: '<ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3V6"/><path d="M4.5 12v6c0 1.7 3.4 3 7.5 3s7.5-1.3 7.5-3v-6"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>',
+  folder: '<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="currentColor" stroke="none"/>',
+  pages: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M14 3.5v5h5M9 13h6M9 16.5h6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+};
+const uiIcon = name => `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${UI_ICONS[name]}</svg>`;
+const isBoard = () => document.documentElement.getAttribute("data-layout") === "board";
+function compactNumber(n) {
+  n = Number(n) || 0;
+  if (n < 1000) return String(n);
+  return new Intl.NumberFormat(undefined, {notation: "compact", maximumFractionDigits: 1}).format(n);
+}
+function localDay(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function relTime(iso) {
+  const then = Date.parse(iso || "");
+  if (!Number.isFinite(then)) return "";
+  const s = Math.max(0, (Date.now() - then) / 1000);
+  if (s < 60) return "just now";
+  const units = [["year", 31536000], ["month", 2592000], ["day", 86400], ["hour", 3600], ["min", 60]];
+  const [unit, size] = units.find(([, size]) => s >= size);
+  const n = Math.floor(s / size);
+  return `${n} ${unit}${n === 1 || unit === "min" ? "" : "s"} ago`;
+}
+// jobs started on each of the last `days` days, oldest first, by local date
+function jobsPerDay(crawls, days) {
+  const out = [];
+  const today = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+    out.push({day: localDay(d), date: d, count: 0});
+  }
+  const index = new Map(out.map((o, i) => [o.day, i]));
+  crawls.forEach(c => {
+    const t = Date.parse(c.created_at || "");
+    if (!Number.isFinite(t)) return;
+    const at = index.get(localDay(new Date(t)));
+    if (at != null) out[at].count += 1;
+  });
+  return out;
+}
+function niceMax(n) {
+  if (n <= 4) return 4;
+  const step = Math.pow(10, Math.floor(Math.log10(n)));
+  const m = [1, 2, 2.5, 5, 10].map(k => k * step).find(v => v >= n / 1) || 10 * step;
+  return Math.ceil(n / (m / 4)) * (m / 4);
+}
+// a stat tile's trend: 2px line in a quiet colour, the current day in the accent
+function sparkline(values) {
+  if (values.length < 2) return "";
+  const w = 88, h = 36, max = Math.max(1, ...values);
+  const pts = values.map((v, i) => [i * (w - 4) / (values.length - 1) + 2, h - 3 - v / max * (h - 8)]);
+  const d = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join(" ");
+  const last = pts[pts.length - 1];
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${d}" fill="none" stroke="var(--tile)" stroke-opacity=".55" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4" fill="var(--tile)" stroke="var(--paper)" stroke-width="2"/></svg>`;
+}
+const STATUS_GROUPS = [
+  {key: "running", label: "Running", color: "var(--viz-run)", of: ["running", "stopping"]},
+  {key: "completed", label: "Completed", color: "var(--viz-done)", of: ["completed"]},
+  {key: "paused", label: "Paused or waiting", color: "var(--viz-pause)", of: ["paused", "blocked", "waiting", "pending"]},
+  {key: "failed", label: "Stopped or failed", color: "var(--viz-stop)", of: ["stopped", "failed"]},
+];
+function donut(groups, total) {
+  const r = 52, c = 2 * Math.PI * r, gap = total > 1 ? 2 : 0;
+  let at = 0;
+  const arcs = groups.filter(g => g.count).map(g => {
+    const len = g.count / Math.max(1, total) * c;
+    const seg = `<circle r="${r}" cx="68" cy="68" fill="none" stroke="${g.color}" stroke-width="16"
+      stroke-dasharray="${Math.max(0, len - gap).toFixed(2)} ${c.toFixed(2)}" stroke-dashoffset="${(-at).toFixed(2)}"
+      transform="rotate(-90 68 68)" data-tip="${g.count}|${escapeHtml(g.label)}"/>`;
+    at += len;
+    return seg;
+  }).join("");
+  return `<svg class="donut" viewBox="0 0 136 136" aria-hidden="true">
+    <circle r="${r}" cx="68" cy="68" fill="none" stroke="var(--rule)" stroke-width="16"/>${arcs}
+    <text class="total" x="68" y="70" text-anchor="middle">${total}</text>
+    <text class="total-label" x="68" y="90" text-anchor="middle">${total === 1 ? "job" : "jobs"}</text></svg>`;
+}
+let activityAsTable = false;
+function activityChart(days) {
+  const max = niceMax(Math.max(...days.map(d => d.count)));
+  const fmt = d => d.date.toLocaleDateString(undefined, {month: "short", day: "numeric"});
+  if (activityAsTable) {
+    return `<table class="viz-table"><thead><tr><th scope="col">Day</th><th scope="col">Jobs started</th></tr></thead><tbody>${
+      days.map(d => `<tr><td>${escapeHtml(fmt(d))}</td><td>${d.count}</td></tr>`).join("")}</tbody></table>`;
+  }
+  const ticks = [0, max / 2, max].map(v => Math.round(v));
+  const peak = Math.max(...days.map(d => d.count));
+  const peakAt = days.findIndex(d => d.count === peak && peak > 0);
+  return `<div class="cols">
+      ${ticks.map(v => `<div class="grid" style="bottom:${(v / max * 100).toFixed(1)}%"><span>${v}</span></div>`).join("")}
+      <div class="bars">${days.map((d, i) => `<div class="col" tabindex="0" role="img"
+          aria-label="${escapeHtml(fmt(d))}: ${d.count} job${d.count === 1 ? "" : "s"} started" data-tip="${d.count}|${escapeHtml(fmt(d))}">
+          <span class="bar" style="height:${(d.count / max * 100).toFixed(1)}%"></span>${
+          i === peakAt ? `<span class="peak" style="bottom:calc(${(d.count / max * 100).toFixed(1)}% + 4px)">${d.count}</span>` : ""}</div>`).join("")}</div>
+    </div>
+    <div class="cols-x" aria-hidden="true">${days.map(d => `<span>${escapeHtml(fmt(d))}</span>`).join("")}</div>`;
+}
+function toggleActivityTable() { activityAsTable = !activityAsTable; renderBoard(true); }
+function socialPosts(c) {
+  const seeds = Array.isArray(c.seeds) ? c.seeds : [];
+  const d = seeds[0] && seeds[0].details ? seeds[0].details : {};
+  return (Number(d.posts_exported) || 0) + (Number(d.videos_exported) || 0);
+}
+let lastBoardHtml = "";
+function renderBoard(force) {
+  const top = $("#board-top");
+  if (!top || !isBoard()) return;
+  const crawls = lastCrawls || [];
+  const collections = lastCollections || [];
+  const [res, storage] = lastOverview || [{}, {}];
+  const count = st => crawls.filter(c => st.includes(c.status)).length;
+  const active = count(ACTIVE_STATUSES);
+  const running = count(["running"]);
+  const completed = count(["completed"]);
+  const pages = crawls.reduce((n, c) => n + (["facebook", "instagram", "x", "youtube"].includes(c.kind)
+    ? socialPosts(c) : Number((c.totals || {}).visited) || 0), 0);
+  const activeColls = collections.reduce((n, c) => n + (Number(c.active_jobs) || 0), 0);
+  const trend = jobsPerDay(crawls, 14).map(d => d.count);
+  const tile = (cls, icon, value, label, sub, spark = "") => `<div class="tile ${cls}">
+      <span class="tile-icon" aria-hidden="true">${uiIcon(icon)}</span>
+      <div class="tile-body"><span class="tile-value">${value}</span><span class="tile-label">${label}</span>
+        <span class="tile-sub">${sub}</span></div>${spark}</div>`;
+  const groups = STATUS_GROUPS.map(g => ({...g, count: count(g.of)}));
+  const busiest = [...collections].sort((a, b) => String(b.last_activity || "").localeCompare(String(a.last_activity || ""))).slice(0, 3);
+  const html = `<div class="tiles">
+      ${tile("tile-jobs", "jobs", crawls.length, "Total jobs", `${active} active · ${completed} completed`,
+        `<span class="sr-only">Jobs started over the last 14 days, oldest first: ${trend.join(", ")}.</span>${sparkline(trend)}`)}
+      ${tile("tile-active", "play", active, "Active jobs", running ? `${running} running now` : "none running now")}
+      ${tile("tile-colls", "folder", collections.length, "Collections", `${activeColls} active job${activeColls === 1 ? "" : "s"}`)}
+      ${tile("tile-pages", "pages", compactNumber(pages), "Pages and posts", `captured · ${fmtBytes((storage || {}).total_bytes || 0)}`)}
+      <button type="button" class="new-job-btn" onclick="showView('new')">${uiIcon("plus")}New job</button>
+    </div>
+    <div class="panels">
+      <section class="panel" aria-labelledby="p-status"><div class="panel-head"><h2 id="p-status">Job status</h2></div>
+        <div class="donut-wrap">${donut(groups, crawls.length)}
+          <ul class="legend">${groups.map(g => `<li><span class="key" style="background:${g.color}" aria-hidden="true"></span>${g.label}<b>${g.count}</b></li>`).join("")}</ul>
+        </div></section>
+      <section class="panel panel-activity" aria-labelledby="p-activity"><div class="panel-head">
+          <h2 id="p-activity">Recent activity <span class="panel-sub">· jobs started, last 7 days</span></h2>
+          <button type="button" class="secondary panel-tool" onclick="toggleActivityTable()" aria-pressed="${activityAsTable}">${activityAsTable ? "Show chart" : "Show as table"}</button></div>
+        ${activityChart(jobsPerDay(crawls, 7))}</section>
+      <section class="panel" aria-labelledby="p-colls"><div class="panel-head"><h2 id="p-colls">Collections</h2>
+          <button type="button" class="linkish panel-tool" onclick="showView('collections')">View all ${uiIcon("arrow").replace('<svg ', '<svg width="16" height="16" style="vertical-align:-3px" ')}</button></div>
+        <div class="coll-list">${busiest.length ? busiest.map(c => `<button type="button" class="coll-item" onclick="showView('collections')">
+            <span class="kind-icon kind-collection" aria-hidden="true"></span>
+            <span><b>${escapeHtml(c.name)}</b><span class="sub">${Number(c.jobs) || 0} job${Number(c.jobs) === 1 ? "" : "s"} · ${fmtBytes(Number(c.bytes) || 0)}</span></span></button>`).join("")
+          : `<p class="panel-sub">No collections yet.</p>`}</div></section>
+    </div>`;
+  if (force || html !== lastBoardHtml) { top.innerHTML = html; lastBoardHtml = html; }
+  // the menu: totals beside Jobs and Collections, the machine at its foot
+  $("#nav-jobs-total").textContent = crawls.length ? String(crawls.length) : "";
+  $("#nav-colls-total").textContent = collections.length ? String(collections.length) : "";
+  const snap = (res || {}).snapshot || {};
+  const disk = (storage || {}).disk || {};
+  const used = disk.total ? disk.used / disk.total * 100 : 0;
+  const th = (res || {}).thresholds || {};
+  const lowDisk = th.enabled !== false && snap.disk && th.disk_free_percent != null && snap.disk.free_percent < th.disk_free_percent;
+  const machine = `<h2>Storage usage</h2>
+    <div class="meter${lowDisk ? " low" : ""}" role="meter" aria-label="Disk used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(used)}"><span style="width:${used.toFixed(1)}%"></span></div>
+    <div class="line"><span><b>${fmtBytes(disk.used || 0)}</b> / ${fmtBytes(disk.total || 0)}</span><span>${Math.round(used)}%</span></div>
+    <div class="line"><span>Captured</span><b>${fmtBytes((storage || {}).total_bytes || 0)}</b></div>
+    ${snap.measured !== false && snap.cpu && snap.cpu.free_percent != null ? `<div class="line"><span>CPU free</span><b>${fmtPercent(snap.cpu.free_percent)}</b></div>` : ""}
+    ${snap.measured !== false && snap.memory && snap.memory.free_percent != null ? `<div class="line"><span>Memory free</span><b>${fmtPercent(snap.memory.free_percent)}</b></div>` : ""}`;
+  const side = $("#side-machine");
+  if (side.innerHTML !== machine) side.innerHTML = machine;
+}
+// one tooltip for the charts: on hover and on keyboard focus, value first
+(function () {
+  const tip = $("#viz-tip");
+  const show = (el, x, y) => {
+    const [value, label] = String(el.getAttribute("data-tip") || "").split("|");
+    tip.replaceChildren();
+    const b = document.createElement("b"); b.textContent = value;
+    const s = document.createElement("span"); s.textContent = ` ${label}`;
+    tip.append(b, s); tip.hidden = false;
+    tip.style.left = `${Math.min(x + 12, window.innerWidth - tip.offsetWidth - 8)}px`;
+    tip.style.top = `${y - tip.offsetHeight - 10}px`;
+  };
+  document.addEventListener("pointermove", e => {
+    const el = e.target.closest && e.target.closest("#board-top [data-tip]");
+    if (el) show(el, e.clientX, e.clientY); else tip.hidden = true;
+  });
+  document.addEventListener("focusin", e => {
+    const el = e.target.closest && e.target.closest("#board-top [data-tip]");
+    if (!el) { tip.hidden = true; return; }
+    const box = el.getBoundingClientRect();
+    show(el, box.left + box.width / 2, box.top);
+  });
+  document.addEventListener("focusout", () => { tip.hidden = true; });
+})();
+// how the list is shown and ordered on the board; kept in this browser
+const JOB_VIEW_KEY = "swm.jobview", JOB_SORT_KEY = "swm.jobsort";
+function applyJobView(view) {
+  const v = view === "cards" ? "cards" : "table";
+  document.documentElement.setAttribute("data-jobview", v);
+  $$(".view-toggle button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.jobview === v)));
+}
+try { applyJobView(localStorage.getItem(JOB_VIEW_KEY)); } catch (_) { applyJobView("table"); }
+try { $("#job-sort").value = localStorage.getItem(JOB_SORT_KEY) || "newest"; } catch (_) {}
+$$(".view-toggle button").forEach(b => b.addEventListener("click", () => {
+  applyJobView(b.dataset.jobview);
+  try { localStorage.setItem(JOB_VIEW_KEY, b.dataset.jobview); } catch (_) {}
+}));
+$("#job-sort").addEventListener("change", () => {
+  try { localStorage.setItem(JOB_SORT_KEY, $("#job-sort").value); } catch (_) {}
+  renderJobList();
+});
+const STATUS_ORDER = ["running", "stopping", "blocked", "paused", "waiting", "pending", "failed", "stopped", "completed"];
+function sortJobs(list) {
+  if (!isBoard()) return list;
+  const by = $("#job-sort").value;
+  const bytes = c => Number((c.totals || {}).bytes) || 0;
+  const sorted = [...list];
+  if (by === "oldest") sorted.sort((a, b) => Number(a.id) - Number(b.id));
+  else if (by === "name") sorted.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  else if (by === "status") sorted.sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) || Number(b.id) - Number(a.id));
+  else if (by === "size") sorted.sort((a, b) => bytes(b) - bytes(a));
+  else sorted.sort((a, b) => Number(b.id) - Number(a.id));
+  return sorted;
+}
+// the header's search box is the job filter's own search, in two places
+$("#board-search").addEventListener("input", () => {
+  $("#jf-search").value = $("#board-search").value;
+  $("#jf-search").dispatchEvent(new Event("input", {bubbles: true}));
+  if (!$("#view-jobs").classList.contains("hidden")) return;
+  showView("jobs");
+});
+$("#jf-search").addEventListener("input", () => {
+  if ($("#board-search").value !== $("#jf-search").value) $("#board-search").value = $("#jf-search").value;
+});
 // The list is filtered here, in the page, so the two-second refresh keeps
 // the figures live and the filter in place. The chosen filter survives a
 // reload through the browser's storage for this dashboard.
@@ -3928,8 +4402,10 @@ function renderJobList() {
     ? (filtering ? `${shown.length} of ${lastCrawls.length} jobs` : `${lastCrawls.length} job${lastCrawls.length === 1 ? "" : "s"}`)
     : "";
   $("#jf-clear").hidden = !filtering;
+  $("#board-jobs-title").textContent = `Jobs (${shown.length})`;
+  const head = `<div class="bhead" aria-hidden="true"><span></span><span>Job</span><span></span><span class="c">Captured</span><span></span><span class="c">Status</span><span>Size · created</span><span></span></div>`;
   $("#manifest").innerHTML = shown.length
-    ? shown.map(crawlRow).join("")
+    ? head + sortJobs(shown).map(crawlRow).join("")
     : lastCrawls.length
       ? `<div class="empty">No jobs match this filter.</div>`
       : `<div class="empty">No jobs yet. Set one up under <code>New job</code>.</div>`;

@@ -1094,6 +1094,16 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
             "X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
 
+    @app.get("/appearance/fonts/{name}")
+    def ui_font(name: str):
+        """The typefaces SWM ships for themes to choose; nothing else."""
+        from fastapi.responses import FileResponse
+        from . import appearance
+        if name not in appearance.FONT_FILES:
+            raise HTTPException(404, "No such font")
+        return FileResponse(appearance.FONTS_DIR / name, media_type="font/woff2",
+                            headers={"Cache-Control": "max-age=86400"})
+
     @app.post("/api/appearance/themes")
     async def install_ui_theme(request: Request, replace: bool = False):
         """Install a theme from a zip sent as the request body."""
