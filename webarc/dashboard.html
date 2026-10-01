@@ -504,6 +504,15 @@
   @media (forced-colors: active) {
     .kind-icon { forced-color-adjust: none; background: CanvasText; }
   }
+  .stored-in { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0;
+    font-size: var(--t-sm); color: var(--muted); }
+  .crawl > .stored-in { padding: 0 18px 10px 22px; }
+  .stored-in .stored-label { font-weight: 600; color: var(--muted); }
+  .stored-in code.path { font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+    font-size: var(--t-xs); color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere; min-width: 0; }
+  .stored-in .copy-path { padding: 2px 8px; font-size: var(--t-xs); }
+  .storage-hint { display: block; margin-top: 4px; overflow-wrap: anywhere; }
   .theme-list { display: grid; gap: 10px; }
   .theme-card { border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px;
     background: var(--paper); display: flex; flex-direction: column; gap: 8px; }
@@ -1075,6 +1084,7 @@
             <input type="text" id="c-storage" class="storage-dir" placeholder="leave empty for the default location">
             <button type="button" class="secondary browse-btn" data-target="c-storage">Browse…</button>
           </div>
+            <span class="help storage-hint" id="c-storage-hint" aria-live="polite"></span>
         </div>
         <div class="field wide">
           <label class="check-row" style="gap:6px">
@@ -1461,9 +1471,10 @@
             <div class="field wide">
               <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="f-storage">?</button></label>
               <div class="storage-row">
-              <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="f-storage">Browse…</button>
             </div>
+              <span class="help storage-hint" id="f-storage-hint" aria-live="polite"></span>
             </div>
           </div>
         </div>
@@ -1531,9 +1542,10 @@
           <div class="field wide">
             <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="r-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="r-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <input type="text" id="r-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="r-storage">Browse…</button>
             </div>
+              <span class="help storage-hint" id="r-storage-hint" aria-live="polite"></span>
           </div>
           <div class="field full">
             <div class="rec-warning">
@@ -1603,9 +1615,10 @@
           <div class="field wide">
             <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="fb-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="fb-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <input type="text" id="fb-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="fb-storage">Browse…</button>
             </div>
+              <span class="help storage-hint" id="fb-storage-hint" aria-live="polite"></span>
           </div>
           <div class="field">
             <label class="field-label" for="fb-mode">Capture mode <button type="button" class="tip" aria-label="What is this for?" data-help="fb-mode">?</button></label>
@@ -1742,9 +1755,10 @@
           <div class="field wide">
             <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="ig-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="ig-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <input type="text" id="ig-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="ig-storage">Browse…</button>
             </div>
+              <span class="help storage-hint" id="ig-storage-hint" aria-live="polite"></span>
           </div>
           <div class="field">
             <label class="field-label" for="ig-mode">Capture mode <button type="button" class="tip" aria-label="What is this for?" data-help="ig-mode">?</button></label>
@@ -1889,9 +1903,10 @@
           <div class="field wide">
             <label class="field-label" for="x-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="x-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="x-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <input type="text" id="x-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="x-storage">Browse…</button>
             </div>
+              <span class="help storage-hint" id="x-storage-hint" aria-live="polite"></span>
           </div>
           <div class="field">
             <label class="field-label" for="x-mode">Capture mode <button type="button" class="tip" aria-label="What is this for?" data-help="x-mode">?</button></label>
@@ -2041,9 +2056,10 @@
           <div class="field wide">
             <label class="field-label" for="yt-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="yt-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="yt-storage" class="storage-dir" placeholder="leave empty for the default location">
+              <input type="text" id="yt-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="yt-storage">Browse…</button>
             </div>
+              <span class="help storage-hint" id="yt-storage-hint" aria-live="polite"></span>
             <span class="help">Video captures are large. The job holds itself when free space falls below the warning level in Settings, and stops a download mid-file at a third of that level, keeping the partial file to resume.</span>
           </div>
           <div class="field">
@@ -3285,6 +3301,7 @@ function renderCollections() {
           <span><b>${Number(c.metadata_fields) || 0}</b> metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}</span>
           ${c.last_activity ? `<span>last activity <b>${escapeHtml(String(c.last_activity).slice(0, 16).replace("T", " "))}</b></span>` : ""}
         </div>
+        ${storedIn(c.root_dir)}
         ${notes.length ? `<div class="coll-notes">${notes.join("")}</div>` : ""}
       </div>
       <div class="coll-actions">
@@ -3395,6 +3412,7 @@ function collectionFormMode(edit) {
   $("#c-cancel-btn").hidden = !editing;
   $("#c-storage").disabled = editing;
   $("#c-storage").placeholder = editing ? "fixed at creation" : "leave empty for the default location";
+  updateStorageHints();
   $("#c-metadata").closest(".field").hidden = editing;
 }
 function resetCollectionForm() {
@@ -4134,6 +4152,7 @@ async function refresh() {
     lastCollections = Array.isArray(collections) ? collections : [];
     fillCollectionFilter();
     fillCollectionPickers();
+    updateStorageHints();
     renderCollections();
     renderJobList();
     renderBoard();
@@ -4700,14 +4719,84 @@ function renderStorageDefault(settings) {
   const choosable = (settings.storage || {}).available !== false;
   box.disabled = !choosable;
   $("#storage-save").disabled = !choosable;
+  effectiveStorageRoot = settings.effective_storage_root || effectiveStorageRoot;
   $("#storage-help").textContent = choosable
-    ? `Captures go to ${settings.effective_storage_root}. Jobs can override this location. Existing jobs are not moved.`
+    ? `Now: ${settings.effective_storage_root}. New collections are created here, in a collections folder, and so is the `
+      + `Default collection the first time it is needed. Changing it moves nothing and changes nothing already made: `
+      + `existing jobs and collections stay where they are, and a job added to an existing collection, the Default `
+      + `collection included, still goes into that collection's own folder. A job or collection can name a location of its own.`
     : (settings.storage || {}).reason || "";
   document.querySelectorAll(".storage-dir").forEach(field => {
     field.disabled = !choosable;
     if (!choosable) field.placeholder = "unavailable on a networked dashboard";
   });
 }
+
+// What an empty storage field means, said beside it with the path itself:
+// a job goes inside its collection's folder; a collection is created under
+// the default location from Settings. Redrawn when the collection, the
+// field or the default changes.
+let effectiveStorageRoot = "";
+const STORAGE_FORMS = ["f", "r", "fb", "ig", "x", "yt"];
+function joinPath(base, ...parts) {
+  const sep = base.includes("\\") && !base.includes("/") ? "\\" : "/";
+  return [base.replace(/[\\/]+$/, ""), ...parts].join(sep);
+}
+function collectionFolder(pickValue) {
+  const chosen = pickValue ? lastCollections.find(c => String(c.id) === String(pickValue)) : null;
+  const dflt = lastCollections.find(c => c.slug === "default");
+  const c = chosen || dflt;
+  if (c) return {name: c.name, root: c.root_dir, made: true};
+  return {name: "Default", root: effectiveStorageRoot ? joinPath(effectiveStorageRoot, "collections", "default") : "", made: false};
+}
+function updateStorageHints() {
+  STORAGE_FORMS.forEach(prefix => {
+    const hint = $(`#${prefix}-storage-hint`), field = $(`#${prefix}-storage`), pick = $(`#${prefix}-collection`);
+    if (!hint || !field) return;
+    const own = field.value.trim();
+    let text;
+    if (field.disabled) text = "";
+    else if (own) text = `This job gets a folder of its own, named by its number, inside ${own}. It still belongs to its collection.`;
+    else {
+      const c = collectionFolder(pick ? pick.value : "");
+      text = c.root
+        ? `Left empty, the job goes inside the ${c.name} collection's folder: ${joinPath(c.root, "jobs", "<job number>")}`
+          + (c.made ? "." : " (the folder is created with the first job).")
+        : "Left empty, the job goes inside its collection's folder.";
+    }
+    if (hint.textContent !== text) hint.textContent = text;
+  });
+  const hint = $("#c-storage-hint"), field = $("#c-storage");
+  if (hint && field) {
+    const own = field.value.trim();
+    const editing = field.placeholder === "fixed at creation";
+    const text = field.disabled && !editing ? ""
+      : editing ? "The folder is fixed at creation."
+      : own ? `The collection's folder is created inside ${joinPath(own, "collections")}, named by its identifier.`
+      : effectiveStorageRoot
+        ? `Left empty, it goes under the default location: ${joinPath(effectiveStorageRoot, "collections", "<identifier>")}. Change the default under Settings › Storage.`
+        : "Left empty, it goes under the default location from Settings.";
+    if (hint.textContent !== text) hint.textContent = text;
+  }
+}
+document.addEventListener("input", e => { if (e.target.matches && e.target.matches(".storage-dir")) updateStorageHints(); });
+document.addEventListener("change", e => {
+  if (e.target.matches && e.target.matches(".collection-pick, .storage-dir")) updateStorageHints();
+});
+// copying a "Stored in" path
+document.addEventListener("click", async e => {
+  const button = e.target.closest && e.target.closest(".copy-path");
+  if (!button) return;
+  const path = button.dataset.path || "";
+  try { await navigator.clipboard.writeText(path); button.textContent = "Copied"; }
+  catch (_) {
+    const code = button.parentElement.querySelector("code.path");
+    if (code) { const range = document.createRange(); range.selectNodeContents(code);
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); }
+    button.textContent = "Selected";
+  }
+  setTimeout(() => { if (button.isConnected) button.textContent = "Copy"; }, 1500);
+});
 
 async function saveStorageDefault() {
   const msg = $("#storage-msg");

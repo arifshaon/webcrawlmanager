@@ -39,7 +39,7 @@ f-warc-size: >-
 f-warc-options: >-
   How the WARC files are written.
 f-storage: >-
-  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
+  Where this job's files go. Leave empty to put the job inside its collection's folder (the path is shown under the field). Choose a folder when the capture belongs elsewhere, such as an external drive; the job gets a folder of its own inside it and still belongs to its collection.
 
 # Record session
 r-url: >-
@@ -51,7 +51,7 @@ r-operator: >-
 r-browser: >-
   Which Chrome does the work. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 r-storage: >-
-  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
+  Where this job's files go. Leave empty to put the job inside its collection's folder (the path is shown under the field). Choose a folder when the capture belongs elsewhere, such as an external drive; the job gets a folder of its own inside it and still belongs to its collection.
 
 # Facebook Page capture
 fb-url: >-
@@ -63,7 +63,7 @@ fb-operator: >-
 fb-browser: >-
   Which Chrome does the work. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 fb-storage: >-
-  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
+  Where this job's files go. Leave empty to put the job inside its collection's folder (the path is shown under the field). Choose a folder when the capture belongs elsewhere, such as an external drive; the job gets a folder of its own inside it and still belongs to its collection.
 fb-mode: >-
   What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.
 fb-dates: >-
@@ -87,7 +87,7 @@ ig-listing: >-
 ig-browser: >-
   Which Chrome does the work. Headed, a Chrome SWM manages, is the usual choice. Native attaches to your installed Chrome, for the rare site that only behaves there.
 ig-storage: >-
-  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
+  Where this job's files go. Leave empty to put the job inside its collection's folder (the path is shown under the field). Choose a folder when the capture belongs elsewhere, such as an external drive; the job gets a folder of its own inside it and still belongs to its collection.
 ig-mode: >-
   What to collect: posts between two dates, the newest N posts, or only what has appeared since the last capture of this target.
 ig-surfaces: >-
@@ -113,7 +113,7 @@ x-browser: >-
 x-search-product: >-
   Which results tab a hashtag or search reads. Latest lists posts newest first as X served them. Top is X's own ranked pick, which changes from one moment and account to the next.
 x-storage: >-
-  Where this job's files go. Leave empty for the default folder from Settings; choose a folder when the capture belongs elsewhere, such as an external drive.
+  Where this job's files go. Leave empty to put the job inside its collection's folder (the path is shown under the field). Choose a folder when the capture belongs elsewhere, such as an external drive; the job gets a folder of its own inside it and still belongs to its collection.
 x-mode: >-
   What to collect: posts between two dates, the newest N posts, everything until you stop it or the timeline stops offering new posts, or only what has appeared since the last capture of this target.
 x-surfaces: >-
@@ -129,7 +129,7 @@ x-reply-max: >-
 
 # Settings
 storage-root: >-
-  Where new jobs put their files. Jobs can override this location. Existing jobs are not moved.
+  Where new collections are created, the Default collection included the first time it is needed. Changing it moves nothing: existing jobs and collections stay where they are, and jobs added to an existing collection keep going into its folder.
 res-cpu: >-
   Below this much spare processing power, you are asked before a new job starts. Around 15 is a sensible starting point.
 res-memory: >-
@@ -175,7 +175,7 @@ yt-browser: >-
 yt-resolution: >-
   The largest picture size to keep for each video. Video files are big, so a cap keeps a channel capture within a disk. Metadata only keeps everything but the video files themselves.
 yt-storage: >-
-  Where this job's files go. Leave empty for the default folder from Settings. Choose a folder with room: a channel of videos can take hundreds of gigabytes.
+  Where this job's files go. Leave empty to put the job inside its collection's folder (the path is shown under the field). Choose a folder when the capture belongs elsewhere, such as an external drive; the job gets a folder of its own inside it and still belongs to its collection.
 yt-mode: >-
   What to collect: items between two dates, the newest N items on each surface, everything until you stop it or the listing ends, or only what has appeared since the last capture of this target.
 yt-surfaces: >-
@@ -257,7 +257,7 @@ job-collection: >-
 c-name: >-
   The collection's name in lists and files. Its identifier for directories and archive records is fixed when it is created, so rename freely.
 c-storage: >-
-  Where the collection's directory is created. Leave empty for the default folder from Settings. Every job in the collection is placed under it.
+  Where the collection's folder is created. Leave empty for the default location from Settings (the path is shown under the field). Every job in the collection is placed inside it unless the job names a location of its own.
 c-metadata: >-
   A description of the whole collection, in the same fields a job has. Each job inherits these values for any element it does not set itself, and carries a Relation naming the collection.
 c-dedup: >-

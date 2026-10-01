@@ -338,3 +338,38 @@ class JobFilterTests(DashboardTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StorageLocationTests(DashboardTestCase):
+    """Where a job's or collection's files are is always on screen, and an
+    empty storage field says what it means, path and all."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.rows = (DASHBOARD.parent / "dashboard_hardening.js").read_text(encoding="utf-8")
+
+    def test_every_job_and_collection_card_says_where_it_is_stored(self):
+        self.assertIn("${storedIn(c.output_dir)}", self.rows)
+        self.assertIn("${storedIn(c.root_dir)}", self.script)
+        self.assertIn('class="act copy-path"', self.rows)
+
+    def test_every_storage_field_has_a_hint_that_names_the_path(self):
+        fields = re.findall(r'id="([a-z]+)-storage" class="storage-dir"', self.markup)
+        self.assertEqual(sorted(fields), sorted(["c", "f", "r", "fb", "ig", "x", "yt"]))
+        for prefix in fields:
+            with self.subTest(prefix):
+                self.assertIn(f'id="{prefix}-storage-hint"', self.markup)
+        for prefix in ("f", "r", "fb", "ig", "x", "yt"):
+            self.assertIn(f'"{prefix}"', self.script[self.script.index("const STORAGE_FORMS"):][:80])
+        self.assertIn('joinPath(c.root, "jobs", "<job number>")', self.script)
+        self.assertIn('joinPath(effectiveStorageRoot, "collections", "<identifier>")', self.script)
+
+    def test_the_default_location_says_it_moves_nothing(self):
+        self.assertIn("Changing it moves nothing and changes nothing already made", self.script)
+        from webarc.help import load_help
+        texts = load_help()
+        self.assertIn("Changing it moves nothing", texts["storage-root"])
+        for key in ("f-storage", "r-storage", "fb-storage", "ig-storage", "x-storage", "yt-storage"):
+            with self.subTest(key):
+                self.assertIn("inside its collection's folder", texts[key])

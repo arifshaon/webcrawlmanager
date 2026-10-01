@@ -11,6 +11,15 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+// Where a job's or a collection's files are on disk, with a button that
+// copies the path for a file manager or a terminal.
+function storedIn(path) {
+  if (!path) return "";
+  const p = escapeHtml(path);
+  return `<div class="stored-in"><span class="stored-label">Stored in</span><code class="path" title="${p}">${p}</code>`
+    + `<button type="button" class="act copy-path" data-path="${p}" aria-label="Copy the folder path">Copy</button></div>`;
+}
+
 function statusClass(value) {
   const allowed = new Set([
     "pending", "running", "paused", "stopping", "stopped",
@@ -175,6 +184,7 @@ function crawlRow(c) {
       </div>
       <span class="badge b-${statusCss}">${status}</span>
     </div>
+    ${storedIn(c.output_dir)}
     ${waiting ? `<div class="fb-phase">
       <span class="fb-phase-label">Waiting</span>
       <span>Created, not started: this machine was short of CPU, memory or disk space. It starts by itself once every resource is above its warning level, or now if you say so.</span>
