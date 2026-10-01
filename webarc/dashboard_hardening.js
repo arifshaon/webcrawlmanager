@@ -16,14 +16,19 @@ function escapeHtml(value) {
 // the folder it knows for that job or collection, never a path sent from
 // here. Where it cannot -- a dashboard reached over the network, a machine
 // with no desktop -- the path can be copied instead.
+// the buttons beside a folder: a folder opening, or two sheets for a copy
+const PATH_ICONS = {
+  open: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V6.5A1.5 1.5 0 0 1 5 5h4l2 2h7.5A1.5 1.5 0 0 1 20 8.5V10"/><path d="M3.5 17.5l2.4-6.4A1.5 1.5 0 0 1 7.3 10h13a1 1 0 0 1 .95 1.3l-2 5.9a1.5 1.5 0 0 1-1.42 1H4.3a.8.8 0 0 1-.8-.7z"/></svg>',
+  copy: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/></svg>',
+};
 function storedIn(path, kind, id) {
   if (!path) return "";
   const p = escapeHtml(path);
   const cap = typeof openFolderCapability !== "undefined" && openFolderCapability;
   const canOpen = cap && cap.available && kind && Number.isSafeInteger(Number(id));
   const button = canOpen
-    ? `<button type="button" class="act open-path" data-kind="${kind}" data-id="${Number(id)}" aria-label="Open this folder in the file manager">Open</button>`
-    : `<button type="button" class="act copy-path" data-path="${p}" aria-label="Copy the folder path"${cap && cap.reason ? ` title="${escapeHtml(cap.reason)}"` : ""}>Copy</button>`;
+    ? `<button type="button" class="act path-act open-path" data-kind="${kind}" data-id="${Number(id)}" aria-label="Open this folder in the file manager" title="Show this folder in the file manager">${PATH_ICONS.open}<span class="path-act-label">Open</span></button>`
+    : `<button type="button" class="act path-act copy-path" data-path="${p}" aria-label="Copy the folder path"${cap && cap.reason ? ` title="${escapeHtml(cap.reason)}"` : ""}>${PATH_ICONS.copy}<span class="path-act-label">Copy</span></button>`;
   return `<div class="stored-in"><span class="stored-label">Stored in</span><code class="path" title="${p}">${p}</code>${button}</div>`;
 }
 

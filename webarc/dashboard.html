@@ -16,6 +16,11 @@
       if (saved.text === "large" || saved.text === "larger") root.setAttribute("data-text", saved.text);
       // the dashboard theme: its colours as a stylesheet, its icons as
       // one CSS variable per job type
+      // a browser that has not chosen a theme gets the default one, Nebula
+      if (!saved.uiTheme) {
+        saved.uiTheme = "nebula"; saved.iconStyle = "color"; saved.iconSize = "large";
+        saved.layout = "board"; saved.font = "inter";
+      }
       var theme = /^[a-z0-9][a-z0-9-]{0,39}$/.test(saved.uiTheme || "") ? saved.uiTheme : "default";
       root.setAttribute("data-ui-theme", theme);
       if (saved.iconStyle === "color") root.setAttribute("data-icons", "color");
@@ -329,6 +334,34 @@
   .resource-card ul { margin: 8px 0 14px; padding-left: 20px; font-size: var(--t-md); line-height: 1.5; }
   .resource-card .choices { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
   .resource-card .why { font-size: var(--t-sm); color: var(--muted); margin-bottom: 12px; }
+  /* the one "are you sure": starting, creating and deleting all pass through it */
+  #confirm-overlay { display: none; position: fixed; inset: 0; z-index: 999;
+    background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center;
+    padding: 24px; }
+  #confirm-overlay.open { display: flex; }
+  .confirm-card { max-height: calc(100vh - 48px); overflow: auto; }
+  .confirm-card .confirm-head { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 6px; }
+  .confirm-card .confirm-mark { flex: none; width: 36px; height: 36px; border-radius: 10px;
+    display: grid; place-items: center; background: var(--accent-bg); color: var(--accent); }
+  .confirm-card .confirm-mark svg { width: 20px; height: 20px; }
+  .confirm-card.danger .confirm-mark { background: var(--stop-bg); color: var(--stop); }
+  .confirm-card h2 { margin: 6px 0 0; overflow-wrap: anywhere; }
+  .confirm-card .why { margin: 0 0 12px; white-space: pre-line; overflow-wrap: anywhere; }
+  .confirm-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px;
+    margin: 0 0 14px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 10px; font-size: var(--t-sm); }
+  .confirm-facts:empty { display: none; }
+  .confirm-facts dt { color: var(--muted); }
+  .confirm-facts dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+  .confirm-facts dd code { font-family: var(--mono); font-size: var(--t-xs); }
+  .confirm-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 14px;
+    font-size: var(--t-sm); color: var(--muted); }
+  .confirm-option { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 14px;
+    padding: 10px 12px; border: 1px solid var(--rule); border-radius: 10px; font-size: var(--t-sm); }
+  .confirm-option input { margin-top: 2px; }
+  .confirm-card.danger .confirm-option:has(input:checked) { border-color: var(--stop); background: var(--stop-bg); }
+  .confirm-card button.primary.danger-fill { background: var(--stop); color: var(--paper); }
+  .confirm-card button.primary.danger-fill:hover { background: var(--stop); filter: brightness(.92); }
   .b-running::before { content: "●"; margin-right: 5px; animation: pulse 1.4s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .3 } }
   .counts { font-family: var(--mono); font-size: var(--t-sm); color: var(--muted); text-align: right; }
@@ -511,7 +544,11 @@
   .stored-in code.path { font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
     font-size: var(--t-xs); color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
     border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere; min-width: 0; }
-  .stored-in .copy-path, .stored-in .open-path { padding: 2px 8px; font-size: var(--t-xs); }
+  .stored-in .path-act { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  .stored-in .path-act svg { width: 16px; height: 16px; flex: none; }
+  .stored-in .open-path { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .stored-in .open-path:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+  .stored-in .path-act.done { border-color: var(--run); color: var(--run); background: var(--run-bg); }
   .storage-hint { display: block; margin-top: 4px; overflow-wrap: anywhere; }
   .saves-to { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 6px;
     font-size: var(--t-sm); color: var(--muted); min-width: 0; }
@@ -2218,6 +2255,23 @@
     </div>
   </div>
 </div>
+<div id="confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-why">
+  <div class="resource-card confirm-card" id="confirm-card">
+    <div class="confirm-head">
+      <span class="confirm-mark" id="confirm-mark" aria-hidden="true"></span>
+      <h2 id="confirm-title"></h2>
+    </div>
+    <div class="why" id="confirm-why"></div>
+    <dl class="confirm-facts" id="confirm-facts"></dl>
+    <label class="confirm-field hidden" id="confirm-field"><span id="confirm-field-label"></span><input type="text" id="confirm-input" autocomplete="off"></label>
+    <label class="confirm-option hidden" id="confirm-option"><input type="checkbox" id="confirm-check"><span id="confirm-option-label"></span></label>
+    <div class="msg" id="confirm-msg" role="alert"></div>
+    <div class="choices">
+      <button type="button" class="secondary" id="confirm-no">Cancel</button>
+      <button type="button" class="primary" id="confirm-yes">Confirm</button>
+    </div>
+  </div>
+</div>
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => Array.from(document.querySelectorAll(s));
@@ -2637,6 +2691,10 @@ async function startRecording() {
     if ($("#r-storage").value.trim()) body.storage_dir = $("#r-storage").value.trim();
     if ($("#r-collection").value) body.collection_id = Number($("#r-collection").value);
     body.metadata = metadataEditors.record.value();
+    if (!await confirmStart("r", {what: "recording", name: body.name, targets: [url],
+                                  extra: [["Browser", chosenText("#r-browser")]]})) {
+      setRecMessage("Cancelled.", ""); return;
+    }
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setRecMessage("Cancelled.", ""); return; }
     body.start = choice;
@@ -2719,6 +2777,10 @@ async function startFacebook() {
   $("#facebook-start-btn").disabled = true;
   try {
     body.metadata = metadataEditors.facebook.value();
+    if (!await confirmStart("fb", {what: "Facebook capture", name: body.name, targets: [pageUrl],
+                                   extra: [["Mode", chosenText("#fb-mode")]]})) {
+      setFbMessage("Cancelled.", ""); return;
+    }
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setFbMessage("Cancelled.", ""); return; }
     body.start = choice;
@@ -2812,6 +2874,10 @@ async function startInstagram() {
   $("#instagram-start-btn").disabled = true;
   try {
     body.metadata = metadataEditors.instagram.value();
+    if (!await confirmStart("ig", {what: "Instagram capture", name: body.name, targets,
+                                  extra: [["Mode", chosenText("#ig-mode")], ["Surfaces", surfaces.join(", ")]]})) {
+      setMsg("Cancelled.", ""); return;
+    }
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setMsg("Cancelled.", ""); return; }
     body.start = choice;
@@ -2905,6 +2971,10 @@ async function startX() {
   $("#x-start-btn").disabled = true;
   try {
     body.metadata = metadataEditors.x.value();
+    if (!await confirmStart("x", {what: "X capture", name: body.name, targets,
+                                  extra: [["Mode", chosenText("#x-mode")], ["Surfaces", surfaces.join(", ")]]})) {
+      setMsg("Cancelled.", ""); return;
+    }
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setMsg("Cancelled.", ""); return; }
     body.start = choice;
@@ -3010,6 +3080,10 @@ async function startYouTube() {
   $("#youtube-start-btn").disabled = true;
   try {
     body.metadata = metadataEditors.youtube.value();
+    if (!await confirmStart("yt", {what: "YouTube capture", name: body.name, targets,
+                                  extra: [["Mode", chosenText("#yt-mode")], ["Surfaces", surfaces.join(", ")]]})) {
+      setMsg("Cancelled.", ""); return;
+    }
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setMsg("Cancelled.", ""); return; }
     body.start = choice;
@@ -3067,6 +3141,106 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && resourceDecision) settleResourceChoice(null);
   if (event.key === "Escape" && metadataJobId !== null) closeMetadata();
 });
+
+// ---- Are you sure? -------------------------------------------------------
+// Every start, creation and deletion is put to the curator first, in one
+// dialog: what will happen, the facts it rests on (what is captured, which
+// collection, the exact folder), and a button that names the action.
+// Resolves with {option, value} on yes, or null on Cancel, Escape or a click
+// outside. A deletion's "and the files too" is a checkbox, unticked.
+const CONFIRM_MARKS = {
+  start: '<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>',
+  create: '<path d="M12 5v14M5 12h14"/>',
+  delete: '<path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l.9 12.2a1.5 1.5 0 0 0 1.5 1.3h6.2a1.5 1.5 0 0 0 1.5-1.3L17.5 7M10 11v6M14 11v6"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor"/>',
+  info: '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.2"/>',
+};
+let confirmDecision = null, confirmReturnFocus = null, confirmCheck = null;
+function askConfirm({title, why = "", facts = [], yes = "Confirm", no = "Cancel", kind = "info",
+                     danger = false, option = null, field = null}) {
+  if (confirmDecision) settleConfirm(null);
+  const card = $("#confirm-card");
+  card.classList.toggle("danger", Boolean(danger));
+  $("#confirm-mark").innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">${CONFIRM_MARKS[kind] || CONFIRM_MARKS.info}</svg>`;
+  $("#confirm-title").textContent = title;
+  $("#confirm-why").textContent = why;
+  $("#confirm-facts").innerHTML = facts.filter(f => f && f[1] !== undefined && f[1] !== null && f[1] !== "")
+    .map(([label, value, asPath]) => `<dt>${escapeHtml(label)}</dt><dd>${asPath ? `<code>${escapeHtml(value)}</code>` : escapeHtml(value)}</dd>`).join("");
+  $("#confirm-option").classList.toggle("hidden", !option);
+  $("#confirm-check").checked = Boolean(option && option.checked);
+  $("#confirm-option-label").textContent = option ? option.label : "";
+  $("#confirm-field").classList.toggle("hidden", !field);
+  $("#confirm-field-label").textContent = field ? field.label : "";
+  $("#confirm-input").value = field ? field.value || "" : "";
+  $("#confirm-input").placeholder = field ? field.placeholder || "" : "";
+  confirmCheck = field && field.check ? field.check : null;
+  $("#confirm-msg").textContent = ""; $("#confirm-msg").className = "msg";
+  const yesBtn = $("#confirm-yes");
+  yesBtn.textContent = yes;
+  yesBtn.classList.toggle("danger-fill", Boolean(danger));
+  $("#confirm-no").textContent = no;
+  confirmReturnFocus = document.activeElement;
+  $("#confirm-overlay").classList.add("open");
+  // a deletion starts on Cancel, so Enter alone never deletes
+  (field ? $("#confirm-input") : danger ? $("#confirm-no") : yesBtn).focus();
+  return new Promise(resolve => { confirmDecision = resolve; });
+}
+function settleConfirm(answer) {
+  $("#confirm-overlay").classList.remove("open");
+  const resolve = confirmDecision;
+  confirmDecision = null;
+  if (confirmReturnFocus && document.contains(confirmReturnFocus)) confirmReturnFocus.focus();
+  confirmReturnFocus = null;
+  if (resolve) resolve(answer);
+}
+function confirmYes() {
+  const value = $("#confirm-input").value.trim();
+  const problem = confirmCheck ? confirmCheck(value) : "";
+  if (problem) {
+    $("#confirm-msg").textContent = problem; $("#confirm-msg").className = "msg err";
+    $("#confirm-input").focus();
+    return;
+  }
+  settleConfirm({option: $("#confirm-check").checked, value});
+}
+$("#confirm-no").addEventListener("click", () => settleConfirm(null));
+$("#confirm-yes").addEventListener("click", confirmYes);
+$("#confirm-input").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); confirmYes(); } });
+$("#confirm-overlay").addEventListener("click", event => {
+  if (event.target.id === "confirm-overlay") settleConfirm(null);
+});
+document.addEventListener("keydown", event => {
+  if (!confirmDecision) return;
+  if (event.key === "Escape") { event.preventDefault(); settleConfirm(null); return; }
+  if (event.key !== "Tab") return;
+  // keep the keyboard inside the dialog while it is open
+  const stops = $$("#confirm-card input, #confirm-card button").filter(el => el.offsetParent !== null);
+  if (!stops.length) return;
+  const first = stops[0], last = stops[stops.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+// What a new job's confirmation says, read from its form: the collection,
+// the folder shown under its picker, the mode chosen and the browser.
+function listed(items, most = 4) {
+  const shown = items.slice(0, most).join(", ");
+  return items.length > most ? `${shown} and ${items.length - most} more` : shown;
+}
+function chosenText(selector) {
+  const el = $(selector);
+  return el && el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent.trim() : "";
+}
+function confirmStart(prefix, {what, targets, name, extra = []}) {
+  const c = collectionFolder($(`#${prefix}-collection`) ? $(`#${prefix}-collection`).value : "");
+  const where = $(`#${prefix}-saves-to code`);
+  return askConfirm({
+    title: `Start this ${what}?`,
+    why: "SWM opens a browser and begins capturing as soon as you confirm. You can pause or stop it from the job list.",
+    kind: "start", yes: `Start ${what}`,
+    facts: [["Name", name || ""], [targets.length > 1 ? "Targets" : "Target", listed(targets)],
+            ...extra, ["Collection", c.name], ["Saved in", where ? where.textContent : "", true]],
+  });
+}
 
 // ---- Describe this capture: the metadata editor -----------------------
 // Archive-It's seed-level model: the fifteen Dublin Core elements plus
@@ -3259,6 +3433,18 @@ $("#fb-url").addEventListener("change", () => metadataEditors.facebook.render())
 $("#ig-targets").addEventListener("change", () => metadataEditors.instagram.render());
 $("#x-targets").addEventListener("change", () => metadataEditors.x.render());
 $("#yt-targets").addEventListener("change", () => metadataEditors.youtube.render());
+// ...and while they are typed, so a seed's tab is already there when the
+// field is left: added on leaving, it pushed the Start button down under a
+// click that had begun on it, and the click was lost
+const typedSeeds = {"#seed-list": "crawl", "#r-url": "record", "#fb-url": "facebook",
+                    "#ig-targets": "instagram", "#x-targets": "x", "#yt-targets": "youtube"};
+Object.entries(typedSeeds).forEach(([selector, editor]) => {
+  let timer = null;
+  $(selector).addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => metadataEditors[editor].render(), 300);
+  });
+});
 
 // ---- collections ------------------------------------------------------------
 const collectionMetadata = new MetadataEditor($("#c-metadata"), {scopes: () => []});
@@ -3393,9 +3579,15 @@ async function delCollection(id) {
   const summary = statusSummary(impact.by_status).replace(/<[^>]+>/g, "");
   const running = impact.running_jobs && impact.running_jobs.length
     ? `\n${impact.running_jobs.length} of them are still running and would be ended.` : "";
-  const first = `Delete the collection "${name}"?\n\nThis removes its ${impact.job_count} job(s) from the dashboard (${summary}).${running}\n\nNothing is changed until you confirm.`;
-  if (!confirm(first)) return;
-  const purge = confirm(`Also delete the collection's files from disk (${fmtBytes(Number(impact.bytes_on_disk) || 0)} under ${impact.root_dir})?\n\nOK = delete the files too. Cancel = keep the files on disk, remove only the records.`);
+  const sure = await askConfirm({
+    title: `Delete the collection "${name}"?`, kind: "delete", danger: true, yes: "Delete collection", no: "Keep it",
+    why: `This removes the collection and its ${impact.job_count} job(s) from the dashboard.${running}`,
+    facts: [["Jobs", summary ? `${impact.job_count} (${summary})` : String(impact.job_count)],
+            ["On disk", fmtBytes(Number(impact.bytes_on_disk) || 0)], ["Stored in", impact.root_dir || "", true]],
+    option: {label: `Also delete its files from disk (${fmtBytes(Number(impact.bytes_on_disk) || 0)}). Unticked, the files stay where they are and only the records go.`},
+  });
+  if (!sure) return;
+  const purge = sure.option;
   try {
     await api(`/api/collections/${id}?purge=${purge}${running ? "&force=true" : ""}`, {method: "DELETE"});
     refresh();
@@ -3461,6 +3653,16 @@ async function createCollection() {
   const name = $("#c-name").value.trim();
   if (!name) { say("Give the collection a name.", "err"); return; }
   const editing = editingCollectionId;
+  if (!editing) {
+    const where = $("#c-saves-to code");
+    const sure = await askConfirm({
+      title: `Create the collection "${name}"?`, kind: "create", yes: "Create collection",
+      why: "Its folder is made now; jobs you put in it are saved inside it.",
+      facts: [["Saved in", where ? where.textContent : $("#c-storage").value.trim(), true],
+              ["Duplicates", $("#c-dedup").checked ? "stored once across all its jobs" : "checked within each job only"]],
+    });
+    if (!sure) { say("Cancelled."); return; }
+  }
   say(editing ? "Saving…" : "Creating…");
   $("#c-create-btn").disabled = true;
   try {
@@ -3486,7 +3688,8 @@ $("#c-cancel-btn").addEventListener("click", () => { resetCollectionForm(); $("#
 async function rebuildIndex(id) {
   const c = lastCollections.find(x => Number(x.id) === Number(id));
   const name = c ? c.name : `#${id}`;
-  if (!confirm(`Rebuild the payload index of "${name}" from its WARC files?\n\nEvery job's records are read back; jobs made before the index existed join it, and nothing in the WARCs is changed. This takes a moment for large collections.`)) return;
+  if (!await askConfirm({title: `Rebuild the payload index of "${name}"?`, yes: "Rebuild index",
+      why: "Every job's records are read back from its WARC files; jobs made before the index existed join it, and nothing in the WARCs is changed. This takes a moment for large collections."})) return;
   const done = busy(`Reading the WARC files of "${name}"…`);
   try {
     const r = await api(`/api/collections/${id}/rebuild-index`, {method: "POST"});
@@ -3498,8 +3701,15 @@ async function rebuildIndex(id) {
 }
 // "New collection…" beside a job form's picker: name it, and it is chosen.
 async function newCollectionFor(selectId) {
-  const name = prompt("Name for the new collection:");
-  if (!name || !name.trim()) return;
+  const sure = await askConfirm({
+    title: "Create a new collection", kind: "create", yes: "Create collection",
+    why: `Its folder is made now, under ${effectiveStorageRoot ? joinPath(effectiveStorageRoot, "collections") : "the default storage location"}, and it is chosen for this job.`,
+    field: {label: "Name", placeholder: "e.g. Qatar news sites",
+            check: v => !v ? "Give the collection a name."
+              : lastCollections.some(c => String(c.name).toLowerCase() === v.toLowerCase()) ? "A collection of that name exists; pick it from the list instead." : ""},
+  });
+  if (!sure) return;
+  const name = sure.value;
   try {
     const made = await api("/api/collections", {method: "POST", headers: {"Content-Type": "application/json"},
                                                 body: JSON.stringify({name: name.trim()})});
@@ -3617,7 +3827,14 @@ document.addEventListener("click", event => {
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape") hideTip(); });
 window.addEventListener("scroll", hideTip, true);
+// "crawl #12 (qnl-site)" for the dialogs, from what the list already has
+function jobLabel(id) {
+  const c = (typeof lastCrawls !== "undefined" ? lastCrawls : []).find(x => Number(x.id) === Number(id));
+  return c && c.name ? `#${id} (${c.name})` : `#${id}`;
+}
 async function startNow(id) {
+  if (!await askConfirm({title: `Start job ${jobLabel(id)} now?`, kind: "start", yes: "Start now",
+      why: "It was waiting for the machine to have room. Starting it now may slow the jobs already running."})) return;
   try { await api(`/api/crawls/${id}/start`, {method:"POST"}); refresh(); }
   catch (e) { alert("Start failed: " + e.message); }
 }
@@ -3626,8 +3843,13 @@ function fmtPercent(value) {
 }
 // --- appearance: theme, contrast and text size, kept on this browser
 const APPEARANCE_KEY = "swm.appearance";
+// the theme a browser shows until its curator picks one; SWM standard stays
+// one choice away under Appearance
+const DEFAULT_UI_THEME = {uiTheme: "nebula", iconStyle: "color", iconSize: "large", layout: "board", font: "inter"};
 function loadAppearance() {
-  try { return JSON.parse(localStorage.getItem(APPEARANCE_KEY) || "{}") || {}; } catch (e) { return {}; }
+  let a;
+  try { a = JSON.parse(localStorage.getItem(APPEARANCE_KEY) || "{}") || {}; } catch (e) { a = {}; }
+  return a.uiTheme ? a : {...a, ...DEFAULT_UI_THEME};
 }
 function applyAppearance(a) {
   const root = document.documentElement;
@@ -3697,13 +3919,14 @@ async function loadUiThemes() {
   const select = $("#ui-theme-select");
   const saved = loadAppearance();
   select.innerHTML = uiThemes.map(t =>
-    `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}${t.builtin ? "" : " (installed)"}</option>`).join("");
+    `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}${t.id === DEFAULT_UI_THEME.uiTheme ? " (default)" : t.builtin ? "" : " (installed)"}</option>`).join("");
   const current = uiThemes.find(t => t.id === validThemeId(saved.uiTheme));
   if (!current || current.icon_style !== (saved.iconStyle || "mono")
       || current.icon_size !== (saved.iconSize || "normal")
       || current.layout !== (saved.layout || "classic") || current.font !== (saved.font || "system")) {
     // a theme removed since, or one whose icons changed: settle it
-    select.value = current ? current.id : "default";
+    select.value = current ? current.id
+      : uiThemes.some(t => t.id === DEFAULT_UI_THEME.uiTheme) ? DEFAULT_UI_THEME.uiTheme : "default";
     saveAppearance();
     return;
   }
@@ -3749,7 +3972,8 @@ function useUiTheme(id) {
 }
 async function removeUiTheme(id) {
   const theme = uiThemes.find(t => t.id === id);
-  if (!confirm(`Remove the theme "${theme ? theme.name : id}"? Browsers using it go back to SWM standard.`)) return;
+  if (!await askConfirm({title: `Remove the theme "${theme ? theme.name : id}"?`, kind: "delete", danger: true,
+      yes: "Remove theme", why: "Its folder is deleted. Browsers using it go back to the default theme."})) return;
   try {
     await api(`/api/appearance/themes/${encodeURIComponent(id)}`, {method: "DELETE"});
     $("#theme-msg").textContent = `Removed ${theme ? theme.name : id}.`;
@@ -3997,6 +4221,8 @@ function wireOverviewDrag(board) {
   });
 }
 async function continueFacebook(id) {
+  if (!await askConfirm({title: `Continue job ${jobLabel(id)}?`, kind: "start", yes: "Continue",
+      why: "A browser opens and the capture carries on from where it stopped, into the same job."})) return;
   try {
     await api(`/api/crawls/${id}/continue`, {method:"POST"});
     refresh();
@@ -4099,28 +4325,47 @@ async function indexWarc(id) {
   }
 }
 async function ctl(id, cmd) {
+  if (cmd === "stop") {
+    const c = (typeof lastCrawls !== "undefined" ? lastCrawls : []).find(x => Number(x.id) === Number(id));
+    const waiting = c && ["queued", "waiting"].includes(String(c.status || "").toLowerCase());
+    const sure = await askConfirm(waiting
+      ? {title: `Cancel job ${jobLabel(id)}?`, kind: "stop", danger: true, yes: "Cancel the job", no: "Keep it",
+         why: "It has not started yet. Cancelled, it will not start by itself."}
+      : {title: `Stop job ${jobLabel(id)}?`, kind: "stop", danger: true, yes: "Stop and save", no: "Keep running",
+         why: "The capture ends now and what it has written so far is kept. To carry on later from where it is, pause it instead."});
+    if (!sure) return;
+  }
   try { await api(`/api/crawls/${id}/${cmd}`, {method:"POST"}); refresh(); }
   catch (e) { alert("Action failed: " + e.message); }
 }
 async function forceStop(id) {
-  if (!confirm("Force stop crawl #"+id+"? Its worker is ended now; what was written so far is kept.")) return;
+  if (!await askConfirm({title: `Force stop job ${jobLabel(id)}?`, kind: "stop", danger: true, yes: "Force stop",
+      why: "Its worker is ended now, without waiting for it to finish the page it is on. What was written so far is kept."})) return;
   try { await api(`/api/crawls/${id}/kill`, {method:"POST"}); refresh(); }
   catch (e) { alert("Force stop failed: " + e.message); }
 }
 async function del(id) {
-  let impact = "";
+  let impact = "", r = {};
   try {
-    const r = await api(`/api/crawls/${id}/impact`);
+    r = await api(`/api/crawls/${id}/impact`);
     impact = r.referring_records
-      ? `\n\n${r.referring_jobs.length} later job(s) hold ${r.referring_records} record(s) that refer into this one; those pages will replay without their content until re-crawled.`
-      : r.collection ? `\n\nIt belongs to the collection "${r.collection.name}". ${r.note}` : "";
+      ? `${r.referring_jobs.length} later job(s) hold ${r.referring_records} record(s) that refer into this one; those pages will replay without their content until re-crawled.`
+      : r.collection ? `${r.note || ""}` : "";
   } catch (_) { impact = ""; }
-  if (!confirm("Delete crawl #"+id+"? WARC files are kept unless you purge." + impact)) return;
-  const purge = confirm("Also delete captured WARC files from disk? OK = delete files, Cancel = keep files.");
+  const c = (typeof lastCrawls !== "undefined" ? lastCrawls : []).find(x => Number(x.id) === Number(id)) || {};
+  const sure = await askConfirm({
+    title: `Delete job ${jobLabel(id)}?`, kind: "delete", danger: true, yes: "Delete job", no: "Keep it",
+    why: `The job is removed from the dashboard.${impact ? " " + impact : ""}`,
+    facts: [["Collection", r.collection ? r.collection.name : ""], ["Stored in", c.output_dir || "", true]],
+    option: {label: "Also delete its WARC files from disk. Unticked, the files stay where they are."},
+  });
+  if (!sure) return;
+  const purge = sure.option;
   try { await api(`/api/crawls/${id}?purge=${purge}`, {method:"DELETE"}); refresh(); }
   catch (e) {
     if (String(e.message).includes("still running")
-        && confirm("Its worker is still running. End the worker and delete anyway?")) {
+        && await askConfirm({title: "Its worker is still running", kind: "stop", danger: true, yes: "End it and delete",
+                             why: "End the worker and delete the job anyway?"})) {
       try { await api(`/api/crawls/${id}?purge=${purge}&force=true`, {method:"DELETE"}); refresh(); return; }
       catch (e2) { alert("Delete failed: " + e2.message); return; }
     }
@@ -4141,6 +4386,14 @@ async function start() {
     if ($("#f-storage").value.trim()) body.storage_dir = $("#f-storage").value.trim();
     if ($("#f-collection").value) body.collection_id = Number($("#f-collection").value);
     body.metadata = metadataEditors.crawl.value();
+    const seeds = editorMode === "guided" ? (body.config.seeds || []).map(sd => sd.url).filter(Boolean) : [];
+    if (!await confirmStart("f", {what: "crawl",
+                                  name: editorMode === "guided" ? body.config.crawl_name : "",
+                                  targets: seeds.length ? seeds : ["as set in the Raw YAML"],
+                                  extra: editorMode === "guided"
+                                    ? [["Scope", chosenText("#f-scope-strategy")], ["Browser", chosenText("#f-browser-mode")]] : []})) {
+      setMessage("Cancelled.", ""); return;
+    }
     const choice = await resourceChoice(body.storage_dir);
     if (!choice) { setMessage("Cancelled.", ""); return; }
     body.start = choice;
@@ -4828,29 +5081,31 @@ document.addEventListener("click", async e => {
   const button = e.target.closest && e.target.closest(".open-path");
   if (!button) return;
   const {kind, id} = button.dataset;
-  button.textContent = "Opening…";
+  const label = button.querySelector(".path-act-label") || button;
+  label.textContent = "Opening…";
   try {
     await api(`/api/${kind}/${Number(id)}/open-folder`, {method: "POST"});
-    button.textContent = "Opened";
+    label.textContent = "Opened"; button.classList.add("done");
   } catch (err) {
-    button.textContent = "Open";
+    label.textContent = "Open";
     alert(err.message);
   }
-  setTimeout(() => { if (button.isConnected && button.textContent === "Opened") button.textContent = "Open"; }, 1500);
+  setTimeout(() => { if (button.isConnected) { label.textContent = "Open"; button.classList.remove("done"); } }, 1500);
 });
 // copying a "Stored in" path
 document.addEventListener("click", async e => {
   const button = e.target.closest && e.target.closest(".copy-path");
   if (!button) return;
   const path = button.dataset.path || "";
-  try { await navigator.clipboard.writeText(path); button.textContent = "Copied"; }
+  const label = button.querySelector(".path-act-label") || button;
+  try { await navigator.clipboard.writeText(path); label.textContent = "Copied"; button.classList.add("done"); }
   catch (_) {
     const code = button.parentElement.querySelector("code.path");
     if (code) { const range = document.createRange(); range.selectNodeContents(code);
       const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range); }
-    button.textContent = "Selected";
+    label.textContent = "Selected";
   }
-  setTimeout(() => { if (button.isConnected) button.textContent = "Copy"; }, 1500);
+  setTimeout(() => { if (button.isConnected) { label.textContent = "Copy"; button.classList.remove("done"); } }, 1500);
 });
 
 async function saveStorageDefault() {

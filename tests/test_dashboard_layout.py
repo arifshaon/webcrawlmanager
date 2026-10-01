@@ -353,8 +353,8 @@ class StorageLocationTests(DashboardTestCase):
         self.assertIn('${storedIn(c.output_dir, "crawls", id)}', self.rows)
         self.assertIn('${storedIn(c.root_dir, "collections", c.id)}', self.script)
         # Open where the server can show the folder, Copy where it cannot
-        self.assertIn('class="act open-path"', self.rows)
-        self.assertIn('class="act copy-path"', self.rows)
+        self.assertIn('class="act path-act open-path"', self.rows)
+        self.assertIn('class="act path-act copy-path"', self.rows)
         self.assertIn("/open-folder`", self.script)
 
     def test_every_form_says_where_it_will_be_saved(self):

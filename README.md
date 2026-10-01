@@ -854,6 +854,18 @@ to its collection. Jobs made before collections existed keep their place
 under the storage root and are listed under "Older jobs, not in a
 collection".
 
+Nothing starts, is created or is deleted without a yes. Starting any job
+(crawl, recording, Facebook, Instagram, X or YouTube), **Start now** on a
+waiting job, **Continue**, **Stop**, **Force stop**, creating a collection
+and deleting a job or collection each open one confirmation that says what
+will happen and the facts it rests on: what is captured, the mode, the
+collection and the exact folder it is saved in, or, for a deletion, what
+depends on it and where its files are. The button names the action
+("Start crawl", "Delete collection"); Cancel, Escape or a click outside
+changes nothing, and a deletion's dialog opens on Cancel, so Enter alone
+never deletes. Pausing and resuming are not asked about: both can be
+undone at once.
+
 Where things are is always on screen. Each job's card and each collection's
 card says where its files are ("Stored in"). Next to the path, **Open**
 shows that folder in the computer's own file manager: Explorer on Windows,
@@ -959,8 +971,9 @@ records that refer into the job. After such a deletion the collection lists
 the pages that are missing their original, and **Re-crawl** on the
 Collections page sets them up as the seeds of a new crawl in the same
 collection; once stored again they leave the list. Deleting a collection
-removes its jobs from the dashboard; with `--purge` (or the dashboard's
-second prompt) their files are deleted from disk as well, otherwise the files
+removes its jobs from the dashboard; with `--purge` (or, in the dashboard,
+the delete dialog's "Also delete its files from disk" box, unticked by
+default) their files are deleted from disk as well, otherwise the files
 stay where they are (the index does not: it describes jobs that no longer
 exist, and a collection made later under the same name starts its own). A
 collection is not deleted while one of its jobs is running unless the
@@ -1364,7 +1377,7 @@ single-column.
 
 A theme gives the dashboard its colours and the icon shown for each job type
 (crawl, recording, Facebook, Instagram, X, YouTube) and for a collection.
-SWM ships four: **SWM standard**; **Midnight**, a dark navy and cyan
+SWM ships four: **SWM standard**, the classic layout; **Midnight**, a dark navy and cyan
 palette for the dark colour mode; **Aurora**, white cards on a soft
 blue-grey with a vivid blue accent; and **Nebula**, indigo-black with violet
 accents. Aurora and Nebula have light and dark palettes, full-colour icon
@@ -1379,8 +1392,11 @@ the handle on their top edge (tiles among tiles, panels among panels) or
 hidden with its ×; **Customise** orders them by keyboard, brings hidden ones
 back and resets the layout, which is kept in the browser. The status chart's colours are fixed rather than themed, chosen so
 every pair stays distinct for colour-blind readers, and its counts are
-always written beside it; the activity chart can be shown as a table. Choose one under **Appearance → Theme**;
-the choice is this browser's own, like the rest of Appearance.
+always written beside it; the activity chart can be shown as a table.
+**Nebula is the default**: a browser that has not picked a theme shows it.
+Choose another, SWM standard's classic layout included, under
+**Appearance → Theme**; the choice is this browser's own, like the rest of
+Appearance.
 
 **Settings → Dashboard themes** lists the themes with their icons, installs
 a new one from a `.zip`, downloads any theme as a starting point, and
