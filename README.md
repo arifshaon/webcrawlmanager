@@ -856,12 +856,15 @@ collection".
 
 Where things are is always on screen. Each job's card and each collection's
 card says where its files are ("Stored in", with a button that copies the
-path). Under every storage field the form says what leaving it empty means,
-with the path itself: a job goes into the chosen collection's folder
-(`<collection>/jobs/<job number>`), a collection under the default location
-(`<default>/collections/<identifier>`). **Settings › Storage** sets that
-default and says what it governs: new collections, and the Default
-collection the first time it is needed. Changing it moves nothing and
+path). Every job form shows, under its Collection picker, **Will be saved
+in** with the full path, redrawn as the collection or the storage location
+changes: by default a job goes into the chosen collection's folder
+(`<collection>/jobs/<job number>`). The collection form shows the exact
+folder a new collection will get (`<default>/collections/<identifier>`, the
+identifier made from the name) and warns when that identifier is taken.
+**Settings › Storage** shows the default as a full path and what it
+governs: new collections, and the Default collection the first time it is
+needed. Changing it moves nothing and
 changes nothing already made: existing jobs and collections stay where they
 are, and a job added to an existing collection, the Default collection
 included, still goes into that collection's folder.

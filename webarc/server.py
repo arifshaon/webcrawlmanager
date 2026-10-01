@@ -2212,7 +2212,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from .theme import ai_settings
         return {
             "storage_root": configured,
-            "effective_storage_root": str(_default_storage_root()),
+            # absolute: a root given relative to where the server started
+            # ("warcs") says nothing about where the files are
+            "effective_storage_root": str(_default_storage_root().expanduser().resolve()),
             "server_storage_root": str(_WARC_ROOT),
             "storage": _storage_is_curator_choosable(),
             "resources": _resource_thresholds(),
@@ -2308,6 +2310,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return read_settings()
 
     # -- collections -------------------------------------------------------
+    @app.get("/api/collections/where")
+    def collection_location(name: str = "", storage_dir: str = ""):
+        """Where a collection of this name would be saved, before it is made:
+        the folder the create form shows. Nothing is created or checked on
+        disk."""
+        slug = colls.slugify(name) if name.strip() else None
+        own = storage_dir.strip()
+        base = Path(own).expanduser() if own else _default_storage_root()
+        parent = (base / colls.COLLECTIONS_DIR).resolve()
+        return {"slug": slug, "parent": str(parent),
+                "root_dir": str(parent / slug) if slug else None,
+                "taken": bool(slug and _store().find_collection(slug))}
+
     @app.get("/api/collections")
     def list_collections():
         counts = _store().collection_counts()

@@ -354,22 +354,53 @@ class StorageLocationTests(DashboardTestCase):
         self.assertIn("${storedIn(c.root_dir)}", self.script)
         self.assertIn('class="act copy-path"', self.rows)
 
-    def test_every_storage_field_has_a_hint_that_names_the_path(self):
+    def test_every_form_says_where_it_will_be_saved(self):
         fields = re.findall(r'id="([a-z]+)-storage" class="storage-dir"', self.markup)
         self.assertEqual(sorted(fields), sorted(["c", "f", "r", "fb", "ig", "x", "yt"]))
         for prefix in fields:
             with self.subTest(prefix):
-                self.assertIn(f'id="{prefix}-storage-hint"', self.markup)
+                self.assertIn(f'id="{prefix}-saves-to"', self.markup)
         for prefix in ("f", "r", "fb", "ig", "x", "yt"):
-            self.assertIn(f'"{prefix}"', self.script[self.script.index("const STORAGE_FORMS"):][:80])
+            with self.subTest(prefix):
+                # under the collection picker, which is never folded away
+                picker = self.markup.index(f'id="{prefix}-collection"')
+                self.assertLess(self.markup.index(f'id="{prefix}-saves-to"') - picker, 600)
+                self.assertIn(f'id="{prefix}-storage-hint"', self.markup)
         self.assertIn('joinPath(c.root, "jobs", "<job number>")', self.script)
-        self.assertIn('joinPath(effectiveStorageRoot, "collections", "<identifier>")', self.script)
+        self.assertIn("/api/collections/where?", self.script)
 
-    def test_the_default_location_says_it_moves_nothing(self):
-        self.assertIn("Changing it moves nothing and changes nothing already made", self.script)
+    def test_the_default_location_shows_its_path_and_says_it_moves_nothing(self):
+        self.assertIn('joinPath(settings.effective_storage_root, "collections")', self.script)
+        self.assertIn("Changing this location moves nothing", self.script)
         from webarc.help import load_help
         texts = load_help()
         self.assertIn("Changing it moves nothing", texts["storage-root"])
         for key in ("f-storage", "r-storage", "fb-storage", "ig-storage", "x-storage", "yt-storage"):
             with self.subTest(key):
                 self.assertIn("inside its collection's folder", texts[key])
+
+    def test_the_server_names_a_new_collections_folder_before_it_is_made(self):
+        import os
+        import tempfile
+        from fastapi.testclient import TestClient
+        from webarc.server import create_app
+        with tempfile.TemporaryDirectory() as d:
+            here = os.getcwd()
+            os.chdir(d)
+            try:
+                client = TestClient(create_app("swm.db", "warcs", replay_root="replay",
+                                               monitor_resources=False))
+                root = client.get("/api/settings").json()["effective_storage_root"]
+                where = client.get("/api/collections/where", params={"name": "QNL — Web 2026!"}).json()
+                made = client.post("/api/collections", json={"name": "QNL — Web 2026!"}).json()
+                again = client.get("/api/collections/where", params={"name": "qnl web 2026"}).json()
+                elsewhere = client.get("/api/collections/where",
+                                       params={"name": "x", "storage_dir": "/mnt/archive"}).json()
+            finally:
+                os.chdir(here)
+
+        self.assertTrue(Path(root).is_absolute())             # never the bare "warcs"
+        self.assertEqual(where["root_dir"], made["root_dir"])
+        self.assertFalse(where["taken"])
+        self.assertTrue(again["taken"])
+        self.assertEqual(elsewhere["root_dir"], str(Path("/mnt/archive/collections/x").resolve()))

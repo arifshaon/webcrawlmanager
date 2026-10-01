@@ -513,6 +513,18 @@
     border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere; min-width: 0; }
   .stored-in .copy-path { padding: 2px 8px; font-size: var(--t-xs); }
   .storage-hint { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+  .saves-to { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 6px;
+    font-size: var(--t-sm); color: var(--muted); min-width: 0; }
+  .saves-to .saves-label { font-weight: 600; color: var(--ink); }
+  .saves-to code.path { font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+    font-size: var(--t-xs); color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere; min-width: 0; }
+  .saves-to:empty { display: none; }
+  #storage-help { display: grid; gap: 6px; }
+  .storage-points { display: grid; gap: 4px; font-size: var(--t-sm); }
+  .storage-points code.path { font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
+    font-size: var(--t-xs); color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 1px 6px; overflow-wrap: anywhere; }
   .theme-list { display: grid; gap: 10px; }
   .theme-card { border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px;
     background: var(--paper); display: flex; flex-direction: column; gap: 8px; }
@@ -1084,7 +1096,7 @@
             <input type="text" id="c-storage" class="storage-dir" placeholder="leave empty for the default location">
             <button type="button" class="secondary browse-btn" data-target="c-storage">Browse…</button>
           </div>
-            <span class="help storage-hint" id="c-storage-hint" aria-live="polite"></span>
+            <div class="saves-to" id="c-saves-to" aria-live="polite"></div>
         </div>
         <div class="field wide">
           <label class="check-row" style="gap:6px">
@@ -1262,6 +1274,7 @@
                 <select id="f-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
                 <button type="button" class="secondary collection-new-btn" data-target="f-collection">New collection…</button>
               </div>
+              <div class="saves-to" id="f-saves-to" aria-live="polite"></div>
             </div>
             <div class="field">
               <label class="field-label" for="f-browser-mode">Browser mode <button type="button" class="tip" aria-label="What is this for?" data-help="f-browser-mode">?</button></label>
@@ -1538,6 +1551,7 @@
               <select id="r-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="r-collection">New collection…</button>
             </div>
+              <div class="saves-to" id="r-saves-to" aria-live="polite"></div>
           </div>
           <div class="field wide">
             <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="r-storage">?</button></label>
@@ -1611,6 +1625,7 @@
               <select id="fb-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="fb-collection">New collection…</button>
             </div>
+              <div class="saves-to" id="fb-saves-to" aria-live="polite"></div>
           </div>
           <div class="field wide">
             <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="fb-storage">?</button></label>
@@ -1751,6 +1766,7 @@
               <select id="ig-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="ig-collection">New collection…</button>
             </div>
+              <div class="saves-to" id="ig-saves-to" aria-live="polite"></div>
           </div>
           <div class="field wide">
             <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="ig-storage">?</button></label>
@@ -1899,6 +1915,7 @@
               <select id="x-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="x-collection">New collection…</button>
             </div>
+              <div class="saves-to" id="x-saves-to" aria-live="polite"></div>
           </div>
           <div class="field wide">
             <label class="field-label" for="x-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="x-storage">?</button></label>
@@ -2052,6 +2069,7 @@
               <select id="yt-collection" class="collection-pick"><option value="">Default (the default collection)</option></select>
               <button type="button" class="secondary collection-new-btn" data-target="yt-collection">New collection…</button>
             </div>
+              <div class="saves-to" id="yt-saves-to" aria-live="polite"></div>
           </div>
           <div class="field wide">
             <label class="field-label" for="yt-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="yt-storage">?</button></label>
@@ -4720,12 +4738,12 @@ function renderStorageDefault(settings) {
   box.disabled = !choosable;
   $("#storage-save").disabled = !choosable;
   effectiveStorageRoot = settings.effective_storage_root || effectiveStorageRoot;
-  $("#storage-help").textContent = choosable
-    ? `Now: ${settings.effective_storage_root}. New collections are created here, in a collections folder, and so is the `
-      + `Default collection the first time it is needed. Changing it moves nothing and changes nothing already made: `
-      + `existing jobs and collections stay where they are, and a job added to an existing collection, the Default `
-      + `collection included, still goes into that collection's own folder. A job or collection can name a location of its own.`
-    : (settings.storage || {}).reason || "";
+  const helpHtml = choosable
+    ? `<span class="saves-to"><span class="saves-label">Currently</span><code class="path">${escapeHtml(settings.effective_storage_root)}</code></span>`
+      + `<span class="storage-points"><span>New collections are saved in <code class="path">${escapeHtml(joinPath(settings.effective_storage_root, "collections"))}</code></span>`
+      + `<span>Changing this location moves nothing. Collections already made, Default included, keep their folders, and their new jobs are saved there.</span></span>`
+    : escapeHtml((settings.storage || {}).reason || "");
+  if ($("#storage-help").innerHTML !== helpHtml) $("#storage-help").innerHTML = helpHtml;
   document.querySelectorAll(".storage-dir").forEach(field => {
     field.disabled = !choosable;
     if (!choosable) field.placeholder = "unavailable on a networked dashboard";
@@ -4749,37 +4767,57 @@ function collectionFolder(pickValue) {
   if (c) return {name: c.name, root: c.root_dir, made: true};
   return {name: "Default", root: effectiveStorageRoot ? joinPath(effectiveStorageRoot, "collections", "default") : "", made: false};
 }
+function savesTo(box, path, note) {
+  const html = path
+    ? `<span class="saves-label">Will be saved in</span><code class="path">${escapeHtml(path)}</code>${note ? `<span class="saves-note">${escapeHtml(note)}</span>` : ""}`
+    : `<span class="saves-note">${escapeHtml(note || "")}</span>`;
+  if (box.innerHTML !== html) box.innerHTML = html;
+}
 function updateStorageHints() {
   STORAGE_FORMS.forEach(prefix => {
-    const hint = $(`#${prefix}-storage-hint`), field = $(`#${prefix}-storage`), pick = $(`#${prefix}-collection`);
-    if (!hint || !field) return;
-    const own = field.value.trim();
-    let text;
-    if (field.disabled) text = "";
-    else if (own) text = `This job gets a folder of its own, named by its number, inside ${own}. It still belongs to its collection.`;
-    else {
-      const c = collectionFolder(pick ? pick.value : "");
-      text = c.root
-        ? `Left empty, the job goes inside the ${c.name} collection's folder: ${joinPath(c.root, "jobs", "<job number>")}`
-          + (c.made ? "." : " (the folder is created with the first job).")
-        : "Left empty, the job goes inside its collection's folder.";
+    const box = $(`#${prefix}-saves-to`), field = $(`#${prefix}-storage`), pick = $(`#${prefix}-collection`);
+    const hint = $(`#${prefix}-storage-hint`);
+    if (hint) {
+      const text = "Leave empty to save in the collection's folder (shown under Collection).";
+      if (hint.textContent !== text) hint.textContent = text;
     }
-    if (hint.textContent !== text) hint.textContent = text;
+    if (!box) return;
+    const own = field && !field.disabled ? field.value.trim() : "";
+    if (own) {
+      savesTo(box, joinPath(own, "<job number>"), "a folder of its own, as set under Storage location; the job still belongs to its collection");
+      return;
+    }
+    const c = collectionFolder(pick ? pick.value : "");
+    if (!c.root) { savesTo(box, "", "The collection's folder."); return; }
+    savesTo(box, joinPath(c.root, "jobs", "<job number>"),
+            c.made ? `the ${c.name} collection's folder` : `the ${c.name} collection's folder, made with its first job`);
   });
-  const hint = $("#c-storage-hint"), field = $("#c-storage");
-  if (hint && field) {
-    const own = field.value.trim();
-    const editing = field.placeholder === "fixed at creation";
-    const text = field.disabled && !editing ? ""
-      : editing ? "The folder is fixed at creation."
-      : own ? `The collection's folder is created inside ${joinPath(own, "collections")}, named by its identifier.`
-      : effectiveStorageRoot
-        ? `Left empty, it goes under the default location: ${joinPath(effectiveStorageRoot, "collections", "<identifier>")}. Change the default under Settings › Storage.`
-        : "Left empty, it goes under the default location from Settings.";
-    if (hint.textContent !== text) hint.textContent = text;
-  }
+  updateCollectionWhere();
 }
-document.addEventListener("input", e => { if (e.target.matches && e.target.matches(".storage-dir")) updateStorageHints(); });
+// the collection form asks the server, which names the folder
+let collectionWhereTimer = null, collectionWhereAsked = "";
+function updateCollectionWhere() {
+  const box = $("#c-saves-to"), field = $("#c-storage"), name = $("#c-name");
+  if (!box || !field) return;
+  if (field.placeholder === "fixed at creation") {        // editing: the folder is the collection's own
+    const editing = lastCollections.find(c => String(c.id) === String(editingCollectionId || ""));
+    savesTo(box, editing ? editing.root_dir : "", editing ? "fixed when the collection was made" : "Fixed when the collection was made.");
+    return;
+  }
+  const query = new URLSearchParams({name: name ? name.value.trim() : "", storage_dir: field.disabled ? "" : field.value.trim()}).toString();
+  if (query === collectionWhereAsked) return;
+  clearTimeout(collectionWhereTimer);
+  collectionWhereTimer = setTimeout(async () => {
+    collectionWhereAsked = query;
+    try {
+      const w = await api(`/api/collections/where?${query}`);
+      if (!w.root_dir) savesTo(box, joinPath(w.parent, "<identifier>"), "the identifier is made from the name");
+      else if (w.taken) savesTo(box, w.root_dir, `a collection with the identifier ${w.slug} already exists; choose another name`);
+      else savesTo(box, w.root_dir, "");
+    } catch (_) { collectionWhereAsked = ""; }
+  }, 250);
+}
+document.addEventListener("input", e => { if (e.target.matches && e.target.matches(".storage-dir, #c-name")) updateStorageHints(); });
 document.addEventListener("change", e => {
   if (e.target.matches && e.target.matches(".collection-pick, .storage-dir")) updateStorageHints();
 });
