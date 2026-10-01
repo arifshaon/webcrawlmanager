@@ -11,13 +11,20 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-// Where a job's or a collection's files are on disk, with a button that
-// copies the path for a file manager or a terminal.
-function storedIn(path) {
+// Where a job's or a collection's files are on disk. Open shows the folder
+// in this machine's file manager (Explorer, Finder, ...): the server opens
+// the folder it knows for that job or collection, never a path sent from
+// here. Where it cannot -- a dashboard reached over the network, a machine
+// with no desktop -- the path can be copied instead.
+function storedIn(path, kind, id) {
   if (!path) return "";
   const p = escapeHtml(path);
-  return `<div class="stored-in"><span class="stored-label">Stored in</span><code class="path" title="${p}">${p}</code>`
-    + `<button type="button" class="act copy-path" data-path="${p}" aria-label="Copy the folder path">Copy</button></div>`;
+  const cap = typeof openFolderCapability !== "undefined" && openFolderCapability;
+  const canOpen = cap && cap.available && kind && Number.isSafeInteger(Number(id));
+  const button = canOpen
+    ? `<button type="button" class="act open-path" data-kind="${kind}" data-id="${Number(id)}" aria-label="Open this folder in the file manager">Open</button>`
+    : `<button type="button" class="act copy-path" data-path="${p}" aria-label="Copy the folder path"${cap && cap.reason ? ` title="${escapeHtml(cap.reason)}"` : ""}>Copy</button>`;
+  return `<div class="stored-in"><span class="stored-label">Stored in</span><code class="path" title="${p}">${p}</code>${button}</div>`;
 }
 
 function statusClass(value) {
@@ -184,7 +191,7 @@ function crawlRow(c) {
       </div>
       <span class="badge b-${statusCss}">${status}</span>
     </div>
-    ${storedIn(c.output_dir)}
+    ${storedIn(c.output_dir, "crawls", id)}
     ${waiting ? `<div class="fb-phase">
       <span class="fb-phase-label">Waiting</span>
       <span>Created, not started: this machine was short of CPU, memory or disk space. It starts by itself once every resource is above its warning level, or now if you say so.</span>

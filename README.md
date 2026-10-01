@@ -855,8 +855,14 @@ under the storage root and are listed under "Older jobs, not in a
 collection".
 
 Where things are is always on screen. Each job's card and each collection's
-card says where its files are ("Stored in", with a button that copies the
-path). Every job form shows, under its Collection picker, **Will be saved
+card says where its files are ("Stored in"). Next to the path, **Open**
+shows that folder in the computer's own file manager: Explorer on Windows,
+Finder on macOS, the desktop's file manager (through `xdg-open`) on Linux.
+The server opens only the job's or collection's own folder, never a path
+sent by the page. Open is offered only when the dashboard is reached on the
+machine it runs on (`127.0.0.1` or `localhost`) and that machine has a
+desktop; otherwise the folder would open on the server, not in front of you,
+so the button is **Copy** instead, and hovering over it says why. Every job form shows, under its Collection picker, **Will be saved
 in** with the full path, redrawn as the collection or the storage location
 changes: by default a job goes into the chosen collection's folder
 (`<collection>/jobs/<job number>`). The collection form shows the exact

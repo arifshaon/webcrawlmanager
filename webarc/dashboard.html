@@ -511,7 +511,7 @@
   .stored-in code.path { font-family: ui-monospace, "SF Mono", "Cascadia Code", "Consolas", "Liberation Mono", monospace;
     font-size: var(--t-xs); color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
     border-radius: 6px; padding: 2px 6px; overflow-wrap: anywhere; min-width: 0; }
-  .stored-in .copy-path { padding: 2px 8px; font-size: var(--t-xs); }
+  .stored-in .copy-path, .stored-in .open-path { padding: 2px 8px; font-size: var(--t-xs); }
   .storage-hint { display: block; margin-top: 4px; overflow-wrap: anywhere; }
   .saves-to { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 6px;
     font-size: var(--t-sm); color: var(--muted); min-width: 0; }
@@ -2528,6 +2528,7 @@ let xCapability = null;
 let youtubeCapability = null;
 let themeAiCapability = null;
 let warcIndexerCapability = null;
+let openFolderCapability = null;
 async function loadCapabilities() {
   try {
     const caps = await api("/api/capabilities");
@@ -2538,6 +2539,7 @@ async function loadCapabilities() {
     youtubeCapability = caps.youtube || {available: false, reason: "not reported by the server"};
     themeAiCapability = caps.theme_ai || {available: false, reason: "not reported by the server"};
     warcIndexerCapability = caps.warc_indexer || {available: false, reason: "not reported by the server"};
+    openFolderCapability = caps.open_folder || {available: false, reason: null};
   } catch (_) {
     recordingCapability = {available: false, reason: "capability check failed"};
     facebookCapability = {available: false, reason: "capability check failed"};
@@ -3319,7 +3321,7 @@ function renderCollections() {
           <span><b>${Number(c.metadata_fields) || 0}</b> metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}</span>
           ${c.last_activity ? `<span>last activity <b>${escapeHtml(String(c.last_activity).slice(0, 16).replace("T", " "))}</b></span>` : ""}
         </div>
-        ${storedIn(c.root_dir)}
+        ${storedIn(c.root_dir, "collections", c.id)}
         ${notes.length ? `<div class="coll-notes">${notes.join("")}</div>` : ""}
       </div>
       <div class="coll-actions">
@@ -4820,6 +4822,21 @@ function updateCollectionWhere() {
 document.addEventListener("input", e => { if (e.target.matches && e.target.matches(".storage-dir, #c-name")) updateStorageHints(); });
 document.addEventListener("change", e => {
   if (e.target.matches && e.target.matches(".collection-pick, .storage-dir")) updateStorageHints();
+});
+// opening a "Stored in" folder in the file manager
+document.addEventListener("click", async e => {
+  const button = e.target.closest && e.target.closest(".open-path");
+  if (!button) return;
+  const {kind, id} = button.dataset;
+  button.textContent = "Opening…";
+  try {
+    await api(`/api/${kind}/${Number(id)}/open-folder`, {method: "POST"});
+    button.textContent = "Opened";
+  } catch (err) {
+    button.textContent = "Open";
+    alert(err.message);
+  }
+  setTimeout(() => { if (button.isConnected && button.textContent === "Opened") button.textContent = "Open"; }, 1500);
 });
 // copying a "Stored in" path
 document.addEventListener("click", async e => {

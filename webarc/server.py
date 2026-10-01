@@ -169,6 +169,36 @@ def _default_storage_root() -> Path:
         return _WARC_ROOT
 
 
+def _open_folder_capability() -> dict:
+    """Whether a "Stored in" folder can be shown in the file manager: the
+    dashboard must be on the curator's own machine (bound to loopback) and
+    that machine must have a desktop to show it on."""
+    from . import desktop
+    if _BIND_HOST not in _LOOPBACK_HOSTS:
+        return {"available": False,
+                "reason": "The dashboard is reached over the network; a folder would open on the "
+                          "server, not here. Copy the path instead."}
+    return desktop.availability()
+
+
+def _open_known_folder(path: str | None, what: str) -> dict:
+    """Show a folder the server itself resolved -- never a path from the page."""
+    from . import desktop
+    capability = _open_folder_capability()
+    if not capability["available"]:
+        raise HTTPException(409, capability["reason"])
+    if not path:
+        raise HTTPException(404, f"This {what} has no folder yet.")
+    folder = Path(path).expanduser().resolve()
+    try:
+        desktop.open_folder(folder)
+    except FileNotFoundError:
+        raise HTTPException(404, f"The {what}'s folder is not there: {folder}")
+    except OSError as exc:
+        raise HTTPException(500, f"The file manager could not be opened: {exc}")
+    return {"opened": str(folder)}
+
+
 def _storage_root_for(requested: object) -> Path:
     """The root this crawl's own directory is created under."""
     text = str(requested or "").strip()
@@ -1144,6 +1174,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "facebook": dict(visible),
             "simulate": _SIMULATE,
             "storage": _storage_is_curator_choosable(),
+            "open_folder": _open_folder_capability(),
             "instagram": _instagram_capability(),
             "x": _x_capability(),
             "youtube": _youtube_capability(),
@@ -2310,6 +2341,22 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return read_settings()
 
     # -- collections -------------------------------------------------------
+    @app.post("/api/crawls/{crawl_id}/open-folder")
+    def open_crawl_folder(crawl_id: int):
+        """Show the job's folder in this machine's file manager."""
+        row = _store().get_crawl(crawl_id)
+        if not row:
+            raise HTTPException(404, "No such job")
+        return _open_known_folder(str(_crawl_dir(row)), "job")
+
+    @app.post("/api/collections/{collection_id}/open-folder")
+    def open_collection_folder(collection_id: int):
+        """Show the collection's folder in this machine's file manager."""
+        row = _store().get_collection(collection_id)
+        if not row:
+            raise HTTPException(404, "No such collection")
+        return _open_known_folder(row.get("root_dir"), "collection")
+
     @app.get("/api/collections/where")
     def collection_location(name: str = "", storage_dir: str = ""):
         """Where a collection of this name would be saved, before it is made:

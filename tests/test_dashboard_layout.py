@@ -350,9 +350,12 @@ class StorageLocationTests(DashboardTestCase):
         cls.rows = (DASHBOARD.parent / "dashboard_hardening.js").read_text(encoding="utf-8")
 
     def test_every_job_and_collection_card_says_where_it_is_stored(self):
-        self.assertIn("${storedIn(c.output_dir)}", self.rows)
-        self.assertIn("${storedIn(c.root_dir)}", self.script)
+        self.assertIn('${storedIn(c.output_dir, "crawls", id)}', self.rows)
+        self.assertIn('${storedIn(c.root_dir, "collections", c.id)}', self.script)
+        # Open where the server can show the folder, Copy where it cannot
+        self.assertIn('class="act open-path"', self.rows)
         self.assertIn('class="act copy-path"', self.rows)
+        self.assertIn("/open-folder`", self.script)
 
     def test_every_form_says_where_it_will_be_saved(self):
         fields = re.findall(r'id="([a-z]+)-storage" class="storage-dir"', self.markup)
