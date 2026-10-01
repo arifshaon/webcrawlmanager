@@ -794,7 +794,11 @@ pages), and like every page left out it is listed in the job's
 **Selection report** with its score and the reason. No separate review
 WARC is written. Hub
 pages, including the starting page, are always followed and kept as the
-way in unless the theme says otherwise. A rejected page's links are not
+way in unless the theme says otherwise. With **Keep hub pages** unticked
+they are followed but not archived; the job still replays: when its
+starting page is not in the archive, Replay opens on a list of the pages
+that are, saying why, and the collection's replay page offers the same
+list for that starting address. A rejected page's links are not
 followed.
 
 **The rules judge** is always on and explainable: a term in the headline

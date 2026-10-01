@@ -2021,9 +2021,22 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         youtube_media = None
         if is_youtube_capture(crawl_dir):
             youtube_media = _youtube_replay_media(crawl_dir, crawl_id, str(request.base_url))
+        # A themed job names its pages, and says why its starting page is
+        # missing when the theme did not keep it.
+        titles, missing_note = None, None
+        from .theme import selection_report
+        report = selection_report(crawl_dir)
+        if report is not None:
+            titles = {p["url"]: p["title"] for p in report["pages"] if p["accepted"] and p["title"]}
+            seed = row_seed_url(crawl_id)
+            judged = next((p for p in report["pages"] if p["url"] == seed), None)
+            if judged is not None and not judged["accepted"]:
+                missing_note = "the theme did not keep it (" + judged["why"][:1].lower() + judged["why"][1:] + ")"
         try:
             build_replay_site(warcs, _REPLAY_ROOT / coll,
-                              seed_url=row_seed_url(crawl_id), youtube_media=youtube_media)
+                              seed_url=row_seed_url(crawl_id), youtube_media=youtube_media,
+                              title=f"Job #{crawl_id}: {row.get('name') or ''}".rstrip(": "),
+                              titles=titles, missing_note=missing_note)
         except Exception as exc:
             raise HTTPException(500, f"replay setup failed: {exc}") from exc
         if _PYWB is None or not _PYWB.is_running():
@@ -2598,7 +2611,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         replay_base = None
         if warcs:
             try:
-                build_replay_site(warcs, _REPLAY_ROOT / coll)
+                build_replay_site(warcs, _REPLAY_ROOT / coll, title=row["name"])
             except Exception as exc:
                 raise HTTPException(500, f"replay setup failed: {exc}") from exc
             if _PYWB is None or not _PYWB.is_running():
@@ -2618,7 +2631,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     def collection_start_page(collection_id: int):
         """The collection's replay page: its distinct starting URLs, each
         with Replay (the archive, when prepared) or Open pages."""
-        from .replay import start_page_html
+        from .replay import read_archived_pages, start_page_html
         row = _require_collection(collection_id)
         coll = f"collection-{row['slug']}"
         replay_base = None
@@ -2626,7 +2639,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 and _PYWB.is_running():
             replay_base = _PYWB.replay_url(coll)
         return HTMLResponse(start_page_html(row["name"], _start_groups(collection_id),
-                                            replay_base))
+                                            replay_base, read_archived_pages(_REPLAY_ROOT / coll)))
 
     @app.get("/api/crawls/{crawl_id}/changes")
     def crawl_changes(crawl_id: int):

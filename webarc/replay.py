@@ -26,6 +26,7 @@ from __future__ import annotations
 import functools
 import http.server
 import io
+import json
 import logging
 import os
 import re
@@ -376,6 +377,9 @@ _INDEX_HTML = """<!DOCTYPE html>
     // opened rather than the archive's default entry.
     (function () {{
       var asked = new URLSearchParams(location.search).get("url");
+      // the page the job started from is not in the archive (a theme that
+      // does not keep hub pages): the list of pages that are is the way in
+      if (!asked && {entry_missing}) {{ location.replace("pages.html"); return; }}
       var url = asked || {default_url};
       var attr = url ? ' url="' + url.replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '"' : "";
       document.write('<replay-web-page source="{archive}"' + attr +
@@ -418,7 +422,8 @@ _START_HTML = """<!DOCTYPE html>
 """
 
 
-def start_page_html(title: str, groups: list[dict], replay_base: str | None) -> str:
+def start_page_html(title: str, groups: list[dict], replay_base: str | None,
+                    archived: list[str] | None = None) -> str:
     """The collection's replay page: one entry per distinct starting URL.
 
     A group is {url, captures: [{job_id, job, kind, date, has_warc,
@@ -454,9 +459,17 @@ def start_page_html(title: str, groups: list[dict], replay_base: str | None) -> 
                     acts.append(f'<a href="{escape(replay_base, quote=True)}?url='
                                 f'{quote(group["url"], safe="")}" target="_blank" '
                                 'rel="noopener">Replay WARC</a>')
+            elif with_warc and replay_base and archived is not None \
+                    and archived_page(group["url"], archived) is None:
+                # a theme left the starting page out: its captured pages are listed
+                pages_url = replay_base.rsplit("/", 1)[0] + "/pages.html"
+                acts.append(f'<a class="primary" href="{escape(pages_url, quote=True)}" target="_blank" '
+                            'rel="noopener">Choose a page</a>'
+                            '<span class="caps">this starting page was not kept; its pages were</span>')
             elif with_warc and replay_base:
+                start = archived_page(group["url"], archived or []) or group["url"]
                 acts.append(f'<a class="primary" href="{escape(replay_base, quote=True)}?url='
-                            f'{quote(group["url"], safe="")}" target="_blank" '
+                            f'{quote(start, safe="")}" target="_blank" '
                             'rel="noopener">Replay</a>')
             else:
                 acts.append('<span class="caps">nothing captured yet</span>')
@@ -483,6 +496,87 @@ def start_page_html(title: str, groups: list[dict], replay_base: str | None) -> 
               else '<p class="all">No WARC files in this collection yet; the captures above are '
                    'read through their pages.</p>')
     return _START_HTML.format(title=escape(title), sections="\n  ".join(sections), footer=footer)
+
+
+_PAGES_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title} — pages in the archive</title>
+  <style>
+    :root {{ color-scheme: light dark; --ink: #1f2937; --muted: #4b5563; --rule: #e5e7eb; --bg: #fff;
+             --note: #f3f4f6; --link: #1d4ed8; }}
+    @media (prefers-color-scheme: dark) {{ :root {{ --ink: #e5e7eb; --muted: #a1a1aa; --rule: #2e2e38;
+             --bg: #15151c; --note: #1f1f29; --link: #93b4ff; }} }}
+    body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 64rem; padding: 0 1rem;
+            color: var(--ink); background: var(--bg); }}
+    h1 {{ font-size: 1.4rem; margin-bottom: .25rem; }}
+    p.lead {{ color: var(--muted); margin-top: 0; }}
+    p.note {{ background: var(--note); border-left: 3px solid var(--muted); padding: .6rem .8rem; }}
+    h2 {{ font-size: 1.05rem; margin: 1.5rem 0 .5rem; border-bottom: 1px solid var(--rule); padding-bottom: .25rem; }}
+    ul {{ list-style: none; padding: 0; margin: 0; }}
+    li {{ padding: .5rem 0; border-bottom: 1px solid var(--rule); }}
+    a {{ color: var(--link); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }}
+    a:hover {{ text-decoration: underline; }}
+    .url {{ color: var(--muted); font-size: .85rem; overflow-wrap: anywhere; margin-top: .15rem; }}
+  </style>
+</head>
+<body>
+  <h1>{title}</h1>
+  <p class="lead">{count} page{plural} in this archive. Choose one to replay it; links between pages work where both are in the archive.</p>
+  {note}
+  {sections}
+</body>
+</html>
+"""
+
+
+def _url_key(url: str) -> tuple:
+    """A URL as a replay finds it: host without "www.", path "/" when
+    empty, scheme and port left aside."""
+    from urllib.parse import urlsplit
+    parts = urlsplit(url or "")
+    host = (parts.hostname or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    return (host, parts.path or "/", parts.query)
+
+
+def archived_page(url: str | None, pages: list[str]) -> str | None:
+    """The archived page ``url`` names, allowing for "www." and a missing
+    "/"; None when the archive does not hold it."""
+    if not url:
+        return None
+    if url in pages:
+        return url
+    wanted = _url_key(url)
+    return next((page for page in pages if _url_key(page) == wanted), None)
+
+
+def read_archived_pages(site_dir: Path) -> list[str] | None:
+    """The pages a built replay site holds, as build_replay_site listed them."""
+    try:
+        return list(json.loads((Path(site_dir) / "pages.json").read_text(encoding="utf-8"))["pages"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def pages_html(title: str, pages: list[str], titles: dict | None = None, note: str = "") -> str:
+    """Every page in a replay archive, by host, each opening the replay."""
+    from html import escape
+    from urllib.parse import quote, urlsplit
+    by_host: dict[str, list[str]] = {}
+    for page in pages:
+        by_host.setdefault((urlsplit(page).hostname or "other").lower(), []).append(page)
+    sections = []
+    for host in sorted(by_host):
+        items = "".join(
+            f'<li><a href="index.html?url={quote(page, safe="")}">{escape((titles or {}).get(page) or page)}</a>'
+            f'<div class="url">{escape(page)}</div></li>' for page in sorted(by_host[host]))
+        sections.append(f"<h2>{escape(host)}</h2><ul>{items}</ul>")
+    return _PAGES_HTML.format(title=escape(title), count=len(pages), plural="" if len(pages) == 1 else "s",
+                              note=f'<p class="note">{escape(note)}</p>' if note else "",
+                              sections="\n  ".join(sections) or "<p>No pages in this archive.</p>")
 
 
 def collection_name(crawl_id: int | str) -> str:
@@ -551,13 +645,22 @@ def detect_start_url(warc_paths: list[Path]) -> str | None:
 def build_replay_site(warc_paths: list[Path], site_dir: Path,
                       seed_url: str | None = None,
                       self_host: bool = False,
-                      youtube_media: dict | None = None) -> Path:
+                      youtube_media: dict | None = None,
+                      title: str | None = None,
+                      titles: dict | None = None,
+                      missing_note: str | None = None) -> Path:
     """Assemble a self-contained ReplayWeb.page site for a set of WARCs.
 
     Returns the site directory. Combining the WARCs is idempotent-friendly: the
     archive is rebuilt from the current file list each call. ``youtube_media``
     maps a video id to ``{"url", "file", "resolution"}`` for the file a YouTube
     capture downloaded; the replayed watch page then plays that file.
+
+    Beside the replay, pages.html lists every page the archive holds
+    (``titles`` names them where known) and pages.json records them. When
+    ``seed_url`` is not among them -- a themed crawl that did not keep its
+    starting page -- the replay opens on that list, with ``missing_note``
+    saying why, rather than on a page that is not there.
     """
     site_dir = Path(site_dir).resolve()
     (site_dir / "replay").mkdir(parents=True, exist_ok=True)
@@ -577,6 +680,7 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
 
     tmp = site_dir / "archive.tmp"
     excluded = 0
+    pages: dict[str, None] = {}          # the HTML pages a replay can open, in capture order
     with open(tmp, "wb") as out:
         writer = WARCWriter(out, gzip=True)
         for p in warc_paths:
@@ -585,6 +689,10 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
                     if _replay_excluded_record(record):
                         excluded += 1
                         continue
+                    if record.rec_type in ("response", "revisit") and record.http_headers is not None \
+                            and record.http_headers.get_statuscode() == "200" \
+                            and (record.http_headers.get_header("Content-Type") or "").lower().startswith("text/html"):
+                        pages.setdefault(record.rec_headers.get_header("WARC-Target-URI") or "", None)
                     writer.write_record(record)
     if excluded:
         log.info("Excluded %d WAF challenge record(s) from the replay copy "
@@ -642,7 +750,19 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
         encoding="utf-8")
 
     import json as _json
-    default_url = _json.dumps(seed_url or "").replace("</", "<\\/")
+    pages.pop("", None)
+    page_list = list(pages)
+    entry = archived_page(seed_url, page_list) if seed_url else None
+    entry_missing = bool(seed_url) and entry is None and bool(page_list)
+    (site_dir / "pages.json").write_text(_json.dumps(
+        {"pages": page_list, "seed": seed_url, "seed_archived": entry is not None}), encoding="utf-8")
+    note = ""
+    if entry_missing:
+        note = (f"The page this job started from, {seed_url}, is not in the archive"
+                + (f": {missing_note}." if missing_note else ".") + " Replay starts from this list instead.")
+    (site_dir / "pages.html").write_text(
+        pages_html(title or site_dir.name, page_list, titles, note), encoding="utf-8")
+    default_url = _json.dumps(entry or seed_url or "").replace("</", "<\\/")
     compat_js = _REPLAY_COMPAT_JS
     if _is_x_seed(seed_url):
         compat_js = _X_SESSION_COOKIES_JS + compat_js
@@ -653,7 +773,8 @@ def build_replay_site(warc_paths: list[Path], site_dir: Path,
     (site_dir / "index.html").write_text(
         _INDEX_HTML.format(coll=site_dir.name, ui_src=ui_src,
                            default_url=default_url, archive=archive_name,
-                           compat_js=compat_js),
+                           compat_js=compat_js,
+                           entry_missing="true" if entry_missing else "false"),
         encoding="utf-8")
     log.info("Built replay site for %d WARC(s) at %s",
              len(warc_paths), site_dir)
