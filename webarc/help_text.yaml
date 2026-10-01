@@ -225,9 +225,9 @@ theme-hubs: >-
 theme-dates: >-
   Only pages published within these dates are kept, read from the page's own date where it states one. Pages without a date are judged on their content.
 theme-min-score: >-
-  How much evidence a page needs before the rules keep it. A term in the headline scores 3, in the section or tags 2, each mention in the text 1. Three, the default, keeps a page on one headline hit; raise it for a stricter selection.
+  The score a page needs to be accepted. A term in the headline scores 3, in the section or tags 2, each mention in the text 1, an address rule 3. At 3, the default, one headline hit is enough; at 2, a section tag or two mentions. The Selection report shows each page's score against this number.
 theme-unsure: >-
-  What happens to a page the judge could not place. Holding it in a review archive keeps it beside the job, out of the collection, for you to accept or drop later.
+  A page that scores above 0 but below the minimum, or that the AI judge could not decide on. Left out, it is not archived and is listed in the job's Selection report with its score, the reason and its live address, so you can check it and recrawl the ones you want. Keep it to archive such pages as if accepted.
 theme-stop-misses: >-
   Stop a starting page's crawl after this many pages in a row were not about the theme. 0 never stops for that reason.
 theme-ai-policy: >-

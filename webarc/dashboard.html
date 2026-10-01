@@ -260,6 +260,40 @@
     box-shadow: 0 16px 48px rgba(0,0,0,.25); }
   .metadata-card .browse-head h2 { margin-bottom: 2px; }
   .metadata-card .md-body { padding: 16px; overflow-y: auto; }
+  /* the theme's selection report: what was accepted, what not and why */
+  #selection-overlay { display: none; position: fixed; inset: 0; z-index: 998;
+    background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center;
+    padding: 24px; }
+  #selection-overlay.open { display: flex; }
+  .selection-card { width: min(1120px, 100%); height: min(860px, 100%); }
+  .sel-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 16px;
+    border-bottom: 1px solid var(--rule); }
+  .sel-tabs { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .sel-tabs button { font-size: var(--t-sm); font-weight: 600; border: 1px solid var(--rule); background: var(--paper);
+    color: var(--muted); padding: 6px 12px; border-radius: 999px; }
+  .sel-tabs button[aria-selected="true"] { background: var(--accent-bg); color: var(--accent); border-color: var(--accent); }
+  .sel-bar input[type=search] { flex: 1 1 220px; min-width: 0; }
+  .selection-card .sel-body { flex: 1 1 auto; padding: 0; }
+  .sel-table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+  .sel-table th { position: sticky; top: 0; background: var(--surface); color: var(--muted); font-weight: 600;
+    text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); z-index: 1; }
+  .sel-table td { padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  .sel-table td.pick { width: 28px; }
+  .sel-table .sel-page a { color: var(--ink); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+  .sel-table .sel-page a:hover { color: var(--accent); text-decoration: underline; }
+  .sel-table .sel-page a svg { width: 12px; height: 12px; vertical-align: -1px; margin-left: 4px; color: var(--muted); }
+  .sel-table .sel-url { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); overflow-wrap: anywhere; }
+  .sel-table .sel-date { white-space: nowrap; color: var(--muted); }
+  .sel-score { display: inline-block; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600;
+    padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--rule); }
+  .sel-score.short { color: var(--pause); background: var(--pause-bg); border-color: transparent; }
+  .sel-score.none { color: var(--stop); background: var(--stop-bg); border-color: transparent; }
+  .sel-score.met { color: var(--run); background: var(--run-bg); border-color: transparent; }
+  .sel-why { color: var(--ink); overflow-wrap: anywhere; }
+  .sel-why .sel-terms { color: var(--muted); font-size: var(--t-xs); margin-top: 2px; }
+  .sel-empty { padding: 28px 16px; color: var(--muted); text-align: center; }
+  .sel-legacy { margin: 0; padding: 8px 16px; font-size: var(--t-sm); color: var(--muted); background: var(--surface);
+    border-bottom: 1px solid var(--rule); }
   a.secondary { display: inline-block; text-decoration: none; font-size: var(--t-sm); font-weight: 500;
     border: 1px solid var(--rule); background: var(--paper); color: var(--ink); padding: 7px 12px;
     border-radius: 8px; }
@@ -1383,9 +1417,8 @@
               <div class="field">
                 <label class="field-label" for="ct-unsure">When a page cannot be placed <button type="button" class="tip" aria-label="What is this for?" data-help="theme-unsure">?</button></label>
                 <select id="ct-unsure">
-                  <option value="review">Hold it in a review archive for me</option>
+                  <option value="reject">Leave it out; list it in the report</option>
                   <option value="keep">Keep it</option>
-                  <option value="reject">Leave it out</option>
                 </select>
               </div>
               <div class="field">
@@ -2255,6 +2288,32 @@
     </div>
   </div>
 </div>
+<div id="selection-overlay" role="dialog" aria-modal="true" aria-labelledby="selection-title">
+  <div class="metadata-card selection-card">
+    <div class="browse-head">
+      <h2 id="selection-title">Selection report</h2>
+      <span class="help" id="selection-sub"></span>
+    </div>
+    <p class="sel-legacy hidden" id="selection-legacy"></p>
+    <div class="sel-bar">
+      <div class="sel-tabs" role="tablist" aria-label="Which pages">
+        <button type="button" role="tab" data-sel="not" aria-selected="true">Not accepted</button>
+        <button type="button" role="tab" data-sel="accepted" aria-selected="false">Accepted</button>
+        <button type="button" role="tab" data-sel="links" aria-selected="false">Links not followed</button>
+      </div>
+      <input type="search" id="selection-filter" placeholder="Filter by address, title or reason" aria-label="Filter the report">
+    </div>
+    <div class="md-body sel-body" id="selection-body" role="tabpanel" tabindex="0"></div>
+    <div class="browse-foot">
+      <label class="check-inline"><input type="checkbox" id="selection-all"> Select all shown</label>
+      <span class="msg" id="selection-msg" aria-live="polite"></span>
+      <span class="spacer"></span>
+      <a class="secondary" id="selection-file" href="#" target="_blank" rel="noopener">Report file</a>
+      <button type="button" class="secondary" id="selection-close">Close</button>
+      <button type="button" class="primary" id="selection-recrawl" disabled title="Set the chosen pages as the seeds of a new crawl: only those pages, without the theme">Recrawl selected</button>
+    </div>
+  </div>
+</div>
 <div id="confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-why">
   <div class="resource-card confirm-card" id="confirm-card">
     <div class="confirm-head">
@@ -2328,7 +2387,7 @@ function fillTheme(prefix, theme) {
   themeField(prefix, "date-from").value = (t.date_from || "").slice(0, 10);
   themeField(prefix, "date-to").value = (t.date_to || "").slice(0, 10);
   themeField(prefix, "min-score").value = t.min_score || 3;
-  themeField(prefix, "unsure").value = t.unsure_action || "review";
+  themeField(prefix, "unsure").value = t.unsure_action === "keep" ? "keep" : "reject";
   themeField(prefix, "stop-misses").value = t.stop_after_misses || 0;
   themeField(prefix, "keep-hubs").checked = t.keep_hubs !== false;
   themeField(prefix, "ai").checked = t.ai_enabled !== false;
@@ -3100,7 +3159,142 @@ async function startYouTube() {
     $("#youtube-start-btn").disabled = false;
   }
 }
-function openSelection(id) { window.open(`/captures/${id}/pages/selection.html`, "_blank"); }
+// ---- The theme's selection report ---------------------------------------
+// Every page the theme accepted or did not, with its score against the score
+// needed and the reason, and every link it did not follow. A page not
+// accepted is not in the archive: its live address is here to check it, and
+// the ones the curator wants are recrawled on their own, without the theme.
+let selectionReport = null, selectionTab = "not", selectionPicked = new Set(), selectionJobId = null;
+const LIVE_ICON = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4.5h5.5V10M19.5 4.5 11 13M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6H10"/></svg>';
+async function openSelection(id) {
+  let report;
+  try { report = await api(`/api/crawls/${id}/selection`); }
+  catch (e) { alert("Could not read the selection: " + e.message); return; }
+  selectionReport = report; selectionJobId = id; selectionPicked = new Set();
+  const t = report.theme || {}, n = report.counts || {};
+  $("#selection-title").textContent = `Selection for the theme "${t.name || "theme"}"`;
+  $("#selection-sub").textContent = `Job ${jobLabel(id)}. A page is accepted at a score of ${t.min_score} or more`
+    + `${report.judge && report.judge !== "rules_only" ? `, with the AI judge (${report.judge.replace("_", " ")})` : ""}. `
+    + `Pages not accepted are not in the archive: open one at its live address to check it, and recrawl the ones you want.`;
+  const legacy = $("#selection-legacy");
+  const held = (report.pages || []).filter(p => p.held_for_review).length;
+  legacy.classList.toggle("hidden", !report.review_folder);
+  legacy.textContent = report.review_folder
+    ? `This job ran before review archives were retired: ${held || "its"} page(s) that could not be placed were written to its review folder, outside the collection. They are listed here as not accepted; the folder can be deleted once you have recrawled what you need.` : "";
+  $$(".sel-tabs button").forEach(b => {
+    const key = b.dataset.sel;
+    const count = key === "not" ? n.not_accepted : key === "accepted" ? n.accepted : n.links_not_followed;
+    b.textContent = `${key === "not" ? "Not accepted" : key === "accepted" ? "Accepted" : "Links not followed"} (${Number(count) || 0})`;
+  });
+  $("#selection-file").href = `/captures/${Number(id)}/pages/selection.html`;
+  $("#selection-filter").value = "";
+  selectionTab = Number(n.not_accepted) ? "not" : Number(n.links_not_followed) ? "links" : "accepted";
+  renderSelection();
+  $("#selection-overlay").classList.add("open");
+  $(`.sel-tabs button[data-sel="${selectionTab}"]`).focus();
+}
+function selectionRows() {
+  const r = selectionReport || {};
+  const rows = selectionTab === "links" ? (r.links || [])
+    : (r.pages || []).filter(p => selectionTab === "accepted" ? p.accepted : !p.accepted);
+  const q = $("#selection-filter").value.trim().toLowerCase();
+  return q ? rows.filter(x => [x.url, x.title, x.text, x.why].some(v => String(v || "").toLowerCase().includes(q))) : rows;
+}
+function scoreChip(p) {
+  if (p.hub) return `<span class="sel-score">hub</span>`;
+  if (p.hard) return `<span class="sel-score none">rule</span>`;
+  const cls = p.score >= p.needed ? "met" : p.score > 0 ? "short" : "none";
+  return `<span class="sel-score ${cls}" title="Score ${p.score}; ${p.needed} needed">${p.score} / ${p.needed}</span>`;
+}
+function renderSelection() {
+  $$(".sel-tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.sel === selectionTab)));
+  const rows = selectionRows();
+  const pickable = selectionTab !== "accepted";
+  const live = (url, label) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" title="Open the live page in a new tab">${escapeHtml(label || url)}${LIVE_ICON}</a>`;
+  const pick = url => pickable
+    ? `<td class="pick"><input type="checkbox" class="sel-pick" data-url="${escapeHtml(url)}" aria-label="Recrawl ${escapeHtml(url)}"${selectionPicked.has(url) ? " checked" : ""}></td>` : "";
+  let html;
+  if (!rows.length) {
+    html = `<div class="sel-empty">${$("#selection-filter").value.trim() ? "Nothing matches the filter." : selectionTab === "not" ? "Every page the theme read was accepted." : selectionTab === "links" ? "Every link in scope was followed." : "No page was accepted."}</div>`;
+  } else if (selectionTab === "links") {
+    html = `<table class="sel-table"><thead><tr><th></th><th>Link (live address)</th><th>Why it was not followed</th></tr></thead><tbody>${rows.map(l => `<tr>
+      ${pick(l.url)}<td class="sel-page">${live(l.url, l.text)}<div class="sel-url">${escapeHtml(l.url)}</div></td>
+      <td class="sel-why">${escapeHtml(l.why)}</td></tr>`).join("")}</tbody></table>`;
+  } else {
+    html = `<table class="sel-table"><thead><tr>${pickable ? "<th></th>" : ""}<th>Page (live address)</th><th>Published</th><th>Score</th><th>Why</th></tr></thead><tbody>${rows.map(p => `<tr>
+      ${pick(p.url)}<td class="sel-page">${live(p.url, p.title)}<div class="sel-url">${escapeHtml(p.url)}</div></td>
+      <td class="sel-date">${escapeHtml(p.published || "")}</td><td>${scoreChip(p)}</td>
+      <td class="sel-why">${escapeHtml(p.why)}${(p.matched || []).length ? `<div class="sel-terms">${p.matched.map(m => `${escapeHtml(m.term)} in ${escapeHtml(m.where)}`).join(" · ")}</div>` : ""}</td></tr>`).join("")}</tbody></table>`;
+  }
+  $("#selection-body").innerHTML = html;
+  const all = $("#selection-all");
+  all.closest("label").hidden = !pickable || !rows.length;
+  all.checked = pickable && rows.length > 0 && rows.every(x => selectionPicked.has(x.url));
+  updateSelectionPicked();
+}
+function updateSelectionPicked() {
+  const n = selectionPicked.size;
+  $("#selection-recrawl").disabled = !n;
+  $("#selection-recrawl").textContent = n ? `Recrawl ${n} selected` : "Recrawl selected";
+  $("#selection-msg").textContent = n ? `${n} page(s) chosen to recrawl` : "";
+}
+function closeSelection() {
+  $("#selection-overlay").classList.remove("open");
+  selectionReport = null;
+}
+$$(".sel-tabs button").forEach(b => b.addEventListener("click", () => { selectionTab = b.dataset.sel; renderSelection(); }));
+$(".sel-tabs").addEventListener("keydown", e => {
+  if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+  const tabs = $$(".sel-tabs button"), at = tabs.indexOf(document.activeElement);
+  const next = tabs[(at + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+  selectionTab = next.dataset.sel; renderSelection(); next.focus();
+});
+$("#selection-filter").addEventListener("input", renderSelection);
+$("#selection-body").addEventListener("change", e => {
+  const box = e.target.closest(".sel-pick");
+  if (!box) return;
+  if (box.checked) selectionPicked.add(box.dataset.url); else selectionPicked.delete(box.dataset.url);
+  $("#selection-all").checked = selectionRows().every(x => selectionPicked.has(x.url));
+  updateSelectionPicked();
+});
+$("#selection-all").addEventListener("change", e => {
+  selectionRows().forEach(x => e.target.checked ? selectionPicked.add(x.url) : selectionPicked.delete(x.url));
+  renderSelection();
+});
+$("#selection-close").addEventListener("click", closeSelection);
+$("#selection-overlay").addEventListener("click", e => { if (e.target.id === "selection-overlay") closeSelection(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("#selection-overlay").classList.contains("open") && !confirmDecision) closeSelection();
+});
+$("#selection-recrawl").addEventListener("click", async () => {
+  const report = selectionReport, urls = [...selectionPicked];
+  closeSelection();
+  await recrawlWithoutTheme(urls, report && report.job);
+});
+// The chosen pages become a crawl of their own: those pages only (depth 0),
+// no theme, in the job's collection. It is set up on the crawl form, to be
+// read and started like any other.
+async function recrawlWithoutTheme(urls, job) {
+  const chosen = urls.length;
+  urls = urls.slice(0, 200);
+  if (!urls.length) return;
+  showView("new");
+  switchJob("crawl");
+  if (editorMode === "raw") await switchMode("guided");
+  $$(".seed-editor-row").forEach(row => row.remove());
+  urls.forEach(u => addSeed(u));
+  metadataEditors.crawl.render();
+  $("#f-max-depth").value = "0";
+  $("#f-max-pages").value = String(Math.max(urls.length, 1));
+  const theme = themeField("ct", "enabled");
+  if (theme && theme.checked) { theme.checked = false; theme.dispatchEvent(new Event("change", {bubbles: true})); }
+  const pick = $("#f-collection");
+  if (job && job.collection_id && [...pick.options].some(o => o.value === String(job.collection_id))) pick.value = String(job.collection_id);
+  if (job && job.name) $("#f-crawl-name").value = `${job.name}-recrawl`;
+  updateStorageHints();
+  setMessage(`${urls.length} page(s) set as seeds: only these pages, no theme${chosen > urls.length ? ` (the first 200 of ${chosen})` : ""}. Check the form, then start the crawl.`, "ok");
+  $("#f-crawl-name").scrollIntoView({block: "center"});
+}
 function statusClass(s) { return s.toLowerCase(); }
 
 // Ask the server whether the machine has room before creating a job. A

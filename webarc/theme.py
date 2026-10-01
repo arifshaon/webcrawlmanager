@@ -43,7 +43,12 @@ log = logging.getLogger(__name__)
 KEEP, REJECT, UNSURE = "keep", "reject", "unsure"
 SKIP, FETCH, HUB = "skip", "fetch", "hub"
 POLICIES = ("decide", "tie_break", "agree")
-UNSURE_ACTIONS = ("review", "keep", "reject")
+# What becomes of a page the judge could not place: left out and listed in
+# the selection report (the default), or kept. "review", which once wrote it
+# to a separate WARC for later acceptance, is read as "reject": the report
+# names every page left out, with the live address to check it and recrawl.
+UNSURE_ACTIONS = ("reject", "keep")
+LEGACY_UNSURE_ACTIONS = {"review": "reject"}
 PROVIDERS = ("none", "anthropic", "openai_compatible", "azure_openai")
 AI_INPUTS = ("url", "compact", "full")
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5"
@@ -110,7 +115,7 @@ class ThemeConfig:
     date_from: Optional[str] = None
     date_to: Optional[str] = None
     min_score: int = 3
-    unsure_action: str = "review"
+    unsure_action: str = "reject"
     stop_after_misses: int = 0
     ai_enabled: bool = True
     ai_policy: str = "decide"
@@ -132,7 +137,8 @@ class ThemeConfig:
         policy = str(raw.get("ai_policy") or "decide")
         if policy not in POLICIES:
             raise ValueError("ai_policy must be one of " + ", ".join(POLICIES))
-        unsure = str(raw.get("unsure_action") or "review")
+        unsure = str(raw.get("unsure_action") or "reject")
+        unsure = LEGACY_UNSURE_ACTIONS.get(unsure, unsure)
         if unsure not in UNSURE_ACTIONS:
             raise ValueError("unsure_action must be one of " + ", ".join(UNSURE_ACTIONS))
         ai_input = str(raw.get("ai_input") or "compact")
@@ -1162,7 +1168,8 @@ class SelectionLog:
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.out_dir / SELECTION_FILE
-        self.counts: dict[str, int] = {"pages_kept": 0, "pages_rejected": 0, "pages_unsure": 0,
+        self.counts: dict[str, int] = {"pages_accepted": 0, "pages_not_accepted": 0,
+                                       "pages_kept": 0, "pages_rejected": 0, "pages_unsure": 0,
                                        "links_skipped": 0, "links_fetch": 0, "links_hub": 0,
                                        "ai_page_calls": 0, "ai_link_calls": 0, "ai_failures": 0}
 
@@ -1174,6 +1181,8 @@ class SelectionLog:
             self.counts["pages_rejected"] += 1
         elif decision == UNSURE:
             self.counts["pages_unsure"] += 1
+        if "accepted" in record:
+            self.counts["pages_accepted" if record["accepted"] else "pages_not_accepted"] += 1
         self._append({"kind": "page", "time": _iso_now(), **record})
 
     def links(self, records: Iterable[dict]) -> None:
@@ -1212,16 +1221,67 @@ class SelectionLog:
 
 @dataclass
 class Decision:
-    decision: str
+    decision: str                       # what the judges said: keep | reject | unsure
     judge: str                          # rules | ai | both
     reason: str
     rules: dict
     ai: Optional[dict] = None
     hub: bool = False
+    accepted: bool = False              # whether the page goes into the archive
+    why: str = ""                       # the reason, in a curator's words
 
     def to_dict(self) -> dict:
         return {"decision": self.decision, "judge": self.judge, "reason": self.reason,
-                "rules": self.rules, "ai": self.ai, "hub": self.hub}
+                "rules": self.rules, "ai": self.ai, "hub": self.hub,
+                "accepted": self.accepted, "why": self.why}
+
+
+def is_accepted(decision: str, unsure_action: str) -> bool:
+    """A page goes into the archive when the judges keep it, or when they
+    could not place it and the theme says to keep such pages."""
+    unsure_action = LEGACY_UNSURE_ACTIONS.get(unsure_action, unsure_action)
+    return decision == KEEP or (decision == UNSURE and unsure_action == "keep")
+
+
+def _sentence(text: str) -> str:
+    text = str(text or "").strip()
+    return text[:1].upper() + text[1:] if text else ""
+
+
+def explain(record: dict, min_score: int, unsure_action: str = "reject") -> str:
+    """Why a page was accepted or not, from its selection-log record: the
+    rule that decided, or the score against the score needed, and the AI's
+    answer when it gave one. Works for records written before ``why`` was."""
+    rules = record.get("rules") or {}
+    ai = record.get("ai") or {}
+    decision = record.get("decision")
+    score = int(rules.get("score") or 0)
+    reasons = [r for r in rules.get("reasons") or [] if not str(r).startswith("score ")]
+    if record.get("hub"):
+        return ("A hub page: kept as the way in to the theme's pages" if decision == KEEP
+                else "A hub page: its links were followed, the page itself not kept")
+    if rules.get("hard"):
+        return _sentence(reasons[0] if reasons else "a rule left it out")
+    evidence = "; ".join(r for r in reasons if r != "no theme term or rule matched")
+    if score >= min_score:
+        rules_text = f"Score {score} ({min_score} needed)" + (f": {evidence}" if evidence else "")
+    elif score > 0:
+        rules_text = f"Not enough evidence: score {score} ({min_score} needed)" + (f": {evidence}" if evidence else "")
+    else:
+        rules_text = f"No theme term or rule matched: score 0 ({min_score} needed)"
+    if ai.get("decision"):
+        confidence = ai.get("confidence")
+        answer = {"keep": "about the theme", "reject": "not about the theme",
+                  "unsure": "could not tell"}.get(ai["decision"], ai["decision"])
+        text = (f"AI: {answer}" + (f" ({float(confidence):.2f})" if isinstance(confidence, (int, float)) else "")
+                + (f", {ai.get('reasons')}" if ai.get("reasons") else "") + f". Rules: {rules_text[:1].lower() + rules_text[1:]}")
+    elif ai.get("error"):
+        text = f"{rules_text} (the AI judge was unavailable)"
+    else:
+        text = rules_text
+    if decision == UNSURE and is_accepted(decision, unsure_action):
+        text += ". Kept because pages that cannot be placed are set to be kept"
+    return text
 
 
 class ThemeJudge:
@@ -1283,6 +1343,9 @@ class ThemeJudge:
             decision.reason = ("hub page: " + ("kept as navigation context" if self.theme.keep_hubs
                                                else "followed, not kept") + "; " + decision.reason)
             decision.decision = KEEP if self.theme.keep_hubs else REJECT
+        decision.accepted = is_accepted(decision.decision, self.theme.unsure_action)
+        decision.why = explain({**decision.to_dict(), "hub": hub}, self.theme.min_score,
+                               self.theme.unsure_action)
         if self.log:
             self.log.page({"url": page.url, "seed": seed, "depth": depth, "via": via,
                            **decision.to_dict(), "page": page.to_dict()})
@@ -1428,69 +1491,109 @@ class PageHold:
 # A page for the curator
 # ---------------------------------------------------------------------------
 
-def render_selection_page(out_dir: Path) -> Optional[Path]:
-    """pages/selection.html: what the theme kept, held for review and
-    turned away, with the reasons, from the selection log."""
+def selection_report(out_dir: Path) -> Optional[dict]:
+    """What the theme accepted and did not, from the selection log: each
+    page with its score against the score needed and the reason in plain
+    words, and the links not followed. None when the job has no theme log.
+
+    A page not accepted is not in the archive; the report is where it is
+    found again, by its live address, to be checked and recrawled."""
     out_dir = Path(out_dir)
-    log_path = out_dir / SELECTION_FILE
-    if not log_path.exists():
+    if not (out_dir / SELECTION_FILE).exists():
         return None
-    rows = SelectionLog(out_dir).rows()
     summary = {}
     try:
         summary = json.loads((out_dir / SUMMARY_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         pass
-    theme = (summary.get("theme") or {})
+    theme = summary.get("theme") or {}
+    min_score = int(theme.get("min_score") or 3)
+    unsure_action = str(theme.get("unsure_action") or "reject")
+    pages: dict[str, dict] = {}
+    links: dict[str, dict] = {}
+    for row in SelectionLog(out_dir).rows():
+        url = str(row.get("url") or "")
+        if not url:
+            continue
+        if row.get("kind") == "page":
+            page = row.get("page") or {}
+            rules = row.get("rules") or {}
+            accepted = row["accepted"] if "accepted" in row else is_accepted(row.get("decision"), unsure_action)
+            pages[url] = {
+                "url": url, "title": page.get("headline") or page.get("title") or "",
+                "published": str(page.get("published") or "")[:10],
+                "accepted": bool(accepted), "hub": bool(row.get("hub")),
+                "decision": row.get("decision"), "judge": row.get("judge") or "rules",
+                "score": int(rules.get("score") or 0), "needed": min_score,
+                "hard": bool(rules.get("hard")),
+                "why": row.get("why") or explain(row, min_score, unsure_action),
+                "matched": [{"term": m.get("term"), "where": m.get("where"), "snippet": m.get("snippet")}
+                            for m in rules.get("matched") or []],
+                "depth": row.get("depth"), "time": row.get("time"),
+                # written to a review WARC by an older version of SWM
+                "held_for_review": row.get("decision") == UNSURE and unsure_action == "review",
+            }
+        elif row.get("kind") == "link" and row.get("decision") == SKIP:
+            reasons = row.get("reasons") or []
+            links[url] = {"url": url, "text": str(row.get("text") or ""),
+                          "from_url": row.get("from_url"), "judge": row.get("judge") or "rules",
+                          "why": _sentence("; ".join(str(r) for r in reasons) or "the theme ruled it out")}
+    for url in pages:
+        links.pop(url, None)                       # fetched after all, from another page
+    rows = list(pages.values())
+    return {
+        "theme": {"name": theme.get("name") or "", "brief": theme.get("brief") or "",
+                  "min_score": min_score, "unsure_action": unsure_action},
+        "judge": summary.get("policy") or "rules_only", "ai": summary.get("ai"),
+        "counts": {"accepted": sum(1 for r in rows if r["accepted"]),
+                   "not_accepted": sum(1 for r in rows if not r["accepted"]),
+                   "links_not_followed": len(links)},
+        "pages": rows, "links": list(links.values()),
+        "review_folder": (out_dir / "review").is_dir(),
+    }
+
+
+def render_selection_page(out_dir: Path) -> Optional[Path]:
+    """pages/selection.html: the report as a page that stays with the job,
+    for whoever opens its folder later."""
+    out_dir = Path(out_dir)
+    report = selection_report(out_dir)
+    if report is None:
+        return None
     esc = html_lib.escape
+    theme = report["theme"]
 
-    def page_row(record: dict) -> str:
-        ai = record.get("ai") or {}
-        ai_text = ""
-        if ai.get("error"):
-            ai_text = f"AI unavailable: {esc(str(ai['error']))}"
-        elif ai:
-            quotes = "".join(f"<li>{esc(q)}</li>" for q in ai.get("quotes") or [])
-            confidence = ai.get("confidence")
-            ai_text = (f"AI {esc(str(ai.get('decision')))}"
-                       + (f" ({float(confidence):.2f})" if isinstance(confidence, (int, float)) else "")
-                       + (f" [{esc(str(ai.get('input')))}]" if ai.get("input") else "")
-                       + f": {esc(str(ai.get('reasons') or ai.get('answer') or ''))}"
-                       + (f"<ul>{quotes}</ul>" if quotes else ""))
-        matched = "".join(f"<li>{esc(str(m.get('term')))} in {esc(str(m.get('where')))}: "
-                          f"<span class=snip>{esc(str(m.get('snippet') or ''))}</span></li>"
-                          for m in (record.get("rules") or {}).get("matched") or [])
-        page = record.get("page") or {}
-        return (f"<tr class='{esc(str(record.get('decision')))}'><td>{esc(str(record.get('decision')))}"
-                f"{' (hub)' if record.get('hub') else ''}</td>"
-                f"<td><a href='{esc(str(record.get('url')))}'>{esc(str(page.get('headline') or page.get('title') or record.get('url')))}</a>"
-                f"<div class=url>{esc(str(record.get('url')))}</div></td>"
-                f"<td>{esc(str(page.get('published') or ''))[:10]}</td>"
-                f"<td>{esc(str(record.get('judge')))}: {esc(str(record.get('reason') or ''))}"
-                f"{'<ul>' + matched + '</ul>' if matched else ''}{'<div class=ai>' + ai_text + '</div>' if ai_text else ''}</td></tr>")
+    def page_row(r: dict) -> str:
+        score = "" if r["hub"] or r["hard"] else f"{r['score']} / {r['needed']}"
+        return (f"<tr><td><a href='{esc(r['url'])}' target=_blank rel=noopener>{esc(r['title'] or r['url'])}</a>"
+                f"<div class=url>{esc(r['url'])}</div></td><td>{esc(r['published'])}</td>"
+                f"<td class=num>{esc(score)}</td><td>{esc(r['why'])}</td></tr>")
 
-    def link_row(record: dict) -> str:
-        return (f"<tr class='{esc(str(record.get('decision')))}'><td>{esc(str(record.get('decision')))}</td>"
-                f"<td>{esc(str(record.get('text') or ''))}<div class=url>{esc(str(record.get('url')))}</div></td>"
-                f"<td>{esc(str(record.get('judge') or 'rules'))}: {esc('; '.join(str(r) for r in record.get('reasons') or []))}</td></tr>")
+    def link_row(r: dict) -> str:
+        return (f"<tr><td><a href='{esc(r['url'])}' target=_blank rel=noopener>{esc(r['text'] or r['url'])}</a>"
+                f"<div class=url>{esc(r['url'])}</div></td><td>{esc(r['why'])}</td></tr>")
 
-    pages = [r for r in rows if r.get("kind") == "page"]
-    links = [r for r in rows if r.get("kind") == "link" and r.get("decision") != FETCH]
-    counts = summary.get("counts") or {}
-    ai = summary.get("ai") or {}
-    body = f"""<!doctype html><html><head><meta charset="utf-8"><title>Selection: {esc(theme.get('name') or 'theme')}</title>
-<style>body{{font:14px system-ui,sans-serif;margin:24px;color:#222}}table{{border-collapse:collapse;width:100%;margin-bottom:28px}}
-td,th{{border-top:1px solid #ddd;padding:6px 8px;vertical-align:top;text-align:left}}tr.keep td:first-child{{color:#137333;font-weight:600}}
-tr.reject td:first-child,tr.skip td:first-child{{color:#a50e0e}}tr.unsure td:first-child{{color:#b06000;font-weight:600}}
-.url{{color:#666;font-size:12px;word-break:break-all}}.snip{{color:#555}}.ai{{margin-top:4px;padding:4px 8px;background:#f3f6fb;border-radius:4px}}
-ul{{margin:4px 0 0 18px;padding:0}}p.brief{{background:#fafafa;padding:10px;border-left:3px solid #999}}</style></head><body>
-<h1>Selection for the theme “{esc(theme.get('name') or '')}”</h1>
-<p class=brief>{esc(theme.get('brief') or '')}</p>
-<p>Judge: {esc(str(summary.get('policy') or 'rules_only'))}{(' with ' + esc(str(ai.get('provider'))) + ' / ' + esc(str(ai.get('model')))) if ai else ''}.
-Pages kept {counts.get('pages_kept', 0)}, held for review {counts.get('pages_unsure', 0)}, turned away {counts.get('pages_rejected', 0)};
-links skipped before fetching {counts.get('links_skipped', 0)}.</p>
-<h2>Pages judged</h2><table><tr><th>Decision</th><th>Page</th><th>Date</th><th>Why</th></tr>{''.join(page_row(r) for r in pages)}</table>
-<h2>Links not fetched, and hubs</h2><table><tr><th>Decision</th><th>Link</th><th>Why</th></tr>{''.join(link_row(r) for r in links)}</table>
+    not_accepted = [r for r in report["pages"] if not r["accepted"]]
+    accepted = [r for r in report["pages"] if r["accepted"]]
+    counts = report["counts"]
+    ai = report.get("ai") or {}
+    head = "<tr><th>Page (live address)</th><th>Published</th><th>Score</th><th>Why</th></tr>"
+    body = f"""<!doctype html><html lang=en><head><meta charset="utf-8"><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Selection: {esc(theme['name'] or 'theme')}</title>
+<style>body{{font:14px system-ui,sans-serif;margin:24px;color:#1f2937;max-width:1200px}}table{{border-collapse:collapse;width:100%;margin-bottom:28px}}
+td,th{{border-top:1px solid #ddd;padding:6px 8px;vertical-align:top;text-align:left}}th{{font-size:12px;color:#4b5563}}
+.url{{color:#4b5563;font-size:12px;word-break:break-all}}.num{{white-space:nowrap;font-variant-numeric:tabular-nums}}
+p.brief{{background:#f6f7f9;padding:10px;border-left:3px solid #6b7280}}p.note{{color:#374151}}</style></head><body>
+<h1>Selection for the theme “{esc(theme['name'])}”</h1>
+<p class=brief>{esc(theme['brief'])}</p>
+<p>Judge: {esc(str(report['judge']))}{(' with ' + esc(str(ai.get('provider'))) + ' / ' + esc(str(ai.get('model')))) if ai else ''}.
+A page is accepted at a score of {theme['min_score']} or more. Accepted {counts['accepted']}, not accepted {counts['not_accepted']};
+links not followed {counts['links_not_followed']}.</p>
+<p class=note>Pages not accepted are not in the archive. Open one at its live address to check it; to capture it,
+choose it in the dashboard's Selection report and recrawl it without the theme.</p>
+<h2>Not accepted ({len(not_accepted)})</h2><table>{head}{''.join(page_row(r) for r in not_accepted)}</table>
+<h2>Accepted ({len(accepted)})</h2><table>{head}{''.join(page_row(r) for r in accepted)}</table>
+<h2>Links not followed ({len(report['links'])})</h2><table><tr><th>Link (live address)</th><th>Why</th></tr>{''.join(link_row(r) for r in report['links'])}</table>
 </body></html>"""
     target = out_dir / "pages" / "selection.html"
     target.parent.mkdir(parents=True, exist_ok=True)

@@ -788,17 +788,26 @@ is fetched, read, and judged from the page's *main* content, with the
 menus, headers and footers set aside so a site-wide "Culture" link does
 not make every page cultural. Only then is the page's traffic committed
 to the WARC. A rejected page cost a request and leaves no record in the
-archive; a page the judge could not place goes to a separate review WARC
-under `review/`, outside the collection until a curator accepts it. Hub
+archive. A page is either accepted into the WARC or not; one the judge
+could not place is not accepted (unless the theme says to keep such
+pages), and like every page left out it is listed in the job's
+**Selection report** with its score and the reason. No separate review
+WARC is written. Hub
 pages, including the starting page, are always followed and kept as the
 way in unless the theme says otherwise. A rejected page's links are not
 followed.
 
 **The rules judge** is always on and explainable: a term in the headline
 scores 3, in the section, tags or description 2, each mention in the
-text 1, an address rule 3; the page is kept at the minimum score, unsure
-below it, rejected at zero or on a hard rule (an excluded term in the
-headline, a date outside the window, an excluded address).
+text 1 (up to 5), an address rule 3. The page is accepted at the
+**minimum score**, 3 by default and set per job under "Minimum score to
+keep a page" (`min_score` in the YAML): one headline hit is enough at 3,
+a section tag or two mentions in the text at 2. Below it the page could
+not be placed, at zero or on a hard rule (an excluded term in the
+headline, a date outside the window, an excluded address) it is ruled
+out; either way it is not accepted. "When a page cannot be placed"
+chooses whether pages scoring between 1 and the minimum are left out
+(the default) or kept.
 
 **The AI judge** is optional and answers the actual question, "is this
 page about this news?", from what SWM already holds. It never fetches a
@@ -837,8 +846,22 @@ the matched passages, the AI's answer (and, with the full text, its
 confidence, reasons and quoted evidence), what it was sent, the model and
 a hash of the prompt. `theme-summary.json` holds the theme, the judge,
 the counts, the estimated tokens spent and the waits. The job list shows
-kept, left out and held for review as the run goes, and a **Selection**
-button opens a page built from the log. The API key is kept in the
+accepted and not accepted as the run goes.
+
+**The Selection report** (Selection in the job's menu) lists every page
+the theme read, **Not accepted**, **Accepted**, and the **Links not
+followed**, each with its live address, its score against the score
+needed ("1 / 3") and the reason in plain words: "Not enough evidence:
+score 1 (3 needed): 1 mention in the text", "Published 2019-05-01, before
+2025-01-01", "No theme term or rule matched". A page not accepted is not
+in the archive: open it at its live address to check it, tick the ones
+you want, and **Recrawl selected** sets them up as a new crawl of only
+those pages (depth 0), without the theme, in the same collection, to be
+started like any other. The same report is written into the job's folder
+as `pages/selection.html`. Jobs from before this change may have a
+`review/` folder holding the pages that could not be placed; the report
+lists those pages as not accepted, and the folder can be deleted once
+what is needed has been recrawled. The API key is kept in the
 dashboard's database and never written into a capture.
 
 ## Collections

@@ -252,8 +252,10 @@ def _capture_nonrenderable_url(warc: WarcSession, driver: BrowserDriver,
 
 class _ThemedSeed:
     """A theme's bookkeeping for one seed: the hold every page's traffic
-    waits in, the review WARC for pages the judge could not place, and
-    the counts the dashboard shows."""
+    waits in, and the counts the dashboard shows. A page is accepted into
+    the WARC or not; one not accepted leaves no record, only its line in
+    the selection log, which the report shows with the reason and the
+    live address."""
 
     def __init__(self, judge, seed: SeedConfig, crawl: CrawlConfig, seed_idx: int):
         from .theme import PageHold
@@ -262,47 +264,26 @@ class _ThemedSeed:
         self.crawl = crawl
         self.seed_idx = seed_idx
         self.hold = PageHold()
-        self.review: WarcSession | None = None
-        self.counts = {"kept": 0, "rejected": 0, "unsure": 0, "links_skipped": 0, "misses": 0}
-
-    def review_warc(self) -> WarcSession:
-        if self.review is None:
-            self.review = WarcSession(
-                Path(self.crawl.output_dir) / "review", self.crawl.crawl_name + "-review",
-                self.seed.url, self.seed_idx, self.crawl.operator, self.seed.warc,
-                info_extra={"description": "Pages the theme judge could not place: held here "
-                                           "for a curator's decision, not part of the collection "
-                                           "until accepted."},
-                metadata_fields=seed_metadata(self.crawl, self.seed.url))
-        return self.review
+        self.counts = {"kept": 0, "rejected": 0, "links_skipped": 0, "misses": 0}
 
     def settle(self, warc: WarcSession, url: str, depth: int, page_text) -> tuple[bool, bool]:
         """Judge the page and commit or drop its held traffic. Returns
         (kept, expand): whether the page is in the archive, and whether its
         links are worth following."""
-        from .theme import KEEP, REJECT, UNSURE
+        from .theme import KEEP
         hub = depth == 0 or self.judge.rules.is_hub(url)
         decision = self.judge.judge_page(page_text, hub=hub, seed=self.seed.url, depth=depth)
-        outcome = decision.decision
-        if outcome == UNSURE:
-            action = self.judge.theme.unsure_action
-            if action == "keep":
-                outcome = KEEP
-            elif action == "reject":
-                outcome = REJECT
-        if outcome == KEEP:
+        if decision.accepted:
             self.hold.commit(warc)
             self.counts["kept"] += 1
-        elif outcome == UNSURE:
-            self.hold.commit(self.review_warc())
-            self.counts["unsure"] += 1
         else:
             self.hold.discard()
             self.counts["rejected"] += 1
         matched = decision.decision == KEEP
         self.counts["misses"] = 0 if matched else self.counts["misses"] + 1
-        log.info("Theme %s: %s (%s)", outcome, url, decision.reason[:160])
-        return outcome == KEEP, matched or hub
+        log.info("Theme %s: %s (%s)", "accepted" if decision.accepted else "not accepted",
+                 url, decision.why[:160])
+        return decision.accepted, matched or hub
 
     def links_to_follow(self, driver: BrowserDriver, page, url: str, scope: ScopeMatcher) -> list[str]:
         """The page's links the theme thinks worth a request, triaged from
@@ -328,8 +309,6 @@ class _ThemedSeed:
 
     def finish(self) -> None:
         from .theme import render_selection_page
-        if self.review is not None:
-            self.review.close()
         try:
             self.judge.write_summary(Path(self.crawl.output_dir),
                                      {"seed": self.seed.url, "seed_counts": dict(self.counts)})

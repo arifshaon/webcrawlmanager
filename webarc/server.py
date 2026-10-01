@@ -956,7 +956,7 @@ def _crawl_view(row: dict) -> dict:
         # Where this crawl's files are, so the dashboard can show a capture
         # kept somewhere other than the default without guessing.
         "output_dir": str(crawl_dir),
-        "has_selection": (crawl_dir / "pages" / "selection.html").is_file(),
+        "has_selection": (crawl_dir / "selection.jsonl").is_file(),
         "theme": _theme_name_of(row),
         "collection": colls.brief(_collection_of(row)),
         "dedup": _dedup_summary(crawl_dir),
@@ -2639,6 +2639,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             raise HTTPException(404, "no change report for this job: it is not in a "
                                      "collection with an index, or it has not ended yet")
         return report
+
+    @app.get("/api/crawls/{crawl_id}/selection")
+    def crawl_selection(crawl_id: int):
+        """A themed job's report: every page accepted or not, with its score
+        against the score needed and the reason, and the links not followed.
+        The job's name and collection come with it, for a recrawl."""
+        from .theme import selection_report
+        row = _reconcile(_require(crawl_id))
+        report = selection_report(_crawl_dir(row))
+        if report is None:
+            raise HTTPException(404, "This job has no theme selection to report.")
+        return {**report, "job": {"id": row["id"], "name": row.get("name") or "",
+                                  "collection_id": row.get("collection_id")}}
 
     @app.get("/api/crawls/{crawl_id}/impact")
     def crawl_impact(crawl_id: int):

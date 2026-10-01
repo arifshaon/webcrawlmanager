@@ -116,7 +116,7 @@ function crawlRow(c) {
     const details = sd.details || {};
     const th = details.theme && typeof details.theme === "object" ? details.theme : null;
     const themeDetail = th && !isSocial ? `
-      <div class="cur">theme: ${Number(th.kept) || 0} kept · ${Number(th.rejected) || 0} left out · ${Number(th.unsure) || 0} for review${th.links_skipped != null ? ` · ${Number(th.links_skipped) || 0} links skipped` : ""}</div>` : "";
+      <div class="cur">theme: ${Number(th.kept) || 0} accepted · ${Number(th.rejected) || 0} not accepted${Number(th.unsure) ? ` · ${Number(th.unsure)} in the review folder` : ""}${th.links_skipped != null ? ` · ${Number(th.links_skipped) || 0} links not followed` : ""}</div>` : "";
     const facebookDetail = isFacebook ? `
       <div class="cur">${escapeHtml(details.message || details.phase || "")}</div>
       <div class="cur">newest: ${escapeHtml(details.newest_post || "not yet observed")} · oldest: ${escapeHtml(details.oldest_post || "not yet observed")} · pagination failures: ${Number(details.pagination_failures) || 0}</div>` : "";
@@ -243,7 +243,7 @@ function crawlRow(c) {
               : wi && wi.status === "failed" ? "Index WARC · retry" : "Index WARC";
             return `<button role="menuitem" onclick="indexWarc(${id})" ${off ? "disabled" : ""} title="${title}">${label}</button>`;
           })()}
-          ${c.has_selection ? `<button role="menuitem" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
+          ${c.has_selection ? `<button role="menuitem" onclick="openSelection(${id})" title="What the theme accepted and did not, with the score and the reason; recrawl the pages you want">Selection</button>` : ""}
           ${ch && changeParts.length ? `<button role="menuitem" onclick="window.open('/api/crawls/${id}/changes', '_blank')" title="Page-by-page report against the collection's earlier captures">Page changes</button>` : ""}
         </div>
       </details>
