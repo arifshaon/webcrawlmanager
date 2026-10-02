@@ -555,30 +555,46 @@ function Get-DeclaredOptionalExtras([string]$TargetDir) {
 }
 
 function Test-SwmFeatureDependencies {
-    $probe = @"
-import importlib
-modules = {
-    "dashboard / FastAPI": "fastapi",
-    "dashboard / Uvicorn": "uvicorn",
-    "browser capture / Playwright": "playwright",
-    "WARC / warcio": "warcio",
-    "configuration / PyYAML": "yaml",
-    "resource monitoring / psutil": "psutil",
-    "Instagram listing / gallery-dl": "gallery_dl",
-    "YouTube capture / yt-dlp": "yt_dlp",
-    "AI theme adviser / Anthropic": "anthropic",
-}
-missing = []
-for label, module in modules.items():
-    try:
-        importlib.import_module(module)
-    except Exception as exc:
-        missing.append(f"{label} ({module}): {exc}")
-if missing:
-    raise SystemExit("Missing SWM feature dependencies:\n" + "\n".join(missing))
-print("Verified SWM core, dashboard, Instagram, YouTube and AI Python dependencies.")
-"@
-    Invoke-External -Exe $PythonExe -ArgumentList @("-c", $probe) -Description "Verifying SWM feature dependencies"
+    $modules = @(
+        @{ Label = "dashboard / FastAPI"; Module = "fastapi" },
+        @{ Label = "dashboard / Uvicorn"; Module = "uvicorn" },
+        @{ Label = "browser capture / Playwright"; Module = "playwright" },
+        @{ Label = "WARC / warcio"; Module = "warcio" },
+        @{ Label = "configuration / PyYAML"; Module = "yaml" },
+        @{ Label = "resource monitoring / psutil"; Module = "psutil" },
+        @{ Label = "Instagram listing / gallery-dl"; Module = "gallery_dl" },
+        @{ Label = "YouTube capture / yt-dlp"; Module = "yt_dlp" },
+        @{ Label = "AI theme adviser / Anthropic"; Module = "anthropic" }
+    )
+
+    $missing = New-Object System.Collections.Generic.List[string]
+
+    foreach ($entry in $modules) {
+        $moduleName = [string]$entry.Module
+        $label = [string]$entry.Label
+
+        $output = @(
+            & $PythonExe -c "import importlib; importlib.import_module('$moduleName'); print('$moduleName: OK')" 2>&1
+        )
+        $exitCode = $LASTEXITCODE
+
+        if ($exitCode -ne 0) {
+            $detail = ($output -join " ").Trim()
+            if (-not $detail) {
+                $detail = "Python exited with code $exitCode."
+            }
+            $missing.Add("$label ($moduleName): $detail")
+        } else {
+            Write-Ok "$label dependency is available."
+        }
+    }
+
+    if ($missing.Count -gt 0) {
+        throw ("Missing SWM feature dependencies:" + [Environment]::NewLine +
+               ($missing -join [Environment]::NewLine))
+    }
+
+    Write-Ok "Verified SWM core, dashboard, Instagram, YouTube and AI Python dependencies."
 }
 
 function Install-SwmPythonPackages([string]$TargetDir) {
