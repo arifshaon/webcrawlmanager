@@ -574,7 +574,7 @@ function Test-SwmFeatureDependencies {
         $label = [string]$entry.Label
 
         $output = @(
-            & $PythonExe -c "import importlib; importlib.import_module('$moduleName'); print('$moduleName: OK')" 2>&1
+            & $PythonExe -c "import importlib; importlib.import_module('$moduleName'); print('${moduleName}: OK')" 2>&1
         )
         $exitCode = $LASTEXITCODE
 
