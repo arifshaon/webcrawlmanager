@@ -349,7 +349,7 @@ class HeadingTests(DashboardTestCase):
             with self.subTest(view):
                 self.assertIn('class="page-title"', self.section(view))
         self.assertEqual(re.findall(r'<h\d class="eyebrow', self.markup), [])
-        self.assertIn('<h3 class="section-title">Storage</h3>', self.section("settings"))
+        self.assertIn('<h3 class="section-heading">Storage</h3>', self.section("settings"))
         self.assertIn("`All jobs (${shown.length})`", self.script)
 
 
