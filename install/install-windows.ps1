@@ -23,7 +23,9 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "Programs\Simple Webcrawl Manager"),
-    [string]$Branch = "feature/record-session",
+    [ValidateSet("LatestRelease", "Branch")]
+    [string]$SourceMode = "LatestRelease",
+    [string]$Branch = "main",
     [int]$DashboardPort = 8080,
     [int]$ReplayPort = 8091,
     [string]$SourceArchivePath,
@@ -272,16 +274,65 @@ function Invoke-External {
     }
 }
 
-function Download-SourceZip([string]$TargetDir, [string]$BranchName) {
+function Resolve-LatestPublishedReleaseTag {
+    $apiUrl = "https://api.github.com/repos/$RepoOwner/$RepoName/releases/latest"
+    Write-Info "Resolving latest published SWM release from GitHub."
+
+    try {
+        $headers = @{
+            "Accept" = "application/vnd.github+json"
+            "User-Agent" = "SWM-Windows-Installer"
+        }
+        $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers -UseBasicParsing
+        $tag = [string]$release.tag_name
+
+        if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw "GitHub did not return a release tag."
+        }
+
+        Write-Ok "Latest published SWM release is $tag."
+        return $tag
+    } catch {
+        throw "Could not resolve the latest published SWM release from $apiUrl. $($_.Exception.Message)"
+    }
+}
+
+function Get-SourceSelection {
+    if ($SourceMode -eq "Branch") {
+        if ([string]::IsNullOrWhiteSpace($Branch)) {
+            throw "A branch name is required when SourceMode is Branch."
+        }
+
+        $escapedBranch = (($Branch -split "/") | ForEach-Object {
+            [Uri]::EscapeDataString($_)
+        }) -join "/"
+
+        return [PSCustomObject]@{
+            Mode = "Branch"
+            Ref = $Branch
+            Url = "$RepoBaseUrl/archive/refs/heads/$escapedBranch.zip"
+            Description = "branch $Branch"
+        }
+    }
+
+    $tag = Resolve-LatestPublishedReleaseTag
+    $escapedTag = (($tag -split "/") | ForEach-Object {
+        [Uri]::EscapeDataString($_)
+    }) -join "/"
+
+    return [PSCustomObject]@{
+        Mode = "LatestRelease"
+        Ref = $tag
+        Url = "$RepoBaseUrl/archive/refs/tags/$escapedTag.zip"
+        Description = "published release $tag"
+    }
+}
+
+function Download-SourceZip([string]$TargetDir) {
     $tmp = Join-Path ([IO.Path]::GetTempPath()) ("swm-source-" + [Guid]::NewGuid().ToString("N"))
     $zip = Join-Path $tmp "source.zip"
     $expanded = Join-Path $tmp "expanded"
     New-Item -ItemType Directory -Path $expanded -Force | Out-Null
-
-    $escapedBranch = (($BranchName -split "/") | ForEach-Object {
-        [Uri]::EscapeDataString($_)
-    }) -join "/"
-    $url = "$RepoBaseUrl/archive/refs/heads/$escapedBranch.zip"
 
     try {
         if ($SourceArchivePath) {
@@ -291,8 +342,11 @@ function Download-SourceZip([string]$TargetDir, [string]$BranchName) {
             Write-Info "Using supplied SWM source archive: $SourceArchivePath"
             Copy-Item -LiteralPath $SourceArchivePath -Destination $zip -Force
         } else {
-            Get-RequiredDownload -Name "SWM source archive" -Url $url -Destination $zip -FileFilter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
+            $selection = Get-SourceSelection
+            Write-Info "Installing SWM source from $($selection.Description)."
+            Get-RequiredDownload -Name "SWM source archive ($($selection.Description))" -Url $selection.Url -Destination $zip -FileFilter "ZIP archives (*.zip)|*.zip|All files (*.*)|*.*"
         }
+
         Expand-Archive -LiteralPath $zip -DestinationPath $expanded -Force
 
         $sourceRoot = Get-ChildItem -LiteralPath $expanded -Directory | Where-Object {
@@ -884,13 +938,17 @@ endlocal
 
 try {
     Write-Host "Simple Webcrawl Manager (SWM) - Windows Installer" -ForegroundColor White
-    Write-Host "Branch: $Branch"
+    if ($SourceMode -eq "Branch") {
+        Write-Host "Source: branch $Branch"
+    } else {
+        Write-Host "Source: latest published GitHub release"
+    }
     Write-Host "Install directory: $InstallDir"
     Write-Host "Local Python: $PythonExe"
     Write-Host "Download fallback: retry / manual file selection / abort"
 
     Write-Step "1. Download / update SWM"
-    Download-SourceZip -TargetDir $InstallDir -BranchName $Branch
+    Download-SourceZip -TargetDir $InstallDir
     if (-not (Test-Path -LiteralPath (Join-Path $InstallDir "pyproject.toml"))) {
         throw "pyproject.toml is missing after source download."
     }
