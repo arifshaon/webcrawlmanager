@@ -90,6 +90,7 @@ Key capabilities:
 - [YouTube capture](#youtube-capture)
 - [Automated crawling](#automated-crawling)
 - [Theme-based capture](#theme-based-capture)
+- [Collections](#collections)
 - [Browser modes](#browser-modes)
 - [Inspection and QA](#inspection-and-qa)
 - [Indexing social captures](#indexing-social-captures)
@@ -752,7 +753,12 @@ Core crawl capabilities include:
 - maximum depth and maximum page limits;
 - URL canonicalisation and frontier deduplication;
 - optional robots.txt handling;
-- randomised delays, scrolling, mouse movement and network-idle waits;
+- randomised delays, scrolling, mouse movement and network-idle waits (a page
+  that loads but never falls quiet -- analytics, polling, a chat widget -- is
+  still counted and followed when the wait runs out, and logged as unsettled);
+- the browser cache off while capturing, so every page's stylesheets, scripts
+  and images are fetched from the site and archived, never answered from the
+  cache or recorded as empty 304 replies (recordings do the same);
 - block-page detection and controlled back-off;
 - compressed WARC/1.1 output with request, response, warcinfo and revisit records.
 
@@ -782,17 +788,30 @@ is fetched, read, and judged from the page's *main* content, with the
 menus, headers and footers set aside so a site-wide "Culture" link does
 not make every page cultural. Only then is the page's traffic committed
 to the WARC. A rejected page cost a request and leaves no record in the
-archive; a page the judge could not place goes to a separate review WARC
-under `review/`, outside the collection until a curator accepts it. Hub
+archive. A page is either accepted into the WARC or not; one the judge
+could not place is not accepted (unless the theme says to keep such
+pages), and like every page left out it is listed in the job's
+**Selection report** with its score and the reason. No separate review
+WARC is written. Hub
 pages, including the starting page, are always followed and kept as the
-way in unless the theme says otherwise. A rejected page's links are not
+way in unless the theme says otherwise. With **Keep hub pages** unticked
+they are followed but not archived; the job still replays: when its
+starting page is not in the archive, Replay opens on a list of the pages
+that are, saying why, and the collection's replay page offers the same
+list for that starting address. A rejected page's links are not
 followed.
 
 **The rules judge** is always on and explainable: a term in the headline
 scores 3, in the section, tags or description 2, each mention in the
-text 1, an address rule 3; the page is kept at the minimum score, unsure
-below it, rejected at zero or on a hard rule (an excluded term in the
-headline, a date outside the window, an excluded address).
+text 1 (up to 5), an address rule 3. The page is accepted at the
+**minimum score**, 3 by default and set per job under "Minimum score to
+keep a page" (`min_score` in the YAML): one headline hit is enough at 3,
+a section tag or two mentions in the text at 2. Below it the page could
+not be placed, at zero or on a hard rule (an excluded term in the
+headline, a date outside the window, an excluded address) it is ruled
+out; either way it is not accepted. "When a page cannot be placed"
+chooses whether pages scoring between 1 and the minimum are left out
+(the default) or kept.
 
 **The AI judge** is optional and answers the actual question, "is this
 page about this news?", from what SWM already holds. It never fetches a
@@ -831,9 +850,215 @@ the matched passages, the AI's answer (and, with the full text, its
 confidence, reasons and quoted evidence), what it was sent, the model and
 a hash of the prompt. `theme-summary.json` holds the theme, the judge,
 the counts, the estimated tokens spent and the waits. The job list shows
-kept, left out and held for review as the run goes, and a **Selection**
-button opens a page built from the log. The API key is kept in the
+accepted and not accepted as the run goes.
+
+**The Selection report** (Selection in the job's menu) lists every page
+the theme read, **Not accepted**, **Accepted**, and the **Links not
+followed**, each with its live address, its score against the score
+needed ("1 / 3") and the reason in plain words: "Not enough evidence:
+score 1 (3 needed): 1 mention in the text", "Published 2019-05-01, before
+2025-01-01", "No theme term or rule matched". A page not accepted is not
+in the archive: open it at its live address to check it, tick the ones
+you want, and **Recrawl selected** sets them up as a new crawl of only
+those pages (depth 0), without the theme, in the same collection, to be
+started like any other. The same report is written into the job's folder
+as `pages/selection.html`. Jobs from before this change may have a
+`review/` folder holding the pages that could not be placed; the report
+lists those pages as not accepted, and the folder can be deleted once
+what is needed has been recrawled. The API key is kept in the
 dashboard's database and never written into a capture.
+
+## Collections
+
+A collection groups the jobs that belong together and gives them a directory
+of their own. It is the unit a curator thinks in ("the 2026 election sites",
+"the library's own channels") and the unit within which a payload already
+captured is stored once. Every job belongs to a collection: the one you pick
+or make on the job form, or the **Default** collection when you pick none,
+which SWM makes under the storage root the first time a job needs it. A job
+that names a storage location of its own is written there and still belongs
+to its collection. Jobs made before collections existed keep their place
+under the storage root and are listed under "Older jobs, not in a
+collection".
+
+Nothing starts, is created or is deleted without a yes. Starting any job
+(crawl, recording, Facebook, Instagram, X or YouTube), **Start now** on a
+waiting job, **Continue**, **Stop**, **Force stop**, creating a collection
+and deleting a job or collection each open one confirmation that says what
+will happen and the facts it rests on: what is captured, the mode, the
+collection and the exact folder it is saved in, or, for a deletion, what
+depends on it and where its files are. The button names the action
+("Start crawl", "Delete collection"); Cancel, Escape or a click outside
+changes nothing, and a deletion's dialog opens on Cancel, so Enter alone
+never deletes. Pausing and resuming are not asked about: both can be
+undone at once. Every edit is confirmed the same way: saving changes to a
+collection (the dialog lists what changes; its identifier and folder never
+do, so while editing the storage field and Browse are not shown, only the
+folder it is in and how to keep a collection elsewhere: make a new one
+there, then delete this one if no longer needed), saving
+a job's or collection's description, and each Save under Settings. A
+collection cannot be created with, or renamed to, a name another
+collection has or whose identifier another collection has: the form says
+so at once ("Sorry ... Choose another name") and offers no confirmation.
+
+**The Collections page** opens with **New collection** beside its title,
+then a toolbar: search (name, identifier or description), a filter (with
+running jobs, needs attention, not indexed for search, empty), sorting
+(last activity, name, size, jobs) and a list or grid view, kept in the
+browser. Each collection is a card: its jobs and their states, its size on
+disk, metadata fields and last activity; its storage location with Copy
+(and Open on the dashboard's own machine); payloads reused across its jobs
+and search documents, each saying plainly when there are none ("Off: each
+job keeps its own copy", "None yet", "Not indexed"); **View jobs** and
+**Replay**; and a ⋮ menu with Edit, Metadata, Index for search, Rebuild
+duplicate index and Delete. Pages missing their original are flagged on the
+card with **Re-crawl them**. New collection and Edit open the same pop-up.
+
+Sizes on disk never hold up the dashboard. A folder of up to 2,000 files
+and folders is measured on every refresh; a larger one is measured in the
+background, the card saying "Calculating…" until the first figure arrives,
+and the figure is refreshed every 30 seconds ("recalculating" meanwhile).
+Deleting a job or collection still measures it exactly first, as part of
+what you confirm.
+
+Where things are is always on screen. Each job's card and each collection's
+card says where its files are ("Stored in"). Next to the path, **Open**
+shows that folder in the computer's own file manager: Explorer on Windows,
+Finder on macOS, the desktop's file manager (through `xdg-open`) on Linux.
+The server opens only the job's or collection's own folder, never a path
+sent by the page. Open is offered only when the dashboard is reached on the
+machine it runs on (`127.0.0.1` or `localhost`) and that machine has a
+desktop; otherwise the folder would open on the server, not in front of you,
+so the button is **Copy** instead, and hovering over it says why. Every job form shows, under its Collection picker, **Will be saved
+in** with the full path, redrawn as the collection or the storage location
+changes: by default a job goes into the chosen collection's folder
+(`<collection>/jobs/<job number>`). The collection form shows the exact
+folder a new collection will get (`<default>/collections/<identifier>`, the
+identifier made from the name) and warns when that identifier is taken.
+**Settings › Storage** shows the default as a full path and what it
+governs: new collections, and the Default collection the first time it is
+needed. Changing it moves nothing and
+changes nothing already made: existing jobs and collections stay where they
+are, and a job added to an existing collection, the Default collection
+included, still goes into that collection's folder.
+
+Every collection has:
+
+- a **name**, which can change, and an **identifier** derived from the name
+  when the collection is created, which never changes because it is written
+  into directory paths and archive records;
+- a **directory** of its own, `collections/<identifier>/` under the storage
+  root (or under a location of your choosing), holding `collection.json` and
+  a `jobs/` folder that every job run against the collection is placed in;
+- **descriptive metadata** in the same fields a job has (the Dublin Core
+  elements plus Collector, repeatable, custom fields allowed). Each job in
+  the collection inherits these values for every element it does not set
+  itself, the way a seed inherits its job's, and carries a `Relation` naming
+  the collection and a `Collection` field carrying its identifier, so a WARC
+  that leaves the folder still says which collection it came from.
+
+From the dashboard, the **Collections** page lists every collection with its
+job count by status, size on disk and last activity, and offers *Jobs* (the
+job list filtered to that collection), *Describe* (its metadata), *Replay*
+(a page listing the collection's distinct starting URLs, each with the
+captures behind it and a way in: **Replay** opens the page from the
+collection's combined archive, so what one job refers to another for is
+there; a social capture gets **Open pages**, the reader pages of its latest
+capture with the older ones a link away, and **Replay WARC** beside it when
+it has one) and *Delete*. A new collection
+is made on that page, or from any job form with **New collection…** beside
+the collection picker. The job list can be filtered by collection, and each
+job's row names the collection it belongs to.
+
+From the command line:
+
+```bash
+swm collection create "QNL 2026" --description "The library's own sites" \
+    --metadata-json '[{"name": "Subject", "value": "Libraries"}]'
+swm collection create "Elections" --metadata-file elections-metadata.csv
+swm collection list
+swm collection show qnl-2026
+swm crawl config.yaml                              # the job goes into the Default collection
+swm crawl config.yaml --collection qnl-2026        # or into this one
+swm record https://example.org/ --collection "QNL 2026"
+swm crawl config.yaml --standalone                 # outside any collection, as before
+swm collection delete qnl-2026                     # states what it means, then asks
+```
+
+`--collection` accepts a name, an identifier or an id. A name that matches no
+collection is an error rather than a new collection, so a typo never files a
+job in a collection of its own; add `--create-collection` to make it on the
+spot. A job run from the command line is registered in the dashboard's state
+file (`--db`, the dashboard's own by default) and listed with its
+collection's other jobs; `--standalone` runs it the old way, writing to the
+configuration's output directory with no record kept. Run command-line jobs
+from the directory the dashboard runs in, or give `--db` and `--warc-root`
+the same paths the dashboard uses, so both see the same collections.
+Metadata for `create` is a JSON array of `{name, value}` fields, or a file:
+JSON in that shape, or a metadata sheet as the dashboard exports one.
+
+**Stored once across the collection.** Within one job SWM already stores a
+repeated payload as a WARC *revisit* record pointing at the first copy. A
+collection makes that table durable and shared: `index.sqlite` in the
+collection's directory records every capture (URL, date, payload digest, and
+the WARC file and record that hold it), and a payload any job of the
+collection already holds (an image, a stylesheet, a script, a media file) is
+written as a revisit pointing at that copy, whichever job meets it again.
+Bytes are saved; nothing is lost, because a revisit is a standard WARC 1.1
+record (`identical-payload-digest` profile) that replay tools resolve. The
+same URL with different content is stored in full, so the index is also a
+history of each page. Each job's row on the dashboard says how many payloads
+it reused and how many of those other jobs hold (hover the figure for the
+split). A first job in a new collection reuses too: the stylesheet, script
+and images its pages share are downloaded on every page and stored once; `dedup-summary.json` in the
+job's folder has the numbers. This is on by default for a new collection and
+can be turned off per collection (the checkbox on the form, or
+`--no-cross-job-dedup` on the command line), in which case every job stores
+everything in full.
+
+Two consequences follow. A job's WARC is no longer self-contained on its own:
+replaying a job brings in the WARCs of the jobs it refers to, and replaying
+the collection loads them all. And **deleting** a job that later jobs refer
+into leaves their pages without that content. A job or a collection can
+always be deleted, but what that means is stated first and nothing changes
+until you confirm: the delete warning names the jobs and the number of
+records that refer into the job. After such a deletion the collection lists
+the pages that are missing their original, and **Re-crawl** on the
+Collections page sets them up as the seeds of a new crawl in the same
+collection; once stored again they leave the list. Deleting a collection
+removes its jobs from the dashboard; with `--purge` (or, in the dashboard,
+the delete dialog's "Also delete its files from disk" box, unticked by
+default) their files are deleted from disk as well, otherwise the files
+stay where they are (the index does not: it describes jobs that no longer
+exist, and a collection made later under the same name starts its own). A
+collection is not deleted while one of its jobs is running unless the
+deletion is forced. Jobs of one collection can run at the same time, from
+the dashboard or the command line; the index is written one capture at a
+time, so nobody waits on anybody.
+
+**What changed since last time.** Two captures of a page are seldom the
+same bytes (a cache stamp, a nonce, the menu item marked as current), so
+the index also keeps a fingerprint of each HTML page's *words and links*,
+with scripts, styles, comments and markup stripped. Against the
+collection's last capture of the page, a job's pages come out **new**,
+**changed** or **unchanged**, a page the collection held that now answers
+404 or 410 is **gone**, and pages the collection held that the job did not
+reach are listed as **not visited** (which says nothing about whether they
+still exist). The counts are on the job's row; `changes.json` in the job's
+folder (or `/api/crawls/<id>/changes`) lists every page with the job that
+last held it. Unchanged pages whose bytes differ are still stored, as WARC
+requires; the saving is in the assets around them.
+
+**Upkeep.** A collection's row has **Edit** (its name, description and the
+store-once policy; the identifier and the directory are fixed at creation),
+**Rebuild index** (`swm collection reindex NAME`), which reads every job's
+WARC files back into the payload index (for jobs made before the index
+existed, or an index that was lost; the WARCs are not changed), and
+**Index WARCs** (`swm collection index-warc NAME`), which runs warc-indexer
+over every crawl's and recording's WARC files in turn, each document
+carrying the collection's name; see [Indexing crawls and
+recordings](#indexing-crawls-and-recordings). A job in a collection indexed
+on its own carries the collection's name too.
 
 ## Browser modes
 
@@ -988,8 +1213,12 @@ which are indexed from the WARC itself by **warc-indexer**. A patched copy
 of warc-indexer 3.5.1 lives in [`warc-indexer/`](warc-indexer/README-SWM.md)
 with the fixes SWM's captures exposed: the charset the server declared is
 honoured, and the JSON output carries the WARC path and the record type.
-Build it once (`mvnw -DskipTests package` in that folder; only Java is
-needed) and SWM finds the jar there. Java 11 or newer must be installed.
+Build it once in that folder with the Maven wrapper (`.\mvnw.cmd -q
+-DskipTests package` on Windows, `./mvnw -q -DskipTests package` on Linux or
+macOS; only Java is needed, the wrapper fetches Maven) and SWM finds the jar
+there. When the jar is missing, the dashboard's Settings › Indexer and the
+`index-warc` command state the exact command for the machine they run on.
+Java 11 or newer must be installed.
 
 From the dashboard, every crawl and recording job with WARC files has an
 **Index WARC** button. It runs the jar over the job's WARC files and writes
@@ -1165,6 +1394,111 @@ seeds:
 
 `swm metadata export <job folder>` writes the sheet for a finished job.
 
+### Reading a job's row
+
+The run controls (Pause, Resume, Stop; Start now and Cancel for a waiting
+job) sit together; **Replay** (or **Open pages** and **Replay WARC** for a
+social capture) stands out; Metadata, Index WARC or Index, Selection and
+Page changes are under **More**; **Delete** sits apart at the right and asks
+twice, naming what depends on the job. The automated crawl form shows crawl
+details, seed URLs, and the collection, browser mode and scope strategy;
+link depth and page limits, exclusions, delays, timeout, wait behaviour,
+robots, scrolling, WARC size, deduplication and the storage location are
+under **Advanced crawl settings**. Every section folds with the chevron
+before its title.
+
+### Appearance and the overview
+
+**Appearance**, top right, sets the dashboard theme, the colours (match the
+system, light or dark), a high-contrast variant, and the text size (default,
+large or larger); the choice is kept in the browser and applied before the
+page paints. Every
+colour pair in both themes meets WCAG AA contrast, no text is set below
+12px, the page has a heading structure and a skip link, and the whole
+dashboard checks clean against axe-core's WCAG 2.2 AA rules.
+
+The **Overview** on the Jobs page is a board of cards (CPU, memory and disk
+free, what running jobs use, captured total, job count, storage free and
+used, collections). Drag a card, or use the arrows on its corner, to reorder;
+× hides it; **Customise** brings hidden cards back or resets the layout. The
+layout is kept in the browser. Every page uses the width of the window;
+job forms lay their fields out in as many columns as fit. The divider
+between the menu and the content can be dragged (or focused and moved with
+the arrow keys); a double-click resets it, and the width is kept in the
+browser. In a narrow window the menu becomes a row of tabs and forms go
+single-column.
+
+### Dashboard themes
+
+A theme gives the dashboard its colours and the icon shown for each job type
+(crawl, recording, Facebook, Instagram, X, YouTube) and for a collection.
+SWM ships four: **SWM standard**, the classic layout; **Midnight**, a dark navy and cyan
+palette for the dark colour mode; **Aurora**, white cards on a soft
+blue-grey with a vivid blue accent; and **Nebula**, indigo-black with violet
+accents. Aurora and Nebula have light and dark palettes, full-colour icon
+tiles, the Inter typeface, and the **board** layout: stat tiles (total and
+active jobs, collections, pages and posts captured), a job-status chart, the
+jobs started each day, the busiest collections, a job table showing what was
+captured against what the platform reported (comments 126 / 128, media
+41 / 41), sorting, a table or card view, and the machine's disk, CPU and
+memory at the foot of the menu. The job table's ⋮ opens a job's actions and
+details. **New job** sits in the header. Tiles and panels can be dragged by
+the handle on their top edge (tiles among tiles, panels among panels) or
+hidden with its ×; **Customise** orders them by keyboard, brings hidden ones
+back and resets the layout, which is kept in the browser. The status chart's colours are fixed rather than themed, chosen so
+every pair stays distinct for colour-blind readers, and its counts are
+always written beside it; the activity chart can be shown as a table.
+**Nebula is the default**: a browser that has not picked a theme shows it.
+Choose another, SWM standard's classic layout included, under
+**Appearance → Theme**; the choice is this browser's own, like the rest of
+Appearance.
+
+**Settings → Dashboard themes** lists the themes with their icons, installs
+a new one from a `.zip`, downloads any theme as a starting point, and
+removes installed ones. Installed themes are kept in `ui-themes/` beside the
+dashboard's database; a theme folder copied there by hand is picked up too.
+
+A theme is one folder:
+
+```
+harbour/
+  theme.json
+  icons/crawl.svg  recording.svg  facebook.svg  instagram.svg
+        x.svg  youtube.svg  collection.svg
+```
+
+```json
+{"schema": "swm-ui-theme-v1", "name": "Harbour", "version": "1.0",
+ "author": "Reading Room", "description": "Teal and slate.",
+ "icon_style": "mono", "icon_size": "normal", "layout": "classic", "font": "system",
+ "colors": {"light": {"accent": "#0E7490", "accent-hover": "#155E75"},
+            "dark":  {"accent": "#67E8F9"}},
+ "icons": {"instagram": "icons/camera.svg"}}
+```
+
+Only `name` is required. The folder name is the theme's id; a theme
+installed from a zip takes its id from `id` in `theme.json`, or else from
+its name. Colours replace the dashboard's own token by token, separately for
+light and dark; the standard theme's `theme.json` lists every token and is
+the easiest place to start (download it from Settings). An icon the theme
+leaves out comes from the standard theme. With `"icon_style": "mono"` an
+icon is drawn in its job type's colour, taken from the palette, so it
+follows light, dark and high contrast; with `"color"` it is shown as drawn.
+`"icon_size": "large"` sets each job's icon as a tile beside its name and
+the line below, rather than a small icon before the name. `"layout"` is
+`"classic"` or `"board"`, and `"font"` is `"system"` or `"inter"` (the Inter
+typeface, shipped with SWM under the SIL Open Font License). Layouts and
+typefaces are built into SWM; a theme chooses one, it cannot bring its own.
+High contrast always keeps the dashboard's own colours.
+
+A theme cannot run anything. Colours must be plain colour values (`#hex`,
+`rgb()`, `hsl()`), so a theme cannot add CSS of its own; icons must be plain
+SVG drawings, with no scripts, event handlers, foreign content or
+references outside the file, and are only ever shown as images. A zip that
+fails any check is refused whole, with the reasons; a folder copied in by
+hand keeps what passes, and Settings says what was left out. Settings also
+flags any colour pair below WCAG AA contrast (4.5:1).
+
 ### Finding a job in the list
 
 The bar above the job list narrows it as you type or choose: by name or
@@ -1330,6 +1664,11 @@ Design research that shaped, or will shape, a capture mode lives under
   and downloads the videos while a browser reads the Posts tab, what the
   spike from this environment showed, and what the first real capture
   must confirm.
+- [A language-processing judge for themes, without AI](docs/research/theme-nlp-fallback.md)
+  (parked): how established NLP libraries could judge theme pages when
+  no AI judge is configured, the libraries' sizes and licences, how their
+  stemmers handle English and Arabic, and the comparison to run before
+  choosing.
 
 ## Licence and citation
 

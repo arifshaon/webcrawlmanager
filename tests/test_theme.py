@@ -104,7 +104,9 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(theme.enabled)
         self.assertEqual(theme.min_score, 3)
         self.assertEqual(theme.date_from, "2025-01-01T00:00:00Z")
-        self.assertEqual(theme.unsure_action, "review")
+        self.assertEqual(theme.unsure_action, "reject")
+        # a job saved when unplaced pages went to a review WARC still loads, as "leave it out"
+        self.assertEqual(ThemeConfig.from_dict({**LIBRARIES, "unsure_action": "review"}).unsure_action, "reject")
         self.assertFalse(ThemeConfig.from_dict(None).enabled)
         self.assertFalse(ThemeConfig.from_dict({"enabled": False}).enabled)
         for bad in ({"name": "x"}, {"terms": ["a"], "ai_policy": "vote"}, {"terms": ["a"], "url_exclude": ["("]},
@@ -375,6 +377,12 @@ class ComposedJudgeTests(unittest.TestCase):
         self.assertEqual(rows[0]["judge"], "rules")
         self.assertEqual(rows[0]["page"]["headline"], "New public library opens in Doha")
         self.assertEqual(judge.log.counts["pages_kept"], 2)
+        self.assertEqual([r["accepted"] for r in rows], [True, False, False, True])
+        self.assertEqual((judge.log.counts["pages_accepted"], judge.log.counts["pages_not_accepted"]), (2, 2))
+        # the reason, in a curator's words: the score against the score needed
+        self.assertEqual(rows[1]["why"], "Not enough evidence: score 1 (3 needed): 1 mention(s) in the text")
+        self.assertEqual(rows[2]["why"], "Excluded term 'football' in the headline")   # a rule, not a score
+        self.assertTrue(rows[3]["why"].startswith("A hub page"))
         summary = json.loads(judge.write_summary(self.out).read_text())
         self.assertEqual(summary["policy"], "rules_only")
         self.assertEqual(summary["theme"]["name"], "libraries")
@@ -535,13 +543,24 @@ class CrawlTests(unittest.TestCase):
         self.assertNotIn("/news/4-city-budget", paths)
         self.assertNotIn("/news/5-old-library-story", paths)
         self.assertNotIn("/about", paths)
-        review = self.urls_in((self.out / "review").glob("*.warc.gz"))
-        self.assertEqual({u.replace(self.base, "") for u in review}, {"/news/4-city-budget"})
+        # a page the judge could not place is left out, and only listed
+        self.assertFalse((self.out / "review").exists())
+        from webarc.theme import selection_report
+        report = selection_report(self.out)
+        listed = {p["url"].replace(self.base, ""): p for p in report["pages"]}
+        budget = listed["/news/4-city-budget"]
+        self.assertFalse(budget["accepted"])
+        self.assertEqual((budget["needed"], budget["score"] < budget["needed"]), (3, True))
+        self.assertTrue(budget["why"].startswith("Not enough evidence"))
+        self.assertTrue(listed["/news/1-library-opens"]["accepted"])
+        self.assertIn("/news/2-football-final", {l["url"].replace(self.base, "") for l in report["links"]})
+        self.assertEqual(report["counts"]["accepted"], 5)
+        self.assertIn("Not accepted", (self.out / "pages" / "selection.html").read_text())
         self.assertNotIn("/login", serve.Handler.requests)          # never requested: an address rule
         self.assertNotIn("/news/2-football-final", serve.Handler.requests)   # never requested: its link text
         self.assertIn("/about", serve.Handler.requests)              # fetched, judged, dropped
         self.assertEqual(stats["theme"]["kept"], 5)       # two articles and three hubs (the seed among them)
-        self.assertEqual(stats["theme"]["unsure"], 1)
+        self.assertNotIn("unsure", stats["theme"])
         self.assertGreaterEqual(stats["theme"]["rejected"], 3)
         rows = judge.log.rows()
         by_url = {r["url"].replace(self.base, ""): r for r in rows if r["kind"] == "page"}

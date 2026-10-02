@@ -703,3 +703,343 @@ class ListingRefusalTests(unittest.TestCase):
 
         self.assertFalse(listing._belongs(stray))
         self.assertEqual(listing.refused, {"not_from_a_listing_request": 1})
+
+
+class CommentPagingStateTests(unittest.TestCase):
+    """Which page_info answers "are there more comments on this post"."""
+
+    def test_the_threads_own_page_says_whether_more_follow(self):
+        from webarc.instagram_browser import comments_page_state
+        docs = [{"data": {"xdt_api__v1__media__media_id__comments__connection": {
+            "edges": [], "page_info": {"has_next_page": True, "end_cursor": "k"}}}}]
+
+        self.assertIs(comments_page_state(docs), True)
+
+    def test_a_replies_page_does_not_answer_for_the_thread(self):
+        """A replies page that says "no more" arriving after the thread's
+        own page must not close the thread."""
+        from webarc.instagram_browser import comments_page_state
+        docs = [
+            {"data": {"xdt_api__v1__media__media_id__comments__connection": {
+                "edges": [], "page_info": {"has_next_page": True}}}},
+            {"data": {"xdt_api__v1__media__media_id__comments__parent_comment_id__child_comments__connection": {
+                "edges": [], "page_info": {"has_next_page": False}}}},
+            {"data": {"xdt_api__v1__media__media_id__comments__connection": {
+                "edges": [{"node": {"pk": "1", "preview_child_comments": {
+                    "page_info": {"has_next_page": False}}}}]}}},
+        ]
+
+        self.assertIs(comments_page_state(docs), True)
+
+    def test_no_comments_connection_is_no_answer(self):
+        from webarc.instagram_browser import comments_page_state
+
+        self.assertIsNone(comments_page_state([{"data": {"user": {
+            "page_info": {"has_next_page": False}}}}]))
+
+
+class _LoopPage:
+    """A page whose scripts do nothing: nothing more ever loads, unless a
+    test says what each round brings."""
+
+    def __init__(self):
+        self.evaluated = 0
+        self.scripts = []
+
+    def evaluate(self, script, *_args):
+        self.evaluated += 1
+        self.scripts.append(script)
+        return None
+
+
+class _LoopObserved:
+    def __init__(self):
+        from collections import OrderedDict
+        self.pool = OrderedDict()
+
+    def comments_in(self, _navigation):
+        return self.pool
+
+
+class _LoopClient:
+    """What _ScrollingComments asks of the browser client, and no more."""
+
+    def __init__(self, stall_rounds=1, more=None, brings=None):
+        self._page = _LoopPage()
+        self.observed = _LoopObserved()
+        self.stall_rounds = stall_rounds
+        self.more = more
+        self.stop_after = None
+        self.rounds = 0
+        # brings(round) -> comments that arrive during that round
+        self.brings = brings or (lambda _round: [])
+        self.settled = 0.0
+
+    def stopping(self):
+        return self.stop_after is not None and self.rounds >= self.stop_after
+
+    def comments_page_open(self):
+        return self.more
+
+    def _check_page_state(self):
+        self.rounds += 1
+        for comment in self.brings(self.rounds):
+            self.observed.pool[comment.comment_id] = comment
+
+    def _settle(self, seconds=None):
+        self.settled += seconds or 0
+
+
+def _loop_comment(cid, shortcode="Cx", depth=0):
+    from webarc.instagram import InstagramComment
+    return InstagramComment(comment_id=cid, post_shortcode=shortcode,
+                            depth=depth,
+                            parent_comment_id="1" if depth else None)
+
+
+class CommentLoopTests(unittest.TestCase):
+    """When the comment thread is given up on, without a browser."""
+
+    def scrolling(self, client, patience=0.0, replies=True):
+        from webarc.instagram_browser import _ScrollingComments
+
+        class Quick(_ScrollingComments):
+            PATIENCE_SECONDS = patience
+            ARRIVAL_SECONDS = 0.4
+
+        return Quick(client, 0, "Cx", replies)
+
+    def test_comments_that_arrive_are_handed_over_in_order(self):
+        client = _LoopClient(brings=lambda r: [_loop_comment(f"c{r}")] if r <= 3 else [])
+
+        ids = [c.comment_id for c in self.scrolling(client)]
+
+        self.assertEqual(ids, ["c1", "c2", "c3"])
+
+    def test_instagrams_no_more_is_trusted_after_two_barren_rounds(self):
+        client = _LoopClient(stall_rounds=20, more=False)
+        comments = self.scrolling(client, patience=3600)
+
+        self.assertEqual(list(comments), [])
+        self.assertEqual(comments.rounds, 2)
+        self.assertEqual(comments.finished, "instagram_reported_no_more")
+
+    def test_patience_waits_for_the_stall_rounds_setting(self):
+        client = _LoopClient(stall_rounds=4, more=True)
+        comments = self.scrolling(client, patience=0.0)
+
+        self.assertEqual(list(comments), [])
+        self.assertEqual(comments.rounds, 4)
+        self.assertEqual(comments.finished, "nothing_new_loaded")
+
+    def test_unwanted_replies_arriving_forever_do_not_keep_it_going(self):
+        client = _LoopClient(stall_rounds=3, more=True,
+                             brings=lambda r: [_loop_comment(f"r{r}", depth=1)])
+        comments = self.scrolling(client, patience=0.0, replies=False)
+
+        self.assertEqual(list(comments), [])
+        self.assertEqual(comments.rounds, 3)
+
+    def test_a_curators_stop_ends_the_thread_at_once(self):
+        client = _LoopClient(stall_rounds=50, more=True)
+        client.stop_after = 1
+        comments = self.scrolling(client, patience=3600)
+
+        self.assertEqual(list(comments), [])
+        self.assertEqual(comments.rounds, 1)
+        self.assertEqual(comments.finished, "stopped")
+
+    def test_the_wait_between_rounds_goes_through_the_clients_pacing(self):
+        client = _LoopClient(stall_rounds=1, more=False)
+
+        list(self.scrolling(client, patience=0.0))
+
+        self.assertGreater(client.settled, 0)
+
+    def test_replies_are_opened_only_when_asked_for(self):
+        from webarc.instagram_browser import _REPLIES_JS
+        for replies in (True, False):
+            with self.subTest(replies=replies):
+                client = _LoopClient(stall_rounds=1, more=False)
+                list(self.scrolling(client, replies=replies))
+
+                self.assertEqual(_REPLIES_JS in client._page.scripts, replies)
+
+    def test_the_engines_stop_reaches_the_browser_through_gallery_dl(self):
+        from webarc.instagram_gallery import GalleryListingClient
+        inner = InstagramBrowserClient(BrowserConfig(mode="headed"))
+        with tempfile.TemporaryDirectory() as scratch:
+            outer = GalleryListingClient(inner, scratch_dir=Path(scratch))
+            outer.attach_engine_controls(lambda: None, lambda: True)
+
+        self.assertTrue(inner.stopping())
+
+
+_NAV = """<nav><ul><li>Home</li><li>Search</li><li>Explore</li><li>Reels</li>
+<li>Messages</li><li>Notifications</li><li>Profile</li></ul>
+<div role="button" id="create" onclick="window.clicked='create'">+</div>
+<div role="button" id="more-nav" onclick="window.clicked='more-nav'">View more</div></nav>"""
+
+_COMMENT_ITEMS = "".join(
+    f"<li style='height:60px'><a href='/p/Cx/c/{n}/'>comment {n}</a></li>"
+    for n in range(20))
+
+# a post opened over a profile: the profile's feed behind, the post in a dialog
+_THREAD_PAGE = f"""<!doctype html><html><body style="margin:0">{_NAV}
+<main><div role="button" id="feed" onclick="window.clicked='feed'">View all 40 comments</div></main>
+<div role="dialog"><article>
+  <ul id="carousel"><li>slide</li></ul>
+  <div id="thread" style="height:300px;overflow-y:auto">
+    <ul id="comments">{_COMMENT_ITEMS}</ul>
+    <div role="button" id="plus" onclick="window.clicked='plus'">+</div>
+  </div>
+  <div role="button" id="labelled" onclick="window.clicked='labelled'">
+    <svg aria-label="Load more comments" width="20" height="20"></svg></div>
+</article></div></body></html>"""
+
+# a post's own page, as comments are read from: no article around the post,
+# its comments in a column of their own, and a longer grid of the account's
+# other posts below
+_PERMALINK_PAGE = f"""<!doctype html><html><body style="margin:0">{_NAV}
+<main><div id="post"><div id="media" style="height:200px">photo</div>
+  <div id="thread" style="height:300px;overflow-y:auto">
+    <ul id="comments">{_COMMENT_ITEMS}</ul>
+    <div role="button" id="plus" onclick="window.clicked='plus'">+</div>
+  </div></div>
+  <h2>More posts from qnl</h2>
+  <article><ul id="grid">{"".join(f"<li>post {n}</li>" for n in range(30))}</ul></article>
+</main></body></html>"""
+
+
+_REPLIES_PAGE = _PERMALINK_PAGE.replace(
+    '<div role="button" id="plus"',
+    '<div role="button" id="opened" onclick="window.clicked=\'opened\'">Hide replies</div>'
+    '<div role="button" id="replies" onclick="window.clicked=\'replies\'">—— View replies (4)</div>'
+    '<div role="button" id="plus"')
+
+
+class CommentScriptTests(unittest.TestCase):
+    """The in-page scripts against a real page: they find this post's
+    thread, and never press the navigation's controls."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:                                # pragma: no cover
+            raise unittest.SkipTest("playwright is not installed")
+        from tests.chrome_for_tests import find_chrome
+        chrome = find_chrome()
+        if not chrome:                                     # pragma: no cover
+            raise unittest.SkipTest("no Chrome to drive")
+        cls._pw = sync_playwright().start()
+        cls.browser = cls._pw.chromium.launch(executable_path=chrome, headless=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls._pw.stop()
+
+    def page(self, html=_THREAD_PAGE):
+        page = self.browser.new_page(viewport={"width": 1000, "height": 700})
+        self.addCleanup(page.close)
+        page.set_content(html)
+        return page
+
+    def thread_of(self, page):
+        from webarc.instagram_browser import _COMMENT_CONTAINER_JS
+        point = page.evaluate(_COMMENT_CONTAINER_JS, "Cx")
+        return point, page.evaluate(
+            "window.__swmCommentContainer && window.__swmCommentContainer.id")
+
+    def click(self, page):
+        from webarc.instagram_browser import _CLICK_JS
+        return page.evaluate(_CLICK_JS), page.evaluate("window.clicked")
+
+    def test_the_thread_in_a_dialog_is_the_scroll_area_around_the_comments(self):
+        point, found = self.thread_of(self.page())
+
+        self.assertTrue(point["inView"])
+        self.assertEqual(found, "thread")
+
+    def test_on_the_posts_own_page_the_thread_is_found_without_an_article(self):
+        """Comments are read on /p/CODE/, where the post is not in an
+        article and a longer list of other posts follows it."""
+        point, found = self.thread_of(self.page(_PERMALINK_PAGE))
+
+        self.assertTrue(point["inView"])
+        self.assertEqual(found, "thread")
+
+    def test_driving_the_thread_scrolls_it_not_the_window(self):
+        from webarc.instagram_browser import _COMMENT_DRIVE_JS
+        page = self.page(_PERMALINK_PAGE)
+        self.thread_of(page)
+
+        self.assertTrue(page.evaluate(_COMMENT_DRIVE_JS))
+        self.assertGreater(page.evaluate("document.getElementById('thread').scrollTop"), 0)
+        self.assertEqual(page.evaluate("window.scrollY"), 0)
+
+    def test_the_last_thread_is_kept_while_it_is_on_the_page(self):
+        page = self.page(_PERMALINK_PAGE)
+        self.thread_of(page)
+        page.evaluate("document.querySelectorAll('#comments a').forEach(a => a.remove())")
+
+        _, found = self.thread_of(page)
+
+        self.assertEqual(found, "thread")
+
+    def test_the_plus_inside_the_thread_is_pressed_not_the_create_button(self):
+        for html in (_THREAD_PAGE, _PERMALINK_PAGE):
+            with self.subTest(page="dialog" if html is _THREAD_PAGE else "permalink"):
+                page = self.page(html)
+                self.thread_of(page)
+
+                self.assertEqual(self.click(page), (True, "plus"))
+
+    def test_a_labelled_control_is_pressed_by_its_label(self):
+        page = self.page(_THREAD_PAGE.replace('id="plus"', 'id="plus" hidden'))
+        self.thread_of(page)
+
+        self.assertEqual(self.click(page), (True, "labelled"))
+
+    def test_nothing_outside_the_post_is_pressed(self):
+        page = self.page(_THREAD_PAGE.replace('id="plus"', 'id="plus" hidden')
+                         .replace('id="labelled"', 'id="labelled" hidden'))
+        self.thread_of(page)
+
+        self.assertEqual(self.click(page), (False, None))
+
+    def test_a_plus_is_not_pressed_before_a_thread_is_found(self):
+        page = self.page(_PERMALINK_PAGE)
+
+        self.assertEqual(self.click(page), (False, None))
+
+    def test_a_comments_hidden_replies_are_opened(self):
+        from webarc.instagram_browser import _REPLIES_JS
+        page = self.page(_REPLIES_PAGE)
+        self.thread_of(page)
+
+        self.assertTrue(page.evaluate(_REPLIES_JS))
+        self.assertEqual(page.evaluate("window.clicked"), "replies")
+
+    def test_opened_replies_are_not_closed_again(self):
+        from webarc.instagram_browser import _REPLIES_JS
+        page = self.page(_REPLIES_PAGE.replace('id="replies"', 'id="replies" hidden'))
+        self.thread_of(page)
+
+        self.assertFalse(page.evaluate(_REPLIES_JS))
+        self.assertIsNone(page.evaluate("window.clicked"))
+
+    def test_load_more_leaves_reply_controls_alone(self):
+        page = self.page(_REPLIES_PAGE.replace('id="plus"', 'id="plus" hidden')
+                         .replace("View replies (4)", "View more replies"))
+        self.thread_of(page)
+
+        self.assertEqual(self.click(page), (False, None))
+
+    def test_without_a_thread_that_scrolls_nothing_is_aimed_at(self):
+        point, found = self.thread_of(self.page(
+            _PERMALINK_PAGE.replace("height:300px;overflow-y:auto", "")))
+
+        self.assertIsNone(point)
+        self.assertIsNone(found)

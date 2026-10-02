@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 
 from .config import load_config
@@ -305,6 +306,284 @@ def _serve_until_interrupted(server) -> None:
         server.stop()
 
 
+def _open_store(db_path: str):
+    from .store import Store
+    return Store(db_path)
+
+
+def _register_job_in_collection(args, name: str, kind: str, config: dict,
+                                *, seeds_total: int):
+    """Create the job's row in the collection and its directory under it.
+
+    Returns (store, crawl_id), the collection row and the job directory.
+    Raises ValueError when the collection does not exist and was not to be
+    created, so a typo never files a job in a collection of its own.
+    """
+    from pathlib import Path as _P
+
+    from . import collections as colls
+    from .store import RUNNING
+
+    store = _open_store(args.db)
+    base = _P(getattr(args, "warc_root", None) or getattr(args, "output", None) or "./warcs")
+    named = getattr(args, "collection", None)
+    if not named:                                  # every job belongs to a collection
+        collection = colls.ensure_default(store, base)
+    else:
+        collection = store.find_collection(named)
+        if collection is None:
+            if not getattr(args, "create_collection", False):
+                raise ValueError(
+                    f"No collection called '{named}'. Create it first with "
+                    f"'swm collection create', or add --create-collection.")
+            collection = _create_collection_row(store, named, "", [], base)
+    crawl_id = store.create_crawl(
+        name=name, config=dict(config), output_dir="", seeds_total=seeds_total,
+        kind=kind, collection_id=collection["id"])
+    job_dir = colls.job_home(collection["root_dir"], crawl_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    config = dict(config)
+    config["output_dir"] = str(job_dir)
+    store.finalize_config(crawl_id, config, str(job_dir))
+    store.set_status(crawl_id, RUNNING)
+    # This process is the job's worker: with its pid on record a running
+    # dashboard sees the job alive, rather than settling it as lost after a
+    # minute and offering to delete the directory being written to.
+    store.set_pid(crawl_id, os.getpid())
+    _refresh_collection_document(store, collection)
+    return (store, crawl_id), collection, job_dir
+
+
+def _settle_registered_job(registered, outcome: str) -> None:
+    if not registered:
+        return
+    from . import collections as colls
+    from .store import COMPLETED, FAILED, STOPPED
+    store, crawl_id = registered
+    status = {"completed": COMPLETED, "failed": FAILED}.get(outcome, STOPPED)
+    try:
+        store.set_status(crawl_id, status, "")       # any lost-worker note is void
+        row = store.get_crawl(crawl_id)
+        collection = store.get_collection((row or {}).get("collection_id"))
+        colls.finish_job_report(collection, row)
+        _refresh_collection_document(store, collection)
+    except Exception as exc:                        # pragma: no cover
+        logging.getLogger(__name__).warning("Could not record the job's end: %s", exc)
+
+
+def _refresh_collection_document(store, collection: dict) -> None:
+    from . import collections as colls
+    colls.refresh_document(store, collection)
+
+
+def _create_collection_row(store, name: str, description: str,
+                           metadata: list[dict], base: "Path",
+                           storage_dir: str | None = None,
+                           policy: dict | None = None) -> dict:
+    """A collection's row, directory and collection.json."""
+    from . import collections as colls
+
+    try:
+        return colls.create(store, name, description, metadata, base, storage_dir, policy)
+    except OSError as exc:
+        raise ValueError(f"Could not create the collection's directory: {exc}") from exc
+
+
+def _cmd_collection(args) -> int:
+    import json as _json
+    from pathlib import Path as _P
+
+    from . import collections as colls
+
+    store = _open_store(args.db)
+    command = args.collection_command
+
+    if command == "create":
+        try:
+            metadata = colls.load_metadata_argument(args.metadata_json, args.metadata_file)
+            row = _create_collection_row(
+                store, args.name, args.description, metadata, _P(args.warc_root),
+                args.storage_dir, policy={"dedup_across_jobs": not args.no_cross_job_dedup})
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"Created collection '{row['name']}' ({row['slug']}, id {row['id']})")
+        print(f"  Directory : {row['root_dir']}")
+        print(f"  Metadata  : {len(row['metadata'])} field(s)")
+        print("  Dedup     : " + ("each payload stored once across the collection's jobs"
+                                 if colls.policy_of(row)["dedup_across_jobs"]
+                                 else "every payload stored in full in each job"))
+        print(f"Run a job against it with: swm crawl config.yaml --collection {row['slug']}")
+        return 0
+
+    if command == "list":
+        rows = store.list_collections()
+        counts = store.collection_counts()
+        if args.json:
+            for row in rows:
+                row["counts"] = counts.get(row["id"], {"jobs": 0, "by_status": {}})
+            print(_json.dumps(rows, ensure_ascii=False, indent=2))
+            return 0
+        if not rows:
+            print("No collections yet. Make one with: swm collection create NAME")
+            return 0
+        width = max(len(r["name"]) for r in rows)
+        for row in rows:
+            entry = counts.get(row["id"], {"jobs": 0, "by_status": {}})
+            status = ", ".join(f"{n} {k}" for k, n in sorted(entry["by_status"].items()))
+            print(f"{row['id']:>4}  {row['name']:<{width}}  {entry['jobs']:>3} job(s)"
+                  f"{'  (' + status + ')' if status else ''}  {row['root_dir']}")
+        return 0
+
+    row = store.find_collection(args.collection)
+    if not row:
+        print(f"No collection called '{args.collection}'.", file=sys.stderr)
+        return 2
+    jobs = store.crawls_in_collection(row["id"])
+
+    if command == "show":
+        if args.json:
+            print(_json.dumps({**row, "jobs": jobs}, ensure_ascii=False, indent=2))
+            return 0
+        print(f"{row['name']}  (id {row['id']}, identifier {row['slug']})")
+        if row.get("description"):
+            print(f"  {row['description']}")
+        print(f"  Directory : {row['root_dir']}")
+        print(f"  Created   : {row['created_at']}")
+        print("  Dedup     : " + ("each payload stored once across the collection's jobs"
+                                 if colls.policy_of(row)["dedup_across_jobs"]
+                                 else "every payload stored in full in each job"))
+        index = colls.read_index(row)
+        if index is not None:
+            try:
+                counts = index.counts()
+                orphans = index.orphan_urls()
+            finally:
+                index.close()
+            print(f"  Index     : {counts['originals']} original(s), {counts['revisits']} "
+                  f"revisit(s), {counts['bytes_saved'] / (1024 * 1024):.1f} MB not stored twice")
+            if orphans:
+                print(f"  Missing   : {len(orphans)} page(s) whose original was deleted; "
+                      "re-crawl them to restore")
+        if row["metadata"]:
+            print("  Metadata  :")
+            for field in row["metadata"]:
+                print(f"    {field['name']}: {field['value']}")
+        print(f"  Jobs      : {len(jobs)}")
+        for job in jobs:
+            print(f"    #{job['id']:<4} {job['status']:<10} {job.get('kind', 'crawl'):<10} "
+                  f"{job['name']}  {job['output_dir']}")
+        return 0
+
+    if command == "reindex":
+        from .store import BLOCKED, PAUSED, RUNNING, STOPPING
+        active = [j["id"] for j in jobs if j.get("status") in (RUNNING, PAUSED, BLOCKED, STOPPING)]
+        if active:
+            print(f"Job(s) {', '.join(map(str, active))} are still running; rebuild the index "
+                  "once the collection is quiet.", file=sys.stderr)
+            return 2
+        try:
+            result = colls.rebuild_index(store, row)
+        except OSError as exc:
+            print(f"The index could not be rebuilt: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(_json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        print(f"Rebuilt the index of '{row['name']}' from {len(result['jobs'])} job(s): "
+              f"{result['originals']} original(s), {result['revisits']} revisit(s), "
+              f"{result['bytes_saved'] / (1024 * 1024):.1f} MB not stored twice.")
+        for crawl_id, summary in sorted(result["jobs"].items()):
+            print(f"  #{crawl_id:<4} {summary['responses']} stored, "
+                  f"{summary['revisits_within_job']} reused within, "
+                  f"{summary['revisits_across_jobs']} from other jobs")
+        if result["unresolved_revisits"]:
+            print(f"  {result['unresolved_revisits']} revisit(s) point at records no job holds "
+                  "any more; those pages are listed as missing their original.")
+        return 0
+
+    if command == "index-warc":
+        from . import warc_indexer
+        from .store import BLOCKED, PAUSED, RUNNING, STOPPING
+        active = [j["id"] for j in jobs if j.get("status") in (RUNNING, PAUSED, BLOCKED, STOPPING)]
+        if active:
+            print(f"Job(s) {', '.join(map(str, active))} are still running; index the collection "
+                  "once it is quiet.", file=sys.stderr)
+            return 2
+        cap = warc_indexer.capability(store.get_setting)
+        if not cap["available"]:
+            print(f"Cannot index: {cap['reason']}", file=sys.stderr)
+            return 1
+        with_warcs = [(int(j["id"]), _P(j["output_dir"])) for j in jobs
+                      if j.get("kind", "crawl") in ("crawl", "record")
+                      and j.get("output_dir") and warc_indexer.warc_files(_P(j["output_dir"]))]
+        if not with_warcs:
+            print("No WARC files in this collection yet.", file=sys.stderr)
+            return 1
+
+        def progress(m: dict) -> None:
+            if args.json:
+                return
+            current = m.get("current_job")
+            print(f"\r  job #{current}: {m.get('documents', 0)} documents so far"
+                  if current else "\r  finishing", end="", file=sys.stderr, flush=True)
+
+        manifest = warc_indexer.index_collection(
+            _P(row["root_dir"]), with_warcs, collection=row["name"], memory=args.memory,
+            get_setting=store.get_setting, on_progress=progress)
+        if not args.json:
+            print(file=sys.stderr)
+        if args.json:
+            print(_json.dumps(manifest, ensure_ascii=False, indent=2))
+            return 0 if manifest["status"] == warc_indexer.STATUS_DONE else 1
+        for entry in manifest["jobs"]:
+            line = f"  #{entry['id']:<4} {entry['status']:<8} {entry.get('documents', 0)} document(s)"
+            if entry.get("error"):
+                line += f"  {entry['error']}"
+            print(line)
+        print(f"{manifest['documents']} document(s) from {len(manifest['jobs'])} job(s), each "
+              f"carrying the collection '{row['name']}'; outputs are beside each WARC.")
+        return 0 if manifest["status"] == warc_indexer.STATUS_DONE else 1
+
+    if command == "delete":
+        root = _P(row["root_dir"])
+        size = 0
+        if root.exists():
+            for path in root.rglob("*"):
+                try:
+                    if path.is_file():
+                        size += path.stat().st_size
+                except OSError:
+                    pass
+        impact = colls.collection_impact(row, jobs, bytes_on_disk=size)
+        print(colls.describe_impact(impact))
+        if args.purge:
+            print(f"With --purge, the directory {root} and everything under it is deleted.")
+        else:
+            print("The files stay on disk; only the records are removed. Add --purge to "
+                  "delete the files too.")
+        print("Nothing is changed until you confirm.")
+        if not args.yes:
+            if not sys.stdin.isatty():
+                print("Not deleting: no terminal to confirm on. Add --yes to delete "
+                      "having read the above.", file=sys.stderr)
+                return 2
+            answer = input("Delete this collection? [y/N] ").strip().lower()
+            if answer not in ("y", "yes"):
+                print("Nothing was changed.")
+                return 1
+        removed = store.delete_collection(row["id"])
+        if args.purge:
+            import shutil
+            shutil.rmtree(root, ignore_errors=True)
+        colls.remove_index(root)          # never inherited by a namesake
+        print(f"Deleted collection '{row['name']}' and {len(removed)} job record(s)"
+              f"{'; files removed from disk' if args.purge else '; files kept on disk'}.")
+        return 0
+
+    return 2
+
+
 def _cmd_metadata(args) -> int:
     from pathlib import Path as _P
 
@@ -532,8 +811,8 @@ def main(argv: list[str] | None = None) -> int:
     p_crawl.add_argument("config", help="Path to config.yaml")
     p_crawl.add_argument("-v", "--verbose", action="store_true")
     p_crawl.add_argument("--db", default="./webarc-state/webarc.db",
-                         help="dashboard state file whose resource warning "
-                         "levels apply (defaults are used when it does not exist)")
+                         help="dashboard state file the job is registered in and "
+                         "whose resource warning levels apply")
     p_crawl.add_argument("--yes", "-y", action="store_true",
                          help="start even when the machine is short of a "
                          "resource, without asking")
@@ -542,6 +821,21 @@ def main(argv: list[str] | None = None) -> int:
                          "until it is free, then start")
     p_crawl.add_argument("--no-resource-check", action="store_true",
                          help="skip the CPU, memory and disk check")
+    p_crawl.add_argument("--collection",
+                         help="run this job as part of this collection (by name, "
+                         "identifier or id) rather than the default one: its "
+                         "files go under the collection's directory and it is "
+                         "listed with the collection's other jobs")
+    p_crawl.add_argument("--warc-root", default="./warcs",
+                         help="the dashboard's storage root, under which the "
+                         "default collection lives (default: ./warcs)")
+    p_crawl.add_argument("--standalone", action="store_true",
+                         help="run outside any collection: write to the "
+                         "configuration's output directory and keep no record "
+                         "in the dashboard's state file")
+    p_crawl.add_argument("--create-collection", action="store_true",
+                         help="make the collection named by --collection if "
+                         "it does not exist yet")
 
     p_val = sub.add_parser("validate", help="Parse and print the resolved config")
     p_val.add_argument("config")
@@ -572,6 +866,53 @@ def main(argv: list[str] | None = None) -> int:
                        help="disk to report when no default storage is set")
     p_res.add_argument("--json", action="store_true",
                        help="print the reading as JSON")
+
+    p_coll = sub.add_parser(
+        "collection", help="Create, list, describe and delete collections")
+    coll_sub = p_coll.add_subparsers(dest="collection_command", required=True)
+    for name, text in (("create", "Make a collection with a directory of its own"),
+                       ("list", "List the collections and how many jobs each holds"),
+                       ("show", "Describe one collection and list its jobs"),
+                       ("reindex", "Rebuild the collection's payload index from its WARC files"),
+                       ("index-warc", "Run the warc-indexer jar over every job's WARC files"),
+                       ("delete", "Delete a collection and its jobs, after saying what that means")):
+        sp = coll_sub.add_parser(name, help=text)
+        sp.add_argument("--db", default="./webarc-state/webarc.db",
+                        help="dashboard state file the collections live in")
+        sp.add_argument("--warc-root", default="./warcs",
+                        help="default storage root a new collection is placed under")
+        if name == "create":
+            sp.add_argument("name", help="the collection's name")
+            sp.add_argument("--description", default="",
+                            help="what the collection is for")
+            sp.add_argument("--storage-dir",
+                            help="create the collection's directory under this "
+                            "folder instead of the default storage root")
+            sp.add_argument("--metadata-json",
+                            help="the collection's descriptive metadata as a "
+                            "JSON array of {name, value} fields")
+            sp.add_argument("--metadata-file",
+                            help="the same, read from a .json file or a "
+                            "metadata sheet (.csv) as the dashboard exports one")
+            sp.add_argument("--no-cross-job-dedup", action="store_true",
+                            help="store every payload in full in each job, rather "
+                            "than once across the collection's jobs")
+        elif name == "list":
+            sp.add_argument("--json", action="store_true",
+                            help="print the collections as JSON")
+        else:
+            sp.add_argument("collection", help="the collection's name, identifier or id")
+            if name in ("show", "reindex", "index-warc"):
+                sp.add_argument("--json", action="store_true",
+                                help="print the collection as JSON")
+            if name == "index-warc":
+                sp.add_argument("--memory", help="Java heap for the jar (default: the Indexer "
+                                                 "setting, else 2g)")
+            else:
+                sp.add_argument("--purge", action="store_true",
+                                help="also delete the collection's files from disk")
+                sp.add_argument("--yes", "-y", action="store_true",
+                                help="delete without asking, having been told")
 
     p_md = sub.add_parser(
         "metadata", help="Export a capture's descriptive metadata as a sheet")
@@ -641,6 +982,18 @@ def main(argv: list[str] | None = None) -> int:
     p_rec.add_argument("--operator", default="webarc",
                        help="Operator recorded in the WARC metadata")
     p_rec.add_argument("-v", "--verbose", action="store_true")
+    p_rec.add_argument("--db", default="./webarc-state/webarc.db",
+                       help="dashboard state file the recording is registered in")
+    p_rec.add_argument("--collection",
+                       help="record as part of this collection (by name, "
+                       "identifier or id) rather than the default one")
+    p_rec.add_argument("--standalone", action="store_true",
+                       help="record outside any collection: write to "
+                       "<output>/<name>/ and keep no record in the dashboard's "
+                       "state file")
+    p_rec.add_argument("--create-collection", action="store_true",
+                       help="make the collection named by --collection if "
+                       "it does not exist yet")
 
     p_ins = sub.add_parser(
         "inspect", help="List response records in captured WARCs")
@@ -801,6 +1154,19 @@ def main(argv: list[str] | None = None) -> int:
         name = args.name or f"rec-{host}"
         name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "rec-session"
         out_dir = _P(args.output) / name
+        registered = None
+        collection = None
+        if not args.standalone:
+            try:
+                registered, collection, out_dir = _register_job_in_collection(
+                    args, name, "recording",
+                    {"recording": {"start_url": args.url, "operator": args.operator,
+                                   "browser": {"mode": args.browser}},
+                     "seeds": [{"url": args.url}]},
+                    seeds_total=1)
+            except ValueError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
 
         print(f"\n{APP_NAME} — interactive recording")
         print(f"  Session : {name}")
@@ -814,13 +1180,21 @@ def main(argv: list[str] | None = None) -> int:
         print("pause capture, resume, or capture the current page. Close the")
         print("browser window (or press Ctrl+C here) to finish.\n")
 
+        from .collections import inherited_fields, open_index
+        from .metadata import defaults_for, with_defaults
         warc = WarcSession(
             out_dir, name, args.url, 1, args.operator, WarcConfig(),
             info_extra={
                 "robots": "none",
                 "description": f"Interactive session recording starting "
                                f"at {args.url}",
-            })
+            },
+            metadata_fields=with_defaults(
+                inherited_fields(collection),
+                defaults_for("recording", name, args.operator, args.url))
+            if collection else None,
+            collection_index=open_index(collection),
+            crawl_id=registered[1] if registered else None)
         last = {"visited": -1}
 
         def on_progress(state, visited, bytes_written, current_url):
@@ -832,6 +1206,7 @@ def main(argv: list[str] | None = None) -> int:
         session = RecordingSession(
             args.url, BrowserConfig(mode=args.browser), warc,
             on_progress=on_progress)
+        outcome = "completed"
         try:
             stats = session.run()
         except KeyboardInterrupt:
@@ -839,7 +1214,12 @@ def main(argv: list[str] | None = None) -> int:
             stats = {"visited": session.visited,
                      "bytes": warc.total_bytes}
             warc.close()
+            outcome = "stopped"
             print("\nInterrupted — finalising WARC.")
+        except Exception:
+            _settle_registered_job(registered, "failed")
+            raise
+        _settle_registered_job(registered, outcome)
         print(f"\nRecording finished: {stats['visited']} page(s), "
               f"{stats['bytes'] / 1024:.0f} KB in {out_dir}")
         print(f"Replay it with:\n  python -m webarc.cli replay {out_dir}")
@@ -946,6 +1326,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "metadata":
         return _cmd_metadata(args)
 
+    if args.command == "collection":
+        return _cmd_collection(args)
+
     if args.command == "index":
         return _cmd_index(args)
 
@@ -978,9 +1361,30 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg = load_config(args.config)
 
+    registered = None
+    if args.command == "crawl" and not args.standalone:
+        import yaml as _yaml
+        from pathlib import Path as _P
+
+        from .collections import brief, inherited_fields
+        raw = _yaml.safe_load(_P(args.config).read_text(encoding="utf-8")) or {}
+        try:
+            registered, collection, job_dir = _register_job_in_collection(
+                args, cfg.crawl_name, "crawl", raw, seeds_total=len(cfg.seeds))
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        cfg.output_dir = job_dir
+        cfg.collection = brief(collection)
+        cfg.inherited_metadata = inherited_fields(collection)
+        cfg.job_id = registered[1]
+        print(f"Collection: {collection['name']} ({collection['slug']})\n"
+              f"Job #{registered[1]} writes to {job_dir}")
+
     if args.command == "crawl" and not args.no_resource_check:
         if not _resource_gate(cfg.output_dir, args.db, assume_yes=args.yes,
                               wait=args.wait):
+            _settle_registered_job(registered, "stopped")
             return 2
 
     if args.command == "validate":
@@ -992,7 +1396,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  warc    : {seed.warc}")
         return 0
 
-    run_crawl(cfg)
+    try:
+        run_crawl(cfg)
+    except Exception:
+        _settle_registered_job(registered, "failed")
+        raise
+    _settle_registered_job(registered, "completed")
     return 0
 
 

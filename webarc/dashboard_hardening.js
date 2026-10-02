@@ -11,6 +11,27 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+// Where a job's or a collection's files are on disk. Open shows the folder
+// in this machine's file manager (Explorer, Finder, ...): the server opens
+// the folder it knows for that job or collection, never a path sent from
+// here. Where it cannot -- a dashboard reached over the network, a machine
+// with no desktop -- the path can be copied instead.
+// the buttons beside a folder: a folder opening, or two sheets for a copy
+const PATH_ICONS = {
+  open: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 17.5V6.5A1.5 1.5 0 0 1 5 5h4l2 2h7.5A1.5 1.5 0 0 1 20 8.5V10"/><path d="M3.5 17.5l2.4-6.4A1.5 1.5 0 0 1 7.3 10h13a1 1 0 0 1 .95 1.3l-2 5.9a1.5 1.5 0 0 1-1.42 1H4.3a.8.8 0 0 1-.8-.7z"/></svg>',
+  copy: '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/></svg>',
+};
+function storedIn(path, kind, id) {
+  if (!path) return "";
+  const p = escapeHtml(path);
+  const cap = typeof openFolderCapability !== "undefined" && openFolderCapability;
+  const canOpen = cap && cap.available && kind && Number.isSafeInteger(Number(id));
+  const button = canOpen
+    ? `<button type="button" class="act path-act open-path" data-kind="${kind}" data-id="${Number(id)}" aria-label="Open this folder in the file manager" title="Show this folder in the file manager">${PATH_ICONS.open}<span class="path-act-label">Open</span></button>`
+    : `<button type="button" class="act path-act copy-path" data-path="${p}" aria-label="Copy the folder path"${cap && cap.reason ? ` title="${escapeHtml(cap.reason)}"` : ""}>${PATH_ICONS.copy}<span class="path-act-label">Copy</span></button>`;
+  return `<div class="stored-in"><span class="stored-label">Stored in</span><code class="path" title="${p}">${p}</code>${button}</div>`;
+}
+
 function statusClass(value) {
   const allowed = new Set([
     "pending", "running", "paused", "stopping", "stopped",
@@ -67,6 +88,20 @@ function crawlRow(c) {
   const failed = Number(t.failed) || 0;
   const bytes = Number(t.bytes) || 0;
   const hasWarc = Number(c.warc_files) > 0;
+  const dd = c.dedup && typeof c.dedup === "object" ? c.dedup : null;
+  const reused = dd ? (Number(dd.revisits_within_job) || 0) + (Number(dd.revisits_across_jobs) || 0) : 0;
+  const ch = c.changes || null;
+  const changeParts = ch ? ["new", "changed", "unchanged", "gone"].filter(k => Number(ch[k])).map(k => `${Number(ch[k])} ${k}`) : [];
+  const changeLine = changeParts.length
+    ? ` · pages: <a href="/api/crawls/${id}/changes" target="_blank" rel="noopener" title="Compared by words and links with the collection's last capture of each page; opens the page-by-page report">${changeParts.join(", ")}${Number(ch.not_visited) ? `, ${Number(ch.not_visited)} not visited` : ""}</a>`
+    : "";
+  // what "reused" means, on hover: repeat downloads stored once
+  const reusedTitle = reused
+    ? `${reused} download${reused === 1 ? "" : "s"} matched a file already stored and ${reused === 1 ? "was" : "were"} kept as a reference rather than a second copy: ${Number(dd.revisits_within_job) || 0} repeated within this job (a stylesheet, script or image shared by its pages), ${Number(dd.revisits_across_jobs) || 0} already held by earlier jobs in the collection.`
+    : "No download matched a file already stored.";
+  const dedupLine = (reused
+    ? ` · <span title="${escapeHtml(reusedTitle)}">${reused} reused${Number(dd.revisits_across_jobs) ? ` (${Number(dd.revisits_across_jobs)} held by other jobs)` : ""}</span>`
+    : "") + changeLine;
   const seeds = Array.isArray(c.seeds) ? c.seeds : [];
   const fb = isSocial && seeds[0] && seeds[0].details
     ? seeds[0].details : {};
@@ -81,7 +116,7 @@ function crawlRow(c) {
     const details = sd.details || {};
     const th = details.theme && typeof details.theme === "object" ? details.theme : null;
     const themeDetail = th && !isSocial ? `
-      <div class="cur">theme: ${Number(th.kept) || 0} kept · ${Number(th.rejected) || 0} left out · ${Number(th.unsure) || 0} for review${th.links_skipped != null ? ` · ${Number(th.links_skipped) || 0} links skipped` : ""}</div>` : "";
+      <div class="cur">theme: ${Number(th.kept) || 0} accepted · ${Number(th.rejected) || 0} not accepted${Number(th.unsure) ? ` · ${Number(th.unsure)} in the review folder` : ""}${th.links_skipped != null ? ` · ${Number(th.links_skipped) || 0} links not followed` : ""}</div>` : "";
     const facebookDetail = isFacebook ? `
       <div class="cur">${escapeHtml(details.message || details.phase || "")}</div>
       <div class="cur">newest: ${escapeHtml(details.newest_post || "not yet observed")} · oldest: ${escapeHtml(details.oldest_post || "not yet observed")} · pagination failures: ${Number(details.pagination_failures) || 0}</div>` : "";
@@ -110,14 +145,41 @@ function crawlRow(c) {
   const name = escapeHtml(c.name || "Unnamed job");
   const created = escapeHtml(c.created_at || "");
   const seedsTotal = Number(c.seeds_total) || 0;
+  const role = isRec ? "recording" : isFacebook ? "facebook" : isInstagram ? "instagram" : isX ? "x" : isYouTube ? "youtube" : "crawl";
+  const kindText = isRec ? "Recording session" : isFacebook ? "Facebook Page capture"
+    : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)`
+    : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `Crawl · ${seedsTotal} seed(s)`;
+  // the board's table row: three figures a job of this type is judged by,
+  // captured out of reported where the platform said how many there are
+  const n = v => Number(v) || 0;
+  const ofReported = (got, stated, what) => n(stated)
+    ? [`${n(got)} / ${n(stated)}`, what, `${n(got)} of the ${n(stated)} ${what.toLowerCase()} reported`]
+    : [n(got), what, ""];
+  const cells = isRec ? [[visited, "Pages"], [n(c.warc_files), "WARC files"], [reused, "Reused", reusedTitle]]
+    : isYouTube ? [[n(fb.videos_exported), "Videos"], [n(fb.comments_exported), "Comments"], [n(fb.media_captured), "Files"]]
+    : isX ? [[n(fb.posts_exported), "Posts"], [n(fb.context_posts), "Context"], ofReported(fb.media_captured, fb.media_expected, "Media")]
+    : isInstagram ? [[n(fb.posts_exported), "Posts"], ofReported(fb.comments_exported, fb.comments_available, "Comments"), ofReported(fb.media_captured, fb.media_expected, "Media")]
+    : isFacebook ? [[n(fb.posts_exported), "Posts"], ofReported(fb.comments_exported, fb.comments_available, "Comments"), [n(fb.media_captured), "Media"]]
+    : [[visited, "Pages"], [queued, "Queued"], [reused, "Reused", reusedTitle]];
+  const boardRow = `
+    <div class="brow" onclick="toggle(${id})">
+      <div class="gutter g-${statusCss}"></div>
+      <div class="bjob">${kindIcon(role)}<div class="bname" title="${name}">${name}</div>
+        <div class="bmeta"><span>#${id}</span>${c.collection ? `<span class="theme-chip coll-chip" title="collection">${escapeHtml(c.collection.name)}</span>` : ""}<span>${kindText}</span></div></div>
+      ${cells.map(([value, label, title]) => `<div class="bstat"${title ? ` title="${escapeHtml(title)}"` : ""}><b>${escapeHtml(String(value))}</b><span>${label}</span></div>`).join("")}
+      <span class="badge b-${statusCss}">${status}</span>
+      <div class="bsize"><b>${fmtBytes(bytes)}</b><span title="${created}">${escapeHtml(relTime(c.created_at))}</span></div>
+      <button type="button" class="kebab" aria-expanded="${isOpen}" aria-label="Actions and details for ${name}"
+        onclick="event.stopPropagation(); toggle(${id}); this.setAttribute('aria-expanded', String(openState.has(${id})))">⋮</button>
+    </div>`;
 
   return `
-  <div class="crawl ${isOpen ? "open" : ""}" data-id="${id}">
+  <div class="crawl ${isOpen ? "open" : ""}" data-id="${id}">${boardRow}
     <div class="row" onclick="toggle(${id})">
       <div class="gutter g-${statusCss}"></div>
       <div>
-        <div class="name">${isRec ? '<span class="rec-chip">REC</span>' : isFacebook ? '<span class="fb-chip">FB</span>' : isInstagram ? '<span class="fb-chip ig-chip">IG</span>' : isX ? '<span class="fb-chip x-chip">X</span>' : isYouTube ? '<span class="fb-chip yt-chip">YT</span>' : ""}${name}</div>
-        <div class="meta"><span class="id">#${id}</span> · ${c.theme ? `<span class="theme-chip" title="theme-based selection">theme: ${escapeHtml(c.theme)}</span> · ` : ""}${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
+        <div class="name">${kindIcon(isRec ? "recording" : isFacebook ? "facebook" : isInstagram ? "instagram" : isX ? "x" : isYouTube ? "youtube" : "crawl")}${name}</div>
+        <div class="meta"><span class="id">#${id}</span> · ${c.collection ? `<span class="theme-chip coll-chip" title="collection">${escapeHtml(c.collection.name)}</span> · ` : ""}${c.theme ? `<span class="theme-chip" title="theme-based selection">theme: ${escapeHtml(c.theme)}</span> · ` : ""}${isRec ? "recording session" : isFacebook ? "Facebook Page capture" : isInstagram ? `Instagram capture · ${seedsTotal} target(s)` : isX ? `X capture · ${seedsTotal} target(s)` : isYouTube ? `YouTube capture · ${seedsTotal} target(s)` : `${seedsTotal} seed(s)`} · ${created}</div>
       </div>
       <div class="counts">
         ${isRec
@@ -130,10 +192,11 @@ function crawlRow(c) {
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b>${Number(fb.media_expected) ? `/${Number(fb.media_expected)}` : ""} media<br>${Number(fb.warc_files) ? "rendered WARC · " : ""}${fmtBytes(bytes)}`
           : isFacebook
             ? `<b>${Number(fb.posts_exported) || 0}</b> posts · <b>${Number(fb.comments_exported) || 0}</b>${Number(fb.comments_available) ? `/${Number(fb.comments_available)}` : ""} comments · <b>${Number(fb.media_captured) || 0}</b> media${Number(fb.album_photos_viewed) ? ` · <b>${Number(fb.album_photos_viewed)}</b> album photos` : ""}<br>${Number(fb.graphql_responses) || 0} API responses${Number(fb.pagination_failures) ? ` · ${Number(fb.pagination_failures)} failed` : ""} · ${fmtBytes(bytes)}`
-          : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}`}${usageLine}
+          : `<b>${visited}</b> pages · <b>${queued}</b> queued${failed ? ` · ${failed} failed` : ""}<br>${fmtBytes(bytes)}${dedupLine}`}${usageLine}
       </div>
       <span class="badge b-${statusCss}">${status}</span>
     </div>
+    ${storedIn(c.output_dir, "crawls", id)}
     ${waiting ? `<div class="fb-phase">
       <span class="fb-phase-label">Waiting</span>
       <span>Created, not started: this machine was short of CPU, memory or disk space. It starts by itself once every resource is above its warning level, or now if you say so.</span>
@@ -144,41 +207,57 @@ function crawlRow(c) {
     </div>` : ""}
     ${!isSocial ? warcIndexLine(id, c.warc_index) : ""}
     <div class="actions">
-      <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
-      <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
-      ${waiting ? `<button class="act" onclick="startNow(${id})">Start now</button>
-      <button class="act danger" onclick="ctl(${id},'stop')">Cancel</button>` : `<button class="act danger" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>`}
-      ${rawStatus === "stopping" ? `<button class="act danger" onclick="forceStop(${id})" title="End the worker now if it is not answering">Force stop</button>` : ""}
-      ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
-      ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
-      <button class="act replay" onclick="replay(${id},'warc')" ${hasWarc ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
-      : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
-      <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
-      : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
-      ${isSocial ? `<button class="act" onclick="indexCapture(${id})" ${(running || paused || blocked || rawStatus === "stopping") ? "disabled" : ""} title="Index the captured posts, comments and profiles as search documents in warc-indexer's schema, beside the capture">${c.index && c.index.documents != null ? `Re-index · ${Number(c.index.documents)}` : "Index"}</button>`
-      : (() => {
-        // crawls and recordings: the warc-indexer jar over the WARC files.
-        // When Java or the jar is missing the button stays live: clicking
-        // it opens Settings › Indexer to say where they are.
-        const wi = c.warc_index || null;
-        const indexing = wi && wi.status === "running";
-        const cap = (typeof warcIndexerCapability !== "undefined" && warcIndexerCapability) || {available: true};
-        const off = indexing || !hasWarc || running || paused || blocked || rawStatus === "stopping";
-        const title = !cap.available ? escapeHtml((cap.reason || "warc-indexer is unavailable") + " Click to set it up.")
-          : "Run warc-indexer over this job's WARC files; each gets a <name>.jsonl of search documents beside it";
-        const label = indexing ? "Indexing…"
-          : !cap.available ? "Index WARC · set up"
-          : wi && wi.status === "done" && wi.documents != null ? `Re-index WARC · ${Number(wi.documents)}`
-          : wi && wi.status === "failed" ? "Index WARC · retry" : "Index WARC";
-        return `<button class="act" onclick="indexWarc(${id})" ${off ? "disabled" : ""} title="${title}">${label}</button>`;
-      })()}
-      ${c.has_selection ? `<button class="act replay" onclick="openSelection(${id})" title="What the theme kept, held for review and left out, with the reasons">Selection</button>` : ""}
-      <button class="act" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
-      <button class="act danger" onclick="del(${id})" ${(running || paused || blocked) ? "disabled" : ""}>Delete</button>
+      <div class="act-group" role="group" aria-label="Run controls">
+        <button class="act" onclick="ctl(${id},'pause')" ${canPause ? "" : "disabled"}>${isFacebook ? "Pause scrolling" : "Pause"}</button>
+        <button class="act" onclick="ctl(${id},'resume')" ${canResume ? "" : "disabled"}>${isSocial && blocked ? "I have resolved it — continue" : isFacebook ? "Resume scrolling" : "Resume"}</button>
+        ${waiting ? `<button class="act" onclick="startNow(${id})">Start now</button>
+        <button class="act stop" onclick="ctl(${id},'stop')">Cancel</button>` : `<button class="act stop" onclick="ctl(${id},'stop')" ${canStop ? "" : "disabled"}>${isSocial ? "Stop and save" : "Stop"}</button>`}
+        ${rawStatus === "stopping" ? `<button class="act stop" onclick="forceStop(${id})" title="End the worker now if it is not answering">Force stop</button>` : ""}
+        ${isFacebook ? `<button class="act" onclick="continueFacebook(${id})" ${["stopped", "failed"].includes(rawStatus) ? "" : "disabled"}>Continue</button>` : ""}
+      </div>
+      <div class="act-group" role="group" aria-label="Open the capture">
+        ${isFacebook ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 ? "" : "disabled"}>Open pages</button>
+        <button class="act replay" onclick="replay(${id},'warc')" ${hasWarc ? "" : "disabled"} title="Shows the Page as it first loaded">Replay WARC</button>`
+        : isTargeted ? `<button class="act replay" onclick="replay(${id},'pages')" ${Number(fb.posts_exported) > 0 || Number(fb.users_exported) > 0 ? "" : "disabled"}>Open pages</button>
+        <button class="act replay" onclick="replay(${id},'warc')" ${Number(fb.warc_files) > 0 ? "" : "disabled"} title="How ${isX ? "X" : isYouTube ? "YouTube" : "Instagram"} presented the captured posts">Replay WARC</button>`
+        : `<button class="act replay" onclick="replay(${id})" ${hasWarc ? "" : "disabled"}>Replay</button>`}
+      </div>
+      <details class="more" ${moreOpen.has(id) ? "open" : ""} ontoggle="moreToggled(${id}, this.open)">
+        <summary class="act" aria-label="More actions for this job">More ▾</summary>
+        <div class="menu" role="menu">
+          <button role="menuitem" onclick="editMetadata(${id})" title="Describe this capture: title, creator, subject, rights…">Metadata${Number(c.metadata_fields) ? ` · ${Number(c.metadata_fields)}` : ""}</button>
+          ${isSocial ? `<button role="menuitem" onclick="indexCapture(${id})" ${(running || paused || blocked || rawStatus === "stopping") ? "disabled" : ""} title="Index the captured posts, comments and profiles as search documents in warc-indexer's schema, beside the capture">${c.index && c.index.documents != null ? `Re-index · ${Number(c.index.documents)}` : "Index"}</button>`
+          : (() => {
+            // crawls and recordings: the warc-indexer jar over the WARC files.
+            // When Java or the jar is missing the item stays live: clicking
+            // it opens Settings › Indexer to say where they are.
+            const wi = c.warc_index || null;
+            const indexing = wi && wi.status === "running";
+            const cap = (typeof warcIndexerCapability !== "undefined" && warcIndexerCapability) || {available: true};
+            const off = indexing || !hasWarc || running || paused || blocked || rawStatus === "stopping";
+            const title = !cap.available ? escapeHtml((cap.reason || "warc-indexer is unavailable") + " Click to set it up.")
+              : "Run warc-indexer over this job's WARC files; each gets a <name>.jsonl of search documents beside it";
+            const label = indexing ? "Indexing…"
+              : !cap.available ? "Index WARC · set up"
+              : wi && wi.status === "done" && wi.documents != null ? `Re-index WARC · ${Number(wi.documents)}`
+              : wi && wi.status === "failed" ? "Index WARC · retry" : "Index WARC";
+            return `<button role="menuitem" onclick="indexWarc(${id})" ${off ? "disabled" : ""} title="${title}">${label}</button>`;
+          })()}
+          ${c.has_selection ? `<button role="menuitem" onclick="openSelection(${id})" title="What the theme accepted and did not, with the score and the reason; recrawl the pages you want">Selection</button>` : ""}
+          ${ch && changeParts.length ? `<button role="menuitem" onclick="window.open('/api/crawls/${id}/changes', '_blank')" title="Page-by-page report against the collection's earlier captures">Page changes</button>` : ""}
+        </div>
+      </details>
+      <span class="spacer"></span>
+      <button class="act ghost danger" onclick="del(${id})" ${(running || paused || blocked || (c.warc_index && c.warc_index.status === "running")) ? "disabled" : ""} ${c.warc_index && c.warc_index.status === "running" ? 'title="Wait for the indexer to finish"' : 'title="Delete this job; you are asked to confirm, and told what depends on it"'}>Delete</button>
     </div>
     <div class="seeds">${seedRows}</div>
   </div>`;
 }
+
+// Which jobs' More menus are open: the list is rebuilt every two seconds
+// and must not close a menu the curator has just opened.
+const moreOpen = new Set();
+function moreToggled(id, open) { if (open) moreOpen.add(id); else moreOpen.delete(id); }
 
 // What a crawl's or recording's card says about its warc-indexer run: the
 // progress while it goes, the outcome after, and the error with a link to

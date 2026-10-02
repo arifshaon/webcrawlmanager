@@ -1,6 +1,7 @@
 """The replay server must serve from a port it really owns."""
 from __future__ import annotations
 
+import json
 import socket
 import tempfile
 import unittest
@@ -138,3 +139,118 @@ class XReplayTests(unittest.TestCase):
         self.assertIn("#movie_player", index)
         self.assertNotIn("__SWM_YOUTUBE_MEDIA__", index)
         self.assertNotIn("swm-youtube-playback", self.index_for("https://www.youtube.com/@qnl"))
+
+
+class MissingStartPageTests(unittest.TestCase):
+    """A themed job that did not keep its starting page (Keep hub pages off)
+    still replays: it opens on the list of the pages it did keep."""
+
+    def setUp(self):
+        from webarc.capture import WarcSession
+        from webarc.config import WarcConfig
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        session = WarcSession(self.tmp, "themed", "https://news.example/", 1, "webarc", WarcConfig())
+        for path, ctype in (("/library-opens", "text/html; charset=utf-8"), ("/library-hours", "text/html"),
+                            ("/style.css", "text/css")):
+            session.write_exchange(url="https://www.news.example" + path, method="GET", req_headers={},
+                                   post_data=None, status=200, status_text="OK",
+                                   resp_headers={"content-type": ctype}, body=b"<h1>library</h1>")
+        session.close()
+        self.warcs = sorted(self.tmp.glob("*.warc.gz"))
+
+    def build(self, seed, **kw):
+        from unittest import mock
+        site = self.tmp / f"site-{abs(hash(seed))}"
+        with mock.patch("webarc.replay._ensure_vendor_assets", return_value=True):
+            (site / "vendor").mkdir(parents=True, exist_ok=True)
+            build_replay_site(self.warcs, site, seed_url=seed, **kw)
+        return site
+
+    def test_a_missing_starting_page_opens_the_list_of_pages_kept(self):
+        site = self.build("https://news.example/", title="Job #4: libraries",
+                          titles={"https://www.news.example/library-opens": "Library opens"},
+                          missing_note="the theme did not keep it")
+        index = (site / "index.html").read_text(encoding="utf-8")
+        listing = (site / "pages.html").read_text(encoding="utf-8")
+        recorded = json.loads((site / "pages.json").read_text(encoding="utf-8"))
+
+        self.assertIn('if (!asked && true) { location.replace("pages.html"); return; }', index)
+        self.assertEqual(recorded["pages"], ["https://www.news.example/library-opens",
+                                             "https://www.news.example/library-hours"])   # no stylesheet
+        self.assertFalse(recorded["seed_archived"])
+        self.assertIn("is not in the archive: the theme did not keep it.", listing)
+        self.assertIn('<a href="index.html?url=https%3A%2F%2Fwww.news.example%2Flibrary-opens">Library opens</a>',
+                      listing)
+        self.assertIn(">https://www.news.example/library-hours</a>", listing)     # untitled: its address
+
+    def test_a_starting_page_in_the_archive_opens_as_before(self):
+        # "www." and a missing "/" do not make a page missing
+        site = self.build("https://news.example/library-opens")
+        index = (site / "index.html").read_text(encoding="utf-8")
+        self.assertIn("if (!asked && false)", index)
+        self.assertIn('var url = asked || "https://www.news.example/library-opens"', index)
+        self.assertNotIn('class="note"', (site / "pages.html").read_text(encoding="utf-8"))
+
+    def test_the_collection_page_offers_the_list_for_a_starting_page_not_kept(self):
+        from webarc.replay import read_archived_pages, start_page_html
+        site = self.build(None)
+        capture = {"job_id": 4, "job": "libraries", "kind": "crawl", "date": "2026-09-02T10:00:00",
+                   "has_warc": True, "has_pages": False}
+        html = start_page_html("News", [{"url": "https://news.example/", "captures": [capture]},
+                                        {"url": "https://news.example/library-hours", "captures": [capture]}],
+                               "http://127.0.0.1:8091/collection-news/index.html", read_archived_pages(site))
+        self.assertIn('href="http://127.0.0.1:8091/collection-news/pages.html"', html)
+        self.assertIn("this starting page was not kept", html)
+        self.assertIn("index.html?url=https%3A%2F%2Fwww.news.example%2Flibrary-hours", html)
+
+
+class StartPageTests(unittest.TestCase):
+    """A collection's replay opens at a page of its jobs' start pages, each
+    opening the archive at that page."""
+
+    def test_the_replay_page_opens_the_page_asked_for_in_the_query(self):
+        from webarc.replay import _INDEX_HTML
+        page = _INDEX_HTML.format(coll="c", ui_src="ui.js", default_url='"https://s/"',
+                                  archive="a.warc.gz", compat_js="", entry_missing="false")
+        self.assertIn('new URLSearchParams(location.search).get("url")', page)
+        self.assertIn('var url = asked || "https://s/"', page)
+        self.assertIn("document.write('<replay-web-page source=\"a.warc.gz\"'", page)
+
+    def test_the_start_page_lists_each_starting_url_once_with_a_way_in_by_kind(self):
+        from webarc.replay import start_page_html
+        html = start_page_html("QNL 2026", [
+            {"url": "https://a.example/", "captures": [
+                {"job_id": 2, "job": "second", "kind": "crawl", "date": "2026-09-02T10:00:00",
+                 "has_warc": True, "has_pages": False},
+                {"job_id": 1, "job": "first", "kind": "crawl", "date": "2026-09-01T10:00:00",
+                 "has_warc": True, "has_pages": False}]},
+            {"url": "https://www.facebook.com/qnl", "captures": [
+                {"job_id": 7, "job": "fb-sept", "kind": "facebook", "date": "2026-09-03T10:00:00",
+                 "has_warc": True, "has_pages": True},
+                {"job_id": 5, "job": "fb-aug", "kind": "facebook", "date": "2026-08-03T10:00:00",
+                 "has_warc": False, "has_pages": True}]},
+            {"url": "https://www.youtube.com/@qnl", "captures": [
+                {"job_id": 9, "job": "yt", "kind": "youtube", "date": "2026-09-04T10:00:00",
+                 "has_warc": False, "has_pages": True}]},
+        ], "http://127.0.0.1:8091/collection-qnl/index.html")
+        self.assertEqual(html.count("https://a.example/</div>"), 1)          # once, two captures
+        self.assertIn("2 captures: second · 2026-09-02 10:00; first · 2026-09-01 10:00", html)
+        self.assertIn('href="http://127.0.0.1:8091/collection-qnl/index.html?url=https%3A%2F%2Fa.example%2F"', html)
+        self.assertIn('<a class="primary" href="/api/crawls/7/pages"', html)   # the latest capture's pages
+        self.assertIn('<a href="/api/crawls/5/pages"', html)                   # the older one, a link away
+        self.assertIn(">Replay WARC</a>", html)                                 # beside it, it has a WARC
+        self.assertIn('<a class="primary" href="/api/crawls/9/pages"', html)
+        self.assertNotIn("/api/crawls/9/pages\" target=\"_blank\" rel=\"noopener\">Replay WARC", html)
+        self.assertIn("<h2>www.youtube.com</h2>", html)
+
+    def test_without_an_archive_the_page_still_opens_the_captures_pages(self):
+        from webarc.replay import start_page_html
+        html = start_page_html("Social", [
+            {"url": "https://www.facebook.com/qnl", "captures": [
+                {"job_id": 7, "job": "fb", "kind": "facebook", "date": "2026-09-03T10:00:00",
+                 "has_warc": False, "has_pages": True}]}], None)
+        self.assertIn('href="/api/crawls/7/pages"', html)
+        self.assertNotIn("Replay WARC", html)
+        self.assertIn("No WARC files in this collection yet", html)

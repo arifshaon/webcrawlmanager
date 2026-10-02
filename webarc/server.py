@@ -49,6 +49,7 @@ import logging
 
 import os
 import shutil
+from contextlib import asynccontextmanager
 import signal
 import subprocess
 import sys
@@ -58,8 +59,10 @@ import yaml
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from . import collections as colls
 from . import metadata as md
 from . import resources
+from .procs import pid_alive
 from .store import (BLOCKED, CTRL_NONE, FAILED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP, KIND_FACEBOOK,
                     KIND_INSTAGRAM, KIND_RECORDING, KIND_X, KIND_YOUTUBE, PAUSED, PENDING,
                     RUNNING,
@@ -164,6 +167,36 @@ def _default_storage_root() -> Path:
         log.warning("Default storage %s unusable (%s); using %s",
                     stored, exc.detail, _WARC_ROOT)
         return _WARC_ROOT
+
+
+def _open_folder_capability() -> dict:
+    """Whether a "Stored in" folder can be shown in the file manager: the
+    dashboard must be on the curator's own machine (bound to loopback) and
+    that machine must have a desktop to show it on."""
+    from . import desktop
+    if _BIND_HOST not in _LOOPBACK_HOSTS:
+        return {"available": False,
+                "reason": "The dashboard is reached over the network; a folder would open on the "
+                          "server, not here. Copy the path instead."}
+    return desktop.availability()
+
+
+def _open_known_folder(path: str | None, what: str) -> dict:
+    """Show a folder the server itself resolved -- never a path from the page."""
+    from . import desktop
+    capability = _open_folder_capability()
+    if not capability["available"]:
+        raise HTTPException(409, capability["reason"])
+    if not path:
+        raise HTTPException(404, f"This {what} has no folder yet.")
+    folder = Path(path).expanduser().resolve()
+    try:
+        desktop.open_folder(folder)
+    except FileNotFoundError:
+        raise HTTPException(404, f"The {what}'s folder is not there: {folder}")
+    except OSError as exc:
+        raise HTTPException(500, f"The file manager could not be opened: {exc}")
+    return {"opened": str(folder)}
 
 
 def _storage_root_for(requested: object) -> Path:
@@ -274,6 +307,23 @@ def _write_theme_ai_settings(wanted: object) -> None:
 def _theme_ai_capability() -> dict:
     from .theme import ai_capability
     return ai_capability(_store().get_setting)
+
+
+# Jobs whose WARCs are being indexed by this server, claimed before the
+# runner thread starts: the manifest that says "running" is only written
+# once the jar is up, and two clicks in that gap must not start two jars.
+_WARC_INDEX_RUNS: set[int] = set()
+_WARC_INDEX_LOCK = __import__("threading").Lock()
+
+
+def _warc_indexing(crawl_id: int, crawl_dir: Path) -> bool:
+    """Whether a warc-indexer run is under way for this job: claimed here,
+    or recorded as running by a manifest a runner is still updating."""
+    from . import warc_indexer
+    with _WARC_INDEX_LOCK:
+        if crawl_id in _WARC_INDEX_RUNS:
+            return True
+    return warc_indexer.is_running(crawl_dir)
 
 
 def _warc_indexer_capability() -> dict:
@@ -410,6 +460,19 @@ def _parse_yaml(source: object) -> dict:
     return _validate_config(config)
 
 
+# Folder sizes for the views the dashboard refreshes every two seconds:
+# measured once, kept a while, large folders measured in the background
+# (see webarc/sizes.py). _dir_size stays for the exact figure a deletion shows.
+from .sizes import FolderSizes
+_SIZES = FolderSizes()
+
+
+def _folder_size(path: Path) -> dict:
+    """``{"bytes", "measuring"}`` for a folder, never waiting on a large one."""
+    found = _SIZES.get(path)
+    return {"bytes": found["bytes"], "measuring": found["measuring"]}
+
+
 def _dir_size(path: Path) -> int:
     total = 0
     if not path.exists():
@@ -424,24 +487,7 @@ def _dir_size(path: Path) -> int:
 
 
 def _pid_alive(pid: int | None) -> bool:
-    if not pid:
-        return False
-    if os.name == "nt":
-        import ctypes
-        PROCESS_QUERY_LIMITED = 0x1000
-        h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED, False, pid)
-        if h:
-            # distinguish a still-running process from a not-yet-reaped zombie
-            exit_code = ctypes.c_ulong()
-            ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code))
-            ctypes.windll.kernel32.CloseHandle(h)
-            return exit_code.value == 259  # STILL_ACTIVE
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
+    return pid_alive(pid)
 
 
 def _pid_is_worker(pid: int) -> bool:
@@ -466,8 +512,10 @@ def _pid_is_worker(pid: int) -> bool:
             return True
         cmdline = Path(f"/proc/{pid}/cmdline")
         if cmdline.exists():
-            text = cmdline.read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
-            return "webarc" in text
+            args = cmdline.read_bytes().split(b"\0")
+            # a worker process, or the swm command running a job itself
+            return any(b"webarc" in a or Path(a.decode("utf-8", "replace")).name == "swm"
+                       for a in args)
     except Exception:
         pass
     return True
@@ -575,10 +623,13 @@ def _metadata_document(row: dict) -> dict:
     seeds = [{"url": str(s.get("url"))} for s in config.get("seeds", [])
              if isinstance(s, dict) and s.get("url")]
     crawl_dir = _crawl_dir(row)
+    collection = _collection_of(row)
     return md.document(
         job_id=row["id"], kind=row.get("kind", "crawl"), name=row["name"],
         operator=_job_operator(config), seeds=seeds,
-        metadata=md.from_config(config), existing=md.read_document(crawl_dir))
+        metadata=md.from_config(config), existing=md.read_document(crawl_dir),
+        inherited=colls.inherited_fields(collection),
+        collection=colls.brief(collection))
 
 
 def _write_metadata(row: dict) -> dict:
@@ -591,6 +642,199 @@ def _write_metadata(row: dict) -> dict:
     except OSError as exc:
         log.warning("Could not write metadata for crawl %s: %s", row["id"], exc)
     return doc
+
+
+# ---- collections -----------------------------------------------------------
+
+def _collection_of(row: dict | None) -> dict | None:
+    return _store().get_collection((row or {}).get("collection_id"))
+
+
+def _collection_view(row: dict, counts: dict | None = None,
+                     with_bytes: bool = True) -> dict:
+    counts = counts if counts is not None else _store().collection_counts()
+    entry = counts.get(int(row["id"]), {"jobs": 0, "by_status": {}, "last_activity": None})
+    root = Path(row["root_dir"])
+    return {
+        "id": row["id"],
+        "slug": row["slug"],
+        "name": row["name"],
+        "description": row.get("description") or "",
+        "root_dir": str(root),
+        "metadata": list(row.get("metadata") or []),
+        "metadata_fields": len(row.get("metadata") or []),
+        "policy": colls.policy_of(row),
+        "index": _index_counts(row) if with_bytes else None,
+        "warc_index": _collection_index_summary(root) if with_bytes else None,
+        "inherited_by_jobs": colls.inherited_fields(row),
+        "jobs": entry["jobs"],
+        "by_status": entry["by_status"],
+        "active_jobs": sum(n for status, n in entry["by_status"].items()
+                           if status in ("running", "paused", "blocked", "stopping")),
+        "last_activity": entry["last_activity"] or row.get("updated_at"),
+        **(_collection_bytes(root) if with_bytes else {"bytes": 0, "bytes_measuring": False}),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _collection_bytes(root: Path) -> dict:
+    size = _folder_size(root)
+    # bytes is None only while a large folder is measured for the first time
+    return {"bytes": size["bytes"], "bytes_measuring": size["measuring"]}
+
+
+def _collection_index_summary(root: Path) -> dict | None:
+    from .warc_indexer import collection_summary
+    try:
+        return collection_summary(root)
+    except OSError:
+        return None
+
+
+def _collection_metadata_from(payload: dict) -> list[dict] | None:
+    if "metadata" not in payload:
+        return None
+    raw = payload.get("metadata")
+    try:
+        if isinstance(raw, dict) and ("job" in raw or "seeds" in raw):
+            raw = raw.get("job")
+        return md.normalise_fields(raw)
+    except ValueError as exc:
+        raise HTTPException(400, f"metadata: {exc}") from exc
+
+
+def _collection_policy_from(payload: dict) -> dict | None:
+    """The policy a request carries, or None when it says nothing about it."""
+    if "dedup_across_jobs" not in payload:
+        return None
+    return {"dedup_across_jobs": bool(payload.get("dedup_across_jobs"))}
+
+
+def _referenced_warcs(row: dict) -> list[Path]:
+    collection = _collection_of(row)
+    index = colls.read_index(collection)
+    if index is None:
+        return []
+    try:
+        referenced = index.referenced_jobs(int(row["id"]))
+    finally:
+        index.close()
+    found: list[Path] = []
+    for job_id in referenced:
+        other = _store().get_crawl(job_id)
+        if not other:
+            continue
+        other_dir = _crawl_dir(other)
+        found += sorted(other_dir.glob("*.warc.gz")) + sorted(other_dir.glob("*.warc"))
+    return found
+
+
+def _page_changes(crawl_dir: Path) -> dict | None:
+    """The counts from a job's changes.json, for its row."""
+    from .changes import read_report
+    report = read_report(crawl_dir)
+    return dict(report.get("counts") or {}) if report else None
+
+
+def _dedup_summary(crawl_dir: Path) -> dict | None:
+    """dedup-summary.json, written by the WARC writer, if the job has one."""
+    import json
+    path = crawl_dir / "dedup-summary.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _index_counts(collection: dict) -> dict | None:
+    """What the collection's index holds, or None when it has none yet."""
+    index = colls.read_index(collection)
+    if index is None:
+        return None
+    try:
+        return index.counts()
+    finally:
+        index.close()
+
+
+def _create_collection(payload: dict) -> dict:
+    """Make a collection: its directory, its collection.json and its row."""
+    try:
+        name = colls.validate_name(payload.get("name"))
+        description = colls.validate_description(payload.get("description"))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    metadata = _collection_metadata_from(payload) or []
+    policy = _collection_policy_from(payload) or dict(colls.DEFAULT_POLICY)
+    try:
+        return colls.create(_store(), name, description, metadata,
+                            _storage_root_for(payload.get("storage_dir")), policy=policy)
+    except ValueError as exc:                        # taken, or an earlier index in the way
+        raise HTTPException(409, str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(400, f"could not create the collection's directory: {exc}") from exc
+
+
+def _default_collection() -> dict:
+    """Where a job goes when it names no collection."""
+    try:
+        return colls.ensure_default(_store(), _default_storage_root())
+    except (ValueError, OSError) as exc:
+        raise HTTPException(500, f"the default collection could not be made: {exc}") from exc
+
+
+def _resolve_collection(payload: dict) -> dict | None:
+    """The collection a create request names, made if it asks for a new one;
+    the default collection when it names none.
+
+    ``collection_id`` names one by id; ``collection`` by id, identifier or
+    name; ``new_collection`` is a {name, description?, metadata?} to make
+    first. A name that matches nothing is an error, not a new collection:
+    a typo must not file a job in a collection of its own.
+    """
+    if payload.get("new_collection"):
+        spec = payload["new_collection"]
+        if not isinstance(spec, dict):
+            raise HTTPException(400, "new_collection must be an object with a name")
+        return _create_collection(spec)
+    reference = payload.get("collection_id")
+    if reference in (None, ""):
+        reference = payload.get("collection")
+    if reference in (None, ""):
+        return _default_collection()               # every job belongs to a collection
+    row = _store().find_collection(reference)
+    if not row:
+        raise HTTPException(404, f"collection not found: {reference}")
+    return row
+
+
+def _names_location(payload: dict) -> bool:
+    """Whether the request chose a storage location of its own."""
+    return bool(str(payload.get("storage_dir") or "").strip())
+
+
+def _job_home(collection: dict | None, storage_root: Path, crawl_id: int,
+              own: bool = False) -> Path:
+    """A job's directory: the location it named for itself, else under its
+    collection. A job from before collections, with none, keeps its place
+    under the storage root."""
+    if own or not collection:
+        return storage_root / str(crawl_id)
+    return colls.job_home(collection["root_dir"], crawl_id)
+
+
+def _refresh_collection_document(collection: dict | None) -> None:
+    """Keep collection.json's list of jobs current."""
+    colls.refresh_document(_store(), collection)
+
+
+def _require_collection(collection_id: int) -> dict:
+    row = _store().get_collection(collection_id)
+    if not row:
+        raise HTTPException(404, "collection not found")
+    return row
 
 
 def _monitor() -> resources.ResourceMonitor:
@@ -618,7 +862,22 @@ def _job_usage(row: dict) -> dict | None:
     return _MONITOR.processes.usage(row.get("pid"))
 
 
+# Collections whose index is being rebuilt: no job of theirs may start
+# meanwhile, or its captures would go to the index file being replaced.
+_REBUILDING: set[int] = set()
+_REBUILD_LOCK = __import__("threading").Lock()
+
+
+def _collection_rebuilding(row: dict) -> bool:
+    with _REBUILD_LOCK:
+        return bool(row.get("collection_id")) and int(row["collection_id"]) in _REBUILDING
+
+
 def _launch(crawl_id: int) -> None:
+    row = _store().get_crawl(crawl_id)
+    if row and _collection_rebuilding(row):
+        raise HTTPException(409, "this collection's index is being rebuilt; start the job "
+                                 "once that is done")
     # pending until the worker reports running: a waiting job must leave
     # the waiting state the moment it is launched, or the next tick would
     # launch it again
@@ -668,7 +927,8 @@ def _launch_waiting(snapshot: dict) -> None:
     own use shows in the reading, and launching every waiting job at once
     would recreate the shortage the curator chose to wait out.
     """
-    waiting = [r for r in _store().list_crawls() if r.get("status") == WAITING]
+    waiting = [r for r in _store().list_crawls() if r.get("status") == WAITING
+               and not _collection_rebuilding(r)]
     if not waiting:
         return
     job = min(waiting, key=lambda r: r["id"])
@@ -695,7 +955,8 @@ def _crawl_view(row: dict) -> dict:
     row = _reconcile(row)
     progress = _store().get_progress(row["id"])
     crawl_dir = _crawl_dir(row)
-    disk_bytes = _dir_size(crawl_dir)
+    disk = _folder_size(crawl_dir)
+    disk_bytes = disk["bytes"] or 0
     reported = sum(p["bytes"] for p in progress)
     visited = sum(p["visited"] for p in progress)
     queued = sum(p["queued"] for p in progress)
@@ -715,10 +976,13 @@ def _crawl_view(row: dict) -> dict:
         # Where this crawl's files are, so the dashboard can show a capture
         # kept somewhere other than the default without guessing.
         "output_dir": str(crawl_dir),
-        "has_selection": (crawl_dir / "pages" / "selection.html").is_file(),
+        "has_selection": (crawl_dir / "selection.jsonl").is_file(),
         "theme": _theme_name_of(row),
+        "collection": colls.brief(_collection_of(row)),
+        "dedup": _dedup_summary(crawl_dir),
+        "changes": _page_changes(crawl_dir),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
-                   "bytes": max(disk_bytes, reported)},
+                   "bytes": max(disk_bytes, reported), "bytes_measuring": disk["measuring"]},
         "seeds": progress,
         # what this job's worker, browser and helpers are using right now
         "resources": _job_usage(row),
@@ -802,17 +1066,6 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
     if resources.measurement_note():
         log.warning("%s", resources.measurement_note())
 
-    app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
-                  version="0.3.0")
-
-    # crawls left mid-flight by a previous server are settled at once
-    for stale in _STORE.list_crawls():
-        try:
-            _reconcile(stale)
-        except Exception as exc:               # pragma: no cover
-            log.warning("Could not reconcile crawl %s: %s", stale.get("id"), exc)
-
-    @app.on_event("shutdown")
     def _leave_cleanly() -> None:
         """Ctrl+C must end the process: stop what the dashboard started."""
         global _PYWB
@@ -824,6 +1077,23 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             _PYWB = None
         if _MONITOR is not None:
             _MONITOR.stop()
+
+    @asynccontextmanager
+    async def _lifespan(_app: FastAPI):
+        # The app's lifespan replaces the on_event hook, which newer FastAPI
+        # versions warn about on every start.
+        yield
+        _leave_cleanly()
+
+    app = FastAPI(title="Simple Webcrawl Manager (SWM) control server",
+                  version="0.3.0", lifespan=_lifespan)
+
+    # crawls left mid-flight by a previous server are settled at once
+    for stale in _STORE.list_crawls():
+        try:
+            _reconcile(stale)
+        except Exception as exc:               # pragma: no cover
+            log.warning("Could not reconcile crawl %s: %s", stale.get("id"), exc)
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard():
@@ -838,6 +1108,84 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from . import help as help_module
         return help_module.load_help(Path(_store().db_path).resolve().parent)
 
+    # -- dashboard themes: colours and job-type icons, one folder each ----------
+    def _themes_dir() -> Path:
+        from . import appearance
+        return appearance.install_dir(_store().db_path)
+
+    @app.get("/api/appearance/themes")
+    def list_ui_themes():
+        from . import appearance
+        return {"themes": [t.describe() for t in appearance.list_themes(_themes_dir())],
+                "roles": list(appearance.ICON_ROLES),
+                "folder": str(_themes_dir())}
+
+    @app.get("/appearance/themes/{theme_id}/theme.css")
+    def ui_theme_css(theme_id: str):
+        from fastapi.responses import Response
+        from . import appearance
+        theme = appearance.find_theme(theme_id, _themes_dir())
+        if theme is None:
+            raise HTTPException(404, "No such theme")
+        return Response(appearance.stylesheet(theme), media_type="text/css",
+                        headers={"Cache-Control": "no-cache",
+                                 "X-Content-Type-Options": "nosniff"})
+
+    @app.get("/appearance/themes/{theme_id}/icons/{role}.svg")
+    def ui_theme_icon(theme_id: str, role: str):
+        from fastapi.responses import FileResponse
+        from . import appearance
+        path = appearance.icon_path(theme_id, role, _themes_dir())
+        if path is None:
+            raise HTTPException(404, "No such icon")
+        # shown only as an image; opened on its own it still may not run
+        # anything or reach anything
+        return FileResponse(path, media_type="image/svg+xml", headers={
+            "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+            "X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
+
+    @app.get("/appearance/fonts/{name}")
+    def ui_font(name: str):
+        """The typefaces SWM ships for themes to choose; nothing else."""
+        from fastapi.responses import FileResponse
+        from . import appearance
+        if name not in appearance.FONT_FILES:
+            raise HTTPException(404, "No such font")
+        return FileResponse(appearance.FONTS_DIR / name, media_type="font/woff2",
+                            headers={"Cache-Control": "max-age=86400"})
+
+    @app.post("/api/appearance/themes")
+    async def install_ui_theme(request: Request, replace: bool = False):
+        """Install a theme from a zip sent as the request body."""
+        from . import appearance
+        data = await request.body()
+        try:
+            theme = appearance.install_zip(data, _themes_dir(), replace=replace)
+        except appearance.ThemeExists as exc:
+            raise HTTPException(409, str(exc))
+        except appearance.ThemeError as exc:
+            raise HTTPException(400, f"The theme was not installed: {exc}")
+        return JSONResponse(status_code=201, content=theme.describe())
+
+    @app.delete("/api/appearance/themes/{theme_id}")
+    def remove_ui_theme(theme_id: str):
+        from . import appearance
+        try:
+            appearance.remove_theme(theme_id, _themes_dir())
+        except appearance.ThemeError as exc:
+            raise HTTPException(404 if "no such" in str(exc) else 400, str(exc))
+        return {"removed": theme_id}
+
+    @app.get("/api/appearance/themes/{theme_id}/download")
+    def download_ui_theme(theme_id: str):
+        from fastapi.responses import Response
+        from . import appearance
+        theme = appearance.find_theme(theme_id, _themes_dir())
+        if theme is None:
+            raise HTTPException(404, "No such theme")
+        return Response(appearance.zip_theme(theme), media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="swm-theme-{theme.id}.zip"'})
+
     @app.get("/api/capabilities")
     def capabilities():
         visible = _recording_capability()
@@ -846,6 +1194,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "facebook": dict(visible),
             "simulate": _SIMULATE,
             "storage": _storage_is_curator_choosable(),
+            "open_folder": _open_folder_capability(),
             "instagram": _instagram_capability(),
             "x": _x_capability(),
             "youtube": _youtube_capability(),
@@ -941,14 +1290,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         # Resolved before the row exists: a location that cannot serve
         # should fail the request, not leave a crawl pointing nowhere.
         storage_root = _storage_root_for(payload.get("storage_dir"))
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="", seeds_total=1,
-            kind=KIND_RECORDING)
-        crawl_dir = storage_root / str(crawl_id)
+            kind=KIND_RECORDING,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
 
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
@@ -984,15 +1337,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             "seeds": [{"url": facebook["page_url"]}],
             "metadata": _metadata_from(payload, [facebook["page_url"]]),
         }
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="", seeds_total=1,
             kind=KIND_FACEBOOK,
-        )
-        crawl_dir = storage_root / str(crawl_id)
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(
             status_code=201,
@@ -1121,15 +1477,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             except ValueError as exc:
                 raise HTTPException(400, f"metadata: {exc}") from exc
         # create once to obtain the id, then point the config at its own dir
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config, output_dir="",
-            seeds_total=len(config["seeds"]))
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config["seeds"]),
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config["output_dir"] = str(crawl_dir)
         config.setdefault("crawl_name", name)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
 
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
@@ -1296,14 +1656,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json = {"instagram": instagram,
                        "seeds": [{"url": u} for u in config.targets],
                        "metadata": _metadata_from(payload, list(config.targets))}
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config_json, output_dir="",
-            seeds_total=len(config.targets), kind=KIND_INSTAGRAM)
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config.targets), kind=KIND_INSTAGRAM,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
@@ -1383,14 +1747,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json = {"youtube": youtube,
                        "seeds": [{"url": u} for u in config.targets],
                        "metadata": _metadata_from(payload, list(config.targets))}
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config_json, output_dir="",
-            seeds_total=len(config.targets), kind=KIND_YOUTUBE)
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config.targets), kind=KIND_YOUTUBE,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
@@ -1466,14 +1834,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         config_json = {"x": x,
                        "seeds": [{"url": u} for u in config.targets],
                        "metadata": _metadata_from(payload, list(config.targets))}
+        collection = _resolve_collection(payload)
         crawl_id = _store().create_crawl(
             name=name, config=config_json, output_dir="",
-            seeds_total=len(config.targets), kind=KIND_X)
-        crawl_dir = storage_root / str(crawl_id)
+            seeds_total=len(config.targets), kind=KIND_X,
+            collection_id=(collection or {}).get("id"))
+        crawl_dir = _job_home(collection, storage_root, crawl_id,
+                              own=_names_location(payload))
         config_json["output_dir"] = str(crawl_dir)
         crawl_dir.mkdir(parents=True, exist_ok=True)
         _store().finalize_config(crawl_id, config_json, str(crawl_dir))
         _write_metadata(_store().get_crawl(crawl_id))
+        _refresh_collection_document(collection)
         _start_or_wait(crawl_id, payload)
         return JSONResponse(status_code=201,
                             content=_crawl_view(_store().get_crawl(crawl_id)))
@@ -1545,10 +1917,36 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                     409, "crawl is still running; stop it first, or delete "
                          "with force to end its worker")
             _terminate(row["pid"])
+        if _warc_indexing(crawl_id, _crawl_dir(row)):
+            raise HTTPException(
+                409, "this job's WARCs are being indexed; wait for the run to finish")
+        collection = _collection_of(row)
+        # The collection's index forgets the job before anything is removed:
+        # were the index left holding this job's originals, later jobs would
+        # refer to WARCs that no longer exist. If it cannot be updated,
+        # nothing is deleted.
+        orphaned = 0
+        index = colls.read_index(collection)
+        if index is not None:
+            try:
+                orphaned = index.forget_job(crawl_id)
+            except Exception as exc:
+                raise HTTPException(
+                    503, f"the collection's index could not be updated ({exc}); "
+                         "nothing was deleted, try again shortly") from exc
+            finally:
+                index.close()
+        elif collection is not None and colls.index_leftover(collection["root_dir"]):
+            raise HTTPException(
+                503, "the collection's index could not be opened; nothing was deleted, "
+                     "try again shortly")
         if purge:
             shutil.rmtree(_crawl_dir(row), ignore_errors=True)
+            _SIZES.forget(_crawl_dir(row))
         _store().delete_crawl(crawl_id)
-        return {"ok": True, "purged": purge, "forced": force}
+        _refresh_collection_document(collection)
+        return {"ok": True, "purged": purge, "forced": force,
+                "orphaned_records": orphaned}
 
     @app.get("/captures/{crawl_id}/{kind}/{path:path}")
     def capture_file(crawl_id: int, kind: str, path: str):
@@ -1572,6 +1970,48 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
             raise HTTPException(404, "not found")
         return FileResponse(target)
 
+    def _capture_pages(crawl_id: int, crawl_dir: Path, *, required: bool) -> str | None:
+        """Build a social capture's reader pages and return their URL, or
+        None for a capture that has no pages (a crawl, a recording). A
+        failure raises when the pages are all there is to show."""
+        from .facebook_render import build_site, is_facebook_capture
+        from .instagram_render import build_site as build_instagram_site
+        from .instagram_render import is_instagram_capture
+        from .x_render import build_site as build_x_site
+        from .x_render import is_x_capture
+        from .youtube_render import build_site as build_youtube_site
+        from .youtube_render import is_youtube_capture
+        builder = None
+        if is_youtube_capture(crawl_dir):
+            builder = build_youtube_site
+        elif is_x_capture(crawl_dir):
+            builder = build_x_site
+        elif is_instagram_capture(crawl_dir):
+            builder = build_instagram_site
+        elif is_facebook_capture(crawl_dir):
+            builder = build_site
+        if builder is None:
+            return None
+        try:
+            builder(crawl_dir)
+        except Exception as exc:
+            if required:
+                raise HTTPException(500, f"could not build capture pages: {exc}") from exc
+            log.warning("Could not build capture pages for %d: %s", crawl_id, exc)
+            return None
+        return f"/captures/{crawl_id}/pages/index.html"
+
+    @app.get("/api/crawls/{crawl_id}/pages")
+    def capture_pages(crawl_id: int):
+        """Open a social capture's reader pages, building them first if
+        need be: what a collection's replay page links to."""
+        from fastapi.responses import RedirectResponse
+        row = _require(crawl_id)
+        url = _capture_pages(crawl_id, _crawl_dir(row), required=True)
+        if url is None:
+            raise HTTPException(404, "this job has no reader pages; replay its WARC instead")
+        return RedirectResponse(url, status_code=303)
+
     @app.post("/api/crawls/{crawl_id}/replay")
     def replay(crawl_id: int, request: Request):
         """Build a ReplayWeb.page site for this crawl and return the replay URL."""
@@ -1580,72 +2020,44 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from .replay import (ReplayServer, build_replay_site, collection_name)
         crawl_dir = _crawl_dir(row)
         warcs = sorted(crawl_dir.glob("*.warc.gz")) + sorted(crawl_dir.glob("*.warc"))
+        # A job in a collection may hold revisit records whose originals
+        # live in earlier jobs; those WARCs come along, or the pages replay
+        # without their content.
+        warcs += _referenced_warcs(row)
 
-        # A Facebook capture is read through the pages built from its records.
+        # A social capture is read through the pages built from its records.
         # They are built inside the capture directory, beside the media they
         # reference, and served from there so those references resolve. When
         # the capture also has a WARC, both ways in are offered: replay shows
         # the Page as it first loaded, the pages show what was collected.
-        from .facebook_render import build_site, is_facebook_capture
-        from .instagram_render import build_site as build_instagram_site
-        from .instagram_render import is_instagram_capture
-        from .x_render import build_site as build_x_site
-        from .x_render import is_x_capture
-        from .youtube_render import build_site as build_youtube_site
-        from .youtube_render import is_youtube_capture
-        pages_url = None
-        if is_youtube_capture(crawl_dir):
-            try:
-                build_youtube_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                log.warning("Could not build capture pages for %d: %s", crawl_id, exc)
-        elif is_x_capture(crawl_dir):
-            try:
-                build_x_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                log.warning("Could not build capture pages for %d: %s",
-                            crawl_id, exc)
-        elif is_instagram_capture(crawl_dir):
-            try:
-                build_instagram_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                log.warning("Could not build capture pages for %d: %s",
-                            crawl_id, exc)
-        elif is_facebook_capture(crawl_dir):
-            try:
-                build_site(crawl_dir)
-                pages_url = f"/captures/{crawl_id}/pages/index.html"
-            except Exception as exc:
-                if not warcs:
-                    raise HTTPException(
-                        500, f"could not build capture pages: {exc}") from exc
-                logging.getLogger(__name__).warning(
-                    "Could not build capture pages for %d: %s", crawl_id, exc)
+        pages_url = _capture_pages(crawl_id, crawl_dir, required=not warcs)
 
         if not warcs:
             if pages_url:
                 return {"pages_url": pages_url, "kind": "capture_pages"}
             raise HTTPException(409, "no WARC files captured yet for this crawl")
 
+        from .youtube_render import is_youtube_capture
         coll = collection_name(crawl_id)
         youtube_media = None
         if is_youtube_capture(crawl_dir):
             youtube_media = _youtube_replay_media(crawl_dir, crawl_id, str(request.base_url))
+        # A themed job names its pages, and says why its starting page is
+        # missing when the theme did not keep it.
+        titles, missing_note = None, None
+        from .theme import selection_report
+        report = selection_report(crawl_dir)
+        if report is not None:
+            titles = {p["url"]: p["title"] for p in report["pages"] if p["accepted"] and p["title"]}
+            seed = row_seed_url(crawl_id)
+            judged = next((p for p in report["pages"] if p["url"] == seed), None)
+            if judged is not None and not judged["accepted"]:
+                missing_note = "the theme did not keep it (" + judged["why"][:1].lower() + judged["why"][1:] + ")"
         try:
             build_replay_site(warcs, _REPLAY_ROOT / coll,
-                              seed_url=row_seed_url(crawl_id), youtube_media=youtube_media)
+                              seed_url=row_seed_url(crawl_id), youtube_media=youtube_media,
+                              title=f"Job #{crawl_id}: {row.get('name') or ''}".rstrip(": "),
+                              titles=titles, missing_note=missing_note)
         except Exception as exc:
             raise HTTPException(500, f"replay setup failed: {exc}") from exc
         if _PYWB is None or not _PYWB.is_running():
@@ -1714,7 +2126,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         if _pid_alive(row.get("pid")):
             raise HTTPException(409, "Stop the job before indexing its WARCs.")
         crawl_dir = _crawl_dir(row)
-        if warc_indexer.is_running(crawl_dir):
+        if _warc_indexing(crawl_id, crawl_dir):
             raise HTTPException(409, "This job's WARCs are being indexed already.")
         get_setting = _store().get_setting
         cap = warc_indexer.capability(get_setting)
@@ -1727,12 +2139,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 collection = str(payload["collection"]).strip()
             if str(payload.get("warc") or "").strip():
                 chosen = [Path(str(payload["warc"])).name]     # one file, by name only
-        collection = collection or row["name"]
+        if not collection:
+            member_of = _collection_of(row)
+            collection = member_of["name"] if member_of else row["name"]
         warcs = warc_indexer.warc_files(crawl_dir)
         if not warcs:
             raise HTTPException(409, "no WARC files captured yet for this job")
         if chosen and not any(w.name == chosen[0] for w in warcs):
             raise HTTPException(404, f"{chosen[0]} is not one of this job's WARC files")
+
+        with _WARC_INDEX_LOCK:
+            if crawl_id in _WARC_INDEX_RUNS:
+                raise HTTPException(409, "This job's WARCs are being indexed already.")
+            _WARC_INDEX_RUNS.add(crawl_id)
 
         def run():
             try:
@@ -1740,10 +2159,18 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                                          get_setting=get_setting)
             except Exception as exc:                    # noqa: BLE001 - recorded for the card
                 log.warning("warc-indexer run for %d failed: %s", crawl_id, exc)
-                warc_indexer._write_manifest(crawl_dir, {
-                    "schema": "swm-warc-index-run/1", "status": warc_indexer.STATUS_FAILED,
-                    "error": str(exc), "finished_at": warc_indexer._iso_now(),
-                    "warcs": chosen or [w.name for w in warcs], "outputs": [], "documents": 0})
+                try:
+                    warc_indexer._write_manifest(crawl_dir, {
+                        "schema": "swm-warc-index-run/1", "status": warc_indexer.STATUS_FAILED,
+                        "error": str(exc), "finished_at": warc_indexer._iso_now(),
+                        "warcs": chosen or [w.name for w in warcs], "outputs": [],
+                        "documents": 0})
+                except OSError:                         # the folder itself is gone
+                    log.warning("warc-indexer run for %d: no folder to record the failure in",
+                                crawl_id)
+            finally:
+                with _WARC_INDEX_LOCK:
+                    _WARC_INDEX_RUNS.discard(crawl_id)
 
         threading.Thread(target=run, name=f"warc-index-{crawl_id}", daemon=True).start()
         return {"status": warc_indexer.STATUS_RUNNING, "warcs": chosen or [w.name for w in warcs],
@@ -1850,7 +2277,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         from .theme import ai_settings
         return {
             "storage_root": configured,
-            "effective_storage_root": str(_default_storage_root()),
+            # absolute: a root given relative to where the server started
+            # ("warcs") says nothing about where the files are
+            "effective_storage_root": str(_default_storage_root().expanduser().resolve()),
             "server_storage_root": str(_WARC_ROOT),
             "storage": _storage_is_curator_choosable(),
             "resources": _resource_thresholds(),
@@ -1945,20 +2374,368 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                 _store().set_setting(resources.SETTING_PREFIX + key, text)
         return read_settings()
 
+    # -- collections -------------------------------------------------------
+    @app.post("/api/crawls/{crawl_id}/open-folder")
+    def open_crawl_folder(crawl_id: int):
+        """Show the job's folder in this machine's file manager."""
+        row = _store().get_crawl(crawl_id)
+        if not row:
+            raise HTTPException(404, "No such job")
+        return _open_known_folder(str(_crawl_dir(row)), "job")
+
+    @app.post("/api/collections/{collection_id}/open-folder")
+    def open_collection_folder(collection_id: int):
+        """Show the collection's folder in this machine's file manager."""
+        row = _store().get_collection(collection_id)
+        if not row:
+            raise HTTPException(404, "No such collection")
+        return _open_known_folder(row.get("root_dir"), "collection")
+
+    @app.get("/api/collections/where")
+    def collection_location(name: str = "", storage_dir: str = "", collection_id: int | None = None):
+        """Where a collection of this name would be saved, before it is made,
+        and why it could not be (``problem``): the folder the create form
+        shows, and the check it makes before offering to create. Nothing is
+        created."""
+        slug = colls.slugify(name) if name.strip() else None
+        own = storage_dir.strip()
+        base = Path(own).expanduser() if own else _default_storage_root()
+        parent = (base / colls.COLLECTIONS_DIR).resolve()
+        problem = colls.creation_problem(_store(), slug, parent / slug) if slug else None
+        if collection_id is not None:               # a rename: the folder stays, the name must not clash
+            _require_collection(collection_id)
+            problem = colls.rename_problem(_store(), collection_id, name) if slug else None
+        return {"slug": slug, "parent": str(parent),
+                "root_dir": str(parent / slug) if slug else None,
+                "taken": bool(slug and _store().collection_by_slug(slug)),
+                "problem": problem}
+
+    @app.get("/api/collections")
+    def list_collections():
+        counts = _store().collection_counts()
+        return [_collection_view(r, counts) for r in _store().list_collections()]
+
+    @app.post("/api/collections")
+    def create_collection(payload: dict = Body(...)):
+        row = _create_collection(payload)
+        return JSONResponse(status_code=201, content=_collection_view(row))
+
+    @app.get("/api/collections/{collection_id}")
+    def get_collection(collection_id: int):
+        row = _require_collection(collection_id)
+        view = _collection_view(row)
+        view["job_list"] = [_crawl_view(r) for r in
+                            _store().crawls_in_collection(collection_id)]
+        return view
+
+    @app.put("/api/collections/{collection_id}")
+    def update_collection(collection_id: int, payload: dict = Body(...)):
+        """Rename or redescribe a collection. The identifier and directory
+        never change; every job's metadata.json is rewritten with what it
+        now inherits."""
+        row = _require_collection(collection_id)
+        try:
+            name = colls.validate_name(payload["name"]) if "name" in payload else None
+            description = (colls.validate_description(payload.get("description"))
+                           if "description" in payload else None)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        clash = colls.rename_problem(_store(), collection_id, name) if name is not None else None
+        if clash:
+            raise HTTPException(409, clash)
+        metadata = _collection_metadata_from(payload)
+        policy = _collection_policy_from(payload)
+        if policy is not None:
+            policy = {**colls.policy_of(row), **policy}
+        _store().update_collection(collection_id, name=name,
+                                   description=description, metadata=metadata,
+                                   policy=policy)
+        row = _store().get_collection(collection_id)
+        _refresh_collection_document(row)
+        for job in _store().crawls_in_collection(collection_id):
+            _write_metadata(job)
+        return _collection_view(row)
+
+    @app.get("/api/collections/{collection_id}/jobs")
+    def collection_jobs(collection_id: int):
+        _require_collection(collection_id)
+        return [_crawl_view(r) for r in _store().crawls_in_collection(collection_id)]
+
+    @app.get("/api/collections/{collection_id}/impact")
+    def collection_impact(collection_id: int):
+        """What deleting this collection would do, before it is done."""
+        row = _require_collection(collection_id)
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)]
+        root = Path(row["root_dir"])
+        return colls.collection_impact(
+            row, jobs, bytes_on_disk=_dir_size(root) if root.exists() else 0,
+            running=[j["id"] for j in jobs if _worker_alive(j)])
+
+    @app.delete("/api/collections/{collection_id}")
+    def delete_collection(collection_id: int, purge: bool = False,
+                          force: bool = False):
+        """Delete a collection and its jobs, as the impact report said.
+
+        A running job stops the deletion unless forced; purge removes the
+        collection's directory and everything under it from disk.
+        """
+        row = _require_collection(collection_id)
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)]
+        alive = [j for j in jobs if _worker_alive(j)]
+        if alive and not force:
+            raise HTTPException(
+                409, f"{len(alive)} job(s) in this collection are still running; "
+                     "stop them first, or delete with force to end their workers")
+        for job in alive:
+            _terminate(job["pid"])
+        removed = _store().delete_collection(collection_id)
+        if purge:
+            shutil.rmtree(Path(row["root_dir"]), ignore_errors=True)
+            _SIZES.forget(Path(row["root_dir"]))
+        # The WARCs may stay on disk; the index is bookkeeping about jobs
+        # that no longer exist and must not be inherited by a namesake.
+        colls.remove_index(row["root_dir"])
+        return {"ok": True, "purged": purge, "forced": force,
+                "jobs_removed": removed}
+
+    @app.get("/api/collections/{collection_id}/orphans")
+    def collection_orphans(collection_id: int):
+        """Pages whose original was deleted: what a re-crawl should fetch."""
+        row = _require_collection(collection_id)
+        index = colls.read_index(row)
+        if index is None:
+            return {"urls": [], "records": []}
+        try:
+            return {"urls": index.orphan_urls(), "records": index.orphans()}
+        finally:
+            index.close()
+
+    @app.post("/api/collections/{collection_id}/warc-index", status_code=202)
+    def warc_index_collection(collection_id: int, payload: dict | None = Body(default=None)):
+        """Run the warc-indexer jar over every crawl's and recording's WARCs
+        in the collection, one job after another, each document carrying
+        the collection's name. Revisit records that point into another
+        job resolve to that job's document when the outputs are loaded
+        together."""
+        import threading
+
+        from . import warc_indexer
+        row = _require_collection(collection_id)
+        root = Path(row["root_dir"])
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)
+                if j.get("kind", "crawl") in _WARC_INDEXABLE_KINDS]
+        alive = [j["id"] for j in jobs if _worker_alive(j)]
+        if alive:
+            raise HTTPException(409, f"job(s) {', '.join(map(str, alive))} are still running; "
+                                     "index the collection once it is quiet")
+        if warc_indexer.collection_is_running(root):
+            raise HTTPException(409, "this collection's WARCs are being indexed already")
+        busy = [j["id"] for j in jobs if _warc_indexing(j["id"], _crawl_dir(j))]
+        if busy:
+            raise HTTPException(409, f"job(s) {', '.join(map(str, busy))} are being indexed "
+                                     "on their own; wait for those runs")
+        cap = warc_indexer.capability(_store().get_setting)
+        if not cap["available"]:
+            raise HTTPException(409, cap["reason"] or "warc-indexer is unavailable")
+        with_warcs = [(j["id"], _crawl_dir(j)) for j in jobs
+                      if warc_indexer.warc_files(_crawl_dir(j))]
+        if not with_warcs:
+            raise HTTPException(409, "no WARC files in this collection yet")
+        collection = row["name"]
+        if isinstance(payload, dict) and str(payload.get("collection") or "").strip():
+            collection = str(payload["collection"]).strip()
+        get_setting = _store().get_setting
+        with _WARC_INDEX_LOCK:
+            for crawl_id, _dir in with_warcs:
+                _WARC_INDEX_RUNS.add(crawl_id)
+
+        def run():
+            try:
+                warc_indexer.index_collection(root, with_warcs, collection=collection,
+                                              get_setting=get_setting)
+            except Exception as exc:                    # noqa: BLE001 - recorded for the row
+                log.warning("collection-wide warc-indexer run for %d failed: %s",
+                            collection_id, exc)
+            finally:
+                with _WARC_INDEX_LOCK:
+                    for crawl_id, _dir in with_warcs:
+                        _WARC_INDEX_RUNS.discard(crawl_id)
+
+        threading.Thread(target=run, name=f"warc-index-collection-{collection_id}",
+                         daemon=True).start()
+        return {"status": warc_indexer.STATUS_RUNNING, "collection": collection,
+                "jobs": [crawl_id for crawl_id, _dir in with_warcs],
+                "status_url": f"/api/collections/{collection_id}/warc-index"}
+
+    @app.get("/api/collections/{collection_id}/warc-index")
+    def warc_index_collection_status(collection_id: int):
+        from .warc_indexer import collection_summary, read_collection_manifest
+        row = _require_collection(collection_id)
+        manifest = read_collection_manifest(Path(row["root_dir"]))
+        if not manifest:
+            raise HTTPException(404, "this collection's WARCs have not been indexed together yet")
+        manifest["summary"] = collection_summary(Path(row["root_dir"]))
+        manifest.pop("pid", None)
+        return manifest
+
+    @app.post("/api/collections/{collection_id}/rebuild-index")
+    def rebuild_collection_index(collection_id: int):
+        """Make the collection's index anew from its jobs' WARC files: for
+        jobs made before the index existed, or an index that was lost."""
+        row = _require_collection(collection_id)
+        jobs = [_reconcile(j) for j in _store().crawls_in_collection(collection_id)]
+        alive = [j["id"] for j in jobs if _worker_alive(j) or j.get("status") == PENDING]
+        if alive:
+            raise HTTPException(
+                409, f"job(s) {', '.join(map(str, alive))} are still running; the index is "
+                     "rebuilt once the collection is quiet")
+        with _REBUILD_LOCK:
+            if collection_id in _REBUILDING:
+                raise HTTPException(409, "this collection's index is being rebuilt already")
+            _REBUILDING.add(collection_id)
+        try:
+            result = colls.rebuild_index(_store(), row)
+        except OSError as exc:
+            raise HTTPException(500, f"the index could not be rebuilt: {exc}") from exc
+        finally:
+            with _REBUILD_LOCK:
+                _REBUILDING.discard(collection_id)
+        return {"ok": True, **result}
+
+    def _start_groups(collection_id: int) -> list[dict]:
+        """The collection's distinct starting URLs, each with the captures
+        (jobs) behind it, newest first."""
+        from .dedup_index import url_key
+        groups: dict[str, dict] = {}
+        for job in sorted(_store().crawls_in_collection(collection_id), key=lambda j: j["id"]):
+            job_dir = _crawl_dir(job)
+            has_warc = bool(list(job_dir.glob("*.warc.gz")) or list(job_dir.glob("*.warc")))
+            kind = job.get("kind", "crawl")
+            for seed in _store().get_progress(job["id"]):
+                key = url_key(seed["seed_url"])
+                group = groups.setdefault(key, {"url": seed["seed_url"], "captures": []})
+                group["captures"].append({
+                    "job_id": job["id"], "job": job["name"], "kind": kind,
+                    "date": job.get("created_at"), "has_warc": has_warc,
+                    "has_pages": kind not in _WARC_INDEXABLE_KINDS})
+        for group in groups.values():          # newest first; the job number breaks a tie
+            group["captures"].sort(key=lambda c: (str(c.get("date") or ""), int(c["job_id"])),
+                                   reverse=True)
+        return sorted(groups.values(), key=lambda g: g["url"])
+
+    @app.post("/api/collections/{collection_id}/replay")
+    def replay_collection(collection_id: int):
+        """Prepare the collection's replay: every WARC of every job as one
+        archive (so a page one job refers to another for is there), and a
+        page listing the distinct starting URLs with a way in for each."""
+        global _PYWB
+        from .replay import ReplayServer, build_replay_site
+        row = _require_collection(collection_id)
+        warcs: list[Path] = []
+        for job in _store().crawls_in_collection(collection_id):
+            job_dir = _crawl_dir(job)
+            warcs += sorted(job_dir.glob("*.warc.gz")) + sorted(job_dir.glob("*.warc"))
+        groups = _start_groups(collection_id)
+        if not warcs and not any(c["has_pages"] for g in groups for c in g["captures"]):
+            raise HTTPException(409, "nothing captured in this collection yet")
+        coll = f"collection-{row['slug']}"
+        replay_base = None
+        if warcs:
+            try:
+                build_replay_site(warcs, _REPLAY_ROOT / coll, title=row["name"])
+            except Exception as exc:
+                raise HTTPException(500, f"replay setup failed: {exc}") from exc
+            if _PYWB is None or not _PYWB.is_running():
+                server = ReplayServer(_REPLAY_ROOT, port=8091)
+                try:
+                    server.start_background()
+                except OSError as exc:
+                    raise HTTPException(
+                        500, f"the replay server could not start: {exc}") from exc
+                _PYWB = server
+            replay_base = _PYWB.replay_url(coll)
+        return {"collection": coll, "start_url": f"/collections/{collection_id}/replay",
+                "replay_url": replay_base, "start_pages": len(groups),
+                "warc_files": len(warcs)}
+
+    @app.get("/collections/{collection_id}/replay", response_class=HTMLResponse)
+    def collection_start_page(collection_id: int):
+        """The collection's replay page: its distinct starting URLs, each
+        with Replay (the archive, when prepared) or Open pages."""
+        from .replay import read_archived_pages, start_page_html
+        row = _require_collection(collection_id)
+        coll = f"collection-{row['slug']}"
+        replay_base = None
+        if (_REPLAY_ROOT / coll / "index.html").is_file() and _PYWB is not None \
+                and _PYWB.is_running():
+            replay_base = _PYWB.replay_url(coll)
+        return HTMLResponse(start_page_html(row["name"], _start_groups(collection_id),
+                                            replay_base, read_archived_pages(_REPLAY_ROOT / coll)))
+
+    @app.get("/api/crawls/{crawl_id}/changes")
+    def crawl_changes(crawl_id: int):
+        """What this job found new, changed, unchanged and gone against the
+        collection's earlier captures, page by page."""
+        from .changes import read_report
+        row = _require(crawl_id)
+        report = read_report(_crawl_dir(row))
+        if report is None:
+            raise HTTPException(404, "no change report for this job: it is not in a "
+                                     "collection with an index, or it has not ended yet")
+        return report
+
+    @app.get("/api/crawls/{crawl_id}/selection")
+    def crawl_selection(crawl_id: int):
+        """A themed job's report: every page accepted or not, with its score
+        against the score needed and the reason, and the links not followed.
+        The job's name and collection come with it, for a recrawl."""
+        from .theme import selection_report
+        row = _reconcile(_require(crawl_id))
+        report = selection_report(_crawl_dir(row))
+        if report is None:
+            raise HTTPException(404, "This job has no theme selection to report.")
+        return {**report, "job": {"id": row["id"], "name": row.get("name") or "",
+                                  "collection_id": row.get("collection_id")}}
+
+    @app.get("/api/crawls/{crawl_id}/impact")
+    def crawl_impact(crawl_id: int):
+        """What deleting this job would do, before it is done."""
+        row = _reconcile(_require(crawl_id))
+        collection = _collection_of(row)
+        siblings = _store().crawls_in_collection(collection["id"]) if collection else []
+        referring = None
+        index = colls.read_index(collection)
+        if index is not None:
+            try:
+                referring = index.referring_into(crawl_id)
+            finally:
+                index.close()
+        return colls.job_impact(collection, row, siblings, referring)
+
     @app.get("/api/storage")
     def storage():
         crawls = _store().list_crawls()
         per_crawl = []
         total = 0
+        measuring = False
         for r in crawls:
-            b = _dir_size(_crawl_dir(r))
-            total += b
-            per_crawl.append({"id": r["id"], "name": r["name"], "bytes": b})
+            size = _folder_size(_crawl_dir(r))
+            measuring = measuring or size["measuring"]
+            total += size["bytes"] or 0
+            per_crawl.append({"id": r["id"], "name": r["name"], "bytes": size["bytes"],
+                              "measuring": size["measuring"]})
         usage = shutil.disk_usage(_WARC_ROOT)
+        per_collection = []
+        for c in _store().list_collections():
+            size = _folder_size(Path(c["root_dir"]))
+            per_collection.append({"id": c["id"], "name": c["name"], "slug": c["slug"],
+                                   "bytes": size["bytes"], "measuring": size["measuring"]})
         return {
             "warc_root": str(_WARC_ROOT),
             "total_bytes": total,
+            "measuring": measuring,             # a large folder is still being measured
             "per_crawl": per_crawl,
+            "per_collection": per_collection,
             "disk": {"total": usage.total, "used": usage.used,
                      "free": usage.free},
             "default_disk": resources.disk_snapshot(_default_storage_root()),

@@ -29,7 +29,10 @@ from .store import (BLOCKED, COMPLETED, CTRL_PAUSE, CTRL_RESUME, CTRL_STOP,
 log = logging.getLogger("webarc.worker")
 
 
-def _config_from_row(row: dict) -> CrawlConfig:
+from .collections import open_index  # noqa: E402  (after the module's own imports)
+
+
+def _config_from_row(row: dict, collection: dict | None = None) -> CrawlConfig:
     import json
     raw = json.loads(row["config_json"])
     defaults = raw.get("defaults", {})
@@ -52,6 +55,7 @@ def _config_from_row(row: dict) -> CrawlConfig:
             behavior=_build_section(BehaviorConfig, m.get("behavior", {})),
             warc=_build_section(WarcConfig, m.get("warc", {})),
         ))
+    from .collections import brief, inherited_fields
     from .metadata import from_config
     theme = raw.get("theme")
     return CrawlConfig(
@@ -61,29 +65,37 @@ def _config_from_row(row: dict) -> CrawlConfig:
         seeds=seeds,
         metadata=from_config(raw),
         theme=theme if isinstance(theme, dict) else None,
+        collection=brief(collection),
+        inherited_metadata=inherited_fields(collection),
+        job_id=row.get("id"),
     )
 
 
 def _job_metadata(row: dict, kind: str, seed_urls: list[str],
-                  operator: str) -> dict[str, list[dict]]:
+                  operator: str, collection: dict | None = None) -> dict[str, list[dict]]:
     """Each seed's effective metadata for a social or recorded job, and the
-    metadata.json beside its outputs, from what the server stored."""
+    metadata.json beside its outputs, from what the server stored. A job in
+    a collection takes the collection's values underneath its own."""
     import json
 
+    from .collections import brief, inherited_fields
     from .metadata import (defaults_for, document, from_config, merge,
                            read_document, with_defaults, write_document)
 
     raw = json.loads(row["config_json"])
     meta = from_config(raw)
+    inherited = inherited_fields(collection)
     out_dir = Path(row["output_dir"])
     try:
         write_document(out_dir, document(
             job_id=row.get("id"), kind=kind, name=row["name"], operator=operator,
             seeds=[{"url": u} for u in seed_urls], metadata=meta,
-            existing=read_document(out_dir)))
+            existing=read_document(out_dir), inherited=inherited,
+            collection=brief(collection)))
     except OSError as exc:                       # pragma: no cover
         log.warning("Could not write metadata.json: %s", exc)
-    return {url: with_defaults(merge(meta["job"], meta["seeds"].get(url)),
+    return {url: with_defaults(merge(merge(inherited, meta["job"]),
+                                     meta["seeds"].get(url)),
                                defaults_for(kind, row["name"], operator, url))
             for url in seed_urls}
 
@@ -105,9 +117,12 @@ def _simulate(crawl: CrawlConfig, controller: StoreController) -> None:
         from .crawler import seed_metadata, write_crawl_metadata
         if idx == 1:
             write_crawl_metadata(crawl)
+        from .collections import open_index
         warc = WarcSession(crawl.output_dir, crawl.crawl_name, seed.url,
                            idx, crawl.operator, seed.warc,
-                           metadata_fields=seed_metadata(crawl, seed.url))
+                           metadata_fields=seed_metadata(crawl, seed.url),
+                           collection_index=open_index(crawl.collection),
+                           crawl_id=crawl.job_id)
         visited = queued = 0
         stopped = False
         total = min(seed.scope.max_pages, 12)  # keep the demo short
@@ -159,7 +174,9 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
         browser.mode = "headed"
 
     described = _job_metadata(row, KIND_RECORDING, [start_url],
-                              rec.get("operator", "webarc"))
+                              rec.get("operator", "webarc"),
+                              collection=store.get_collection(row.get("collection_id")))
+    from .collections import open_index
     warc = WarcSession(
         Path(row["output_dir"]), row["name"], start_url, 1,
         rec.get("operator", "webarc"), WarcConfig(),
@@ -168,7 +185,9 @@ def _run_recording(store: Store, crawl_id: int, row: dict) -> None:
             "description": f"Interactive session recording starting "
                            f"at {start_url}",
         },
-        metadata_fields=described.get(start_url))
+        metadata_fields=described.get(start_url),
+        collection_index=open_index(store.get_collection(row.get("collection_id"))),
+        crawl_id=row["id"])
 
     def control_poll():
         command = store.get_control(crawl_id)
@@ -239,7 +258,8 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
     # A Facebook capture can be run without a WARC: its records, media and
     # rendered pages stand on their own, and replay of a Facebook feed is
     # limited to the page as first loaded in any case.
-    described = _job_metadata(row, KIND_FACEBOOK, [fb_config.page_url], operator)
+    described = _job_metadata(row, KIND_FACEBOOK, [fb_config.page_url], operator,
+                              collection=store.get_collection(row.get("collection_id")))
     warc_cls = FacebookWarcSession if fb_config.write_warc else _NullWarcSession
     warc = warc_cls(
         output_dir, row["name"], fb_config.page_url, 1, operator,
@@ -254,6 +274,8 @@ def _run_facebook(store: Store, crawl_id: int, row: dict) -> dict:
             "facebook-page-key": fb_config.page_key,
         },
         metadata_fields=described.get(fb_config.page_url),
+        collection_index=open_index(store.get_collection(row.get("collection_id"))),
+        crawl_id=row["id"],
     )
 
     def control_poll():
@@ -329,7 +351,8 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
     output_dir = Path(row["output_dir"])
 
     described = _job_metadata(row, KIND_INSTAGRAM, list(config.targets),
-                              config.operator)
+                              config.operator,
+                              collection=store.get_collection(row.get("collection_id")))
     warc = None
     if config.write_warc:
         # one WARC for the whole capture: its record describes the first
@@ -345,7 +368,9 @@ def _run_instagram(store: Store, crawl_id: int, row: dict) -> dict:
                                 "normalised records beside it are the primary "
                                 "record."),
             },
-            metadata_fields=described.get(config.targets[0]))
+            metadata_fields=described.get(config.targets[0]),
+            collection_index=open_index(store.get_collection(row.get("collection_id"))),
+            crawl_id=row["id"])
     client = InstagramBrowserClient(
         BrowserConfig(mode=config.browser_mode,
                       user_data_dir=config.browser_profile_dir,
@@ -440,7 +465,8 @@ def _run_x(store: Store, crawl_id: int, row: dict) -> dict:
     config = XCaptureConfig.from_dict(raw.get("x", {}))
     output_dir = Path(row["output_dir"])
 
-    described = _job_metadata(row, KIND_X, list(config.targets), config.operator)
+    described = _job_metadata(row, KIND_X, list(config.targets), config.operator,
+                              collection=store.get_collection(row.get("collection_id")))
     warc = None
     if config.write_warc:
         warc = FacebookWarcSession(
@@ -453,7 +479,9 @@ def _run_x(store: Store, crawl_id: int, row: dict) -> dict:
                                 "raw responses and normalised records beside it "
                                 "are the primary record."),
             },
-            metadata_fields=described.get(config.targets[0]))
+            metadata_fields=described.get(config.targets[0]),
+            collection_index=open_index(store.get_collection(row.get("collection_id"))),
+            crawl_id=row["id"])
     client = XBrowserClient(
         BrowserConfig(mode=config.browser_mode,
                       user_data_dir=config.browser_profile_dir,
@@ -560,7 +588,8 @@ def _run_youtube(store: Store, crawl_id: int, row: dict) -> dict:
     raw = json.loads(row["config_json"])
     config = YouTubeCaptureConfig.from_dict(raw.get("youtube", {}))
     output_dir = Path(row["output_dir"])
-    described = _job_metadata(row, KIND_YOUTUBE, list(config.targets), config.operator)
+    described = _job_metadata(row, KIND_YOUTUBE, list(config.targets), config.operator,
+                              collection=store.get_collection(row.get("collection_id")))
     scratch = Path(store.db_path).resolve().parent / "tmp"
 
     warc = None
@@ -572,7 +601,9 @@ def _run_youtube(store: Store, crawl_id: int, row: dict) -> dict:
                                         "the Posts tab. Video streams are not in it; the "
                                         "downloaded files, evidence and records beside it are "
                                         "the record.")},
-            metadata_fields=described.get(config.targets[0]))
+            metadata_fields=described.get(config.targets[0]),
+            collection_index=open_index(store.get_collection(row.get("collection_id"))),
+            crawl_id=row["id"])
 
     evidence = {"sink": None}
     videos_client = None
@@ -680,7 +711,8 @@ def main(argv: list[str] | None = None) -> int:
             # recordings simulate fine too: config_json carries a one-seed
             # seeds list, so the browserless fake crawl exercises the same
             # control plane and storage accounting
-            _simulate(_config_from_row(row), controller)
+            _simulate(_config_from_row(
+                row, store.get_collection(row.get("collection_id"))), controller)
         elif kind == KIND_RECORDING:
             _run_recording(store, args.crawl_id, row)
         elif kind == KIND_FACEBOOK:
@@ -694,7 +726,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from .crawler import run_crawl
             from .theme import build_theme_judge
-            config = _config_from_row(row)
+            config = _config_from_row(
+                row, store.get_collection(row.get("collection_id")))
             judge = build_theme_judge(config.theme, store.get_setting, Path(row["output_dir"]))
             if judge is not None:
                 log.info("Theme %r: %s", judge.theme.name,
@@ -703,6 +736,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         log.exception("Crawl %d failed", args.crawl_id)
         store.set_status(args.crawl_id, FAILED, error=str(exc))
+        _note_job_end(store, args.crawl_id)
         return 1
 
     # decide final crawl-level status from control state
@@ -722,8 +756,21 @@ def main(argv: list[str] | None = None) -> int:
     else:
         store.set_status(args.crawl_id, COMPLETED)
     store.clear_control(args.crawl_id)
+    _note_job_end(store, args.crawl_id)
     log.info("Crawl %d finished", args.crawl_id)
     return 0
+
+
+def _note_job_end(store: Store, crawl_id: int) -> None:
+    """The collection's document lists this job with the state it ended in."""
+    try:
+        from .collections import finish_job_report, refresh_document
+        row = store.get_crawl(crawl_id)
+        collection = store.get_collection((row or {}).get("collection_id"))
+        finish_job_report(collection, row)
+        refresh_document(store, collection)
+    except Exception as exc:                        # pragma: no cover
+        log.warning("Could not update collection.json: %s", exc)
 
 
 if __name__ == "__main__":

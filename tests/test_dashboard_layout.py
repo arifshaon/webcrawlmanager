@@ -178,11 +178,17 @@ class TargetRowTests(DashboardTestCase):
 
 
 class StorageFieldTests(DashboardTestCase):
+    JOB_STORAGE_FIELDS = ["f-storage", "fb-storage", "ig-storage",
+                          "r-storage", "x-storage", "yt-storage"]
+
     def test_every_job_form_can_name_its_own_location(self):
         fields = re.findall(r'id="([a-z-]+)" class="storage-dir"', self.markup)
 
-        self.assertEqual(sorted(fields), ["f-storage", "fb-storage",
-                                          "ig-storage", "r-storage", "x-storage", "yt-storage"])
+        # The collection form has a storage field of its own (c-storage);
+        # every job form has one too.
+        self.assertEqual(sorted(f for f in fields if f != "c-storage"),
+                         self.JOB_STORAGE_FIELDS)
+        self.assertIn("c-storage", fields)
 
     def test_every_storage_field_has_a_browse_button(self):
         """A path typed from memory is a path typed wrong."""
@@ -208,10 +214,47 @@ class StorageFieldTests(DashboardTestCase):
         self.assertIn("if (!storageRootEdited)", self.script)
 
     def test_each_one_is_sent_when_it_is_filled_in(self):
-        for field in ("f-storage", "fb-storage", "ig-storage", "r-storage", "x-storage", "yt-storage"):
+        for field in self.JOB_STORAGE_FIELDS + ["c-storage"]:
             with self.subTest(field=field):
                 self.assertIn(f'$("#{field}").value.trim()', self.script)
-        self.assertEqual(self.script.count("body.storage_dir = "), 6)
+        # six job forms and the collection form each send their location
+        self.assertEqual(self.script.count("body.storage_dir = "), 7)
+
+
+class CollectionFieldTests(DashboardTestCase):
+    """A job can be filed in a collection from every form, and the choice
+    travels with the request."""
+
+    def test_every_job_form_has_a_collection_picker(self):
+        pickers = re.findall(r'id="([a-z-]+)" class="collection-pick"', self.markup)
+
+        self.assertEqual(sorted(pickers), ["f-collection", "fb-collection", "ig-collection",
+                                           "r-collection", "x-collection", "yt-collection"])
+
+    def test_every_picker_can_make_a_new_collection(self):
+        pickers = set(re.findall(r'id="([a-z-]+)" class="collection-pick"', self.markup))
+        buttons = set(re.findall(r'class="secondary collection-new-btn" data-target="([^"]+)"',
+                                 self.markup))
+
+        self.assertEqual(pickers - buttons, set())
+
+    def test_each_picker_is_sent_when_chosen(self):
+        for field in ("f", "fb", "ig", "r", "x", "yt"):
+            with self.subTest(field=field):
+                self.assertIn(f'if ($("#{field}-collection").value) body.collection_id', self.script)
+
+    def test_the_job_list_filters_by_collection(self):
+        self.assertIn('id="jf-collection"', self.markup)
+        self.assertIn('"jf-collection"', self.script)
+        self.assertIn('collection: $("#jf-collection").value', self.script)
+
+    def test_the_collections_page_exists_and_is_reachable(self):
+        self.assertIn(("collections"), [name for _, name in self.views()])
+        self.assertIn('data-view="collections"', self.markup)
+        for handler in ("collectionJobs", "describeCollection", "replayCollection",
+                        "delCollection", "createCollection", "newCollectionFor"):
+            with self.subTest(handler=handler):
+                self.assertIn(f"function {handler}(", self.script)
 
 
 class HelpTextTests(DashboardTestCase):
@@ -295,3 +338,93 @@ class JobFilterTests(DashboardTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeadingTests(DashboardTestCase):
+    """Every page says what it is in a dark, bold title, and its sections
+    in headings of their own; none whispers in the small grey label style."""
+
+    def test_every_page_has_a_title_and_no_heading_is_a_grey_label(self):
+        for _, view in self.views():
+            with self.subTest(view):
+                self.assertIn('class="page-title"', self.section(view))
+        self.assertEqual(re.findall(r'<h\d class="eyebrow', self.markup), [])
+        self.assertIn('<h3 class="section-heading">Storage</h3>', self.section("settings"))
+        self.assertIn("`All jobs (${shown.length})`", self.script)
+
+
+class StorageLocationTests(DashboardTestCase):
+    """Where a job's or collection's files are is always on screen, and an
+    empty storage field says what it means, path and all."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.rows = (DASHBOARD.parent / "dashboard_hardening.js").read_text(encoding="utf-8")
+
+    def test_every_job_and_collection_card_says_where_it_is_stored(self):
+        self.assertIn('${storedIn(c.output_dir, "crawls", id)}', self.rows)
+        self.assertIn("${collStorage(c)}", self.script)
+        # Open where the server can show the folder, Copy where it cannot
+        self.assertIn('class="act path-act open-path"', self.rows)
+        self.assertIn('class="act path-act copy-path"', self.rows)
+        self.assertIn('class="act path-act copy-path" data-path="${p}"', self.script)    # a collection: Copy always
+        self.assertIn('data-kind="collections"', self.script)                            # and Open where it can
+        self.assertIn("/open-folder`", self.script)
+
+    def test_every_form_says_where_it_will_be_saved(self):
+        fields = re.findall(r'id="([a-z]+)-storage" class="storage-dir"', self.markup)
+        self.assertEqual(sorted(fields), sorted(["c", "f", "r", "fb", "ig", "x", "yt"]))
+        for prefix in fields:
+            with self.subTest(prefix):
+                self.assertIn(f'id="{prefix}-saves-to"', self.markup)
+        for prefix in ("f", "r", "fb", "ig", "x", "yt"):
+            with self.subTest(prefix):
+                # under the collection picker, which is never folded away
+                picker = self.markup.index(f'id="{prefix}-collection"')
+                self.assertLess(self.markup.index(f'id="{prefix}-saves-to"') - picker, 600)
+                self.assertIn(f'id="{prefix}-storage-hint"', self.markup)
+        self.assertIn('joinPath(c.root, "jobs", "<job number>")', self.script)
+        self.assertIn("/api/collections/where?", self.script)
+
+    def test_the_default_location_shows_its_path_and_says_it_moves_nothing(self):
+        self.assertIn('joinPath(settings.effective_storage_root, "collections")', self.script)
+        self.assertIn("Changing this location moves nothing", self.script)
+        from webarc.help import load_help
+        texts = load_help()
+        self.assertIn("Changing it moves nothing", texts["storage-root"])
+        for key in ("f-storage", "r-storage", "fb-storage", "ig-storage", "x-storage", "yt-storage"):
+            with self.subTest(key):
+                self.assertIn("inside its collection's folder", texts[key])
+
+    def test_the_server_names_a_new_collections_folder_before_it_is_made(self):
+        import os
+        import tempfile
+        from fastapi.testclient import TestClient
+        from webarc.server import create_app
+        with tempfile.TemporaryDirectory() as d:
+            here = os.getcwd()
+            os.chdir(d)
+            try:
+                client = TestClient(create_app("swm.db", "warcs", replay_root="replay",
+                                               monitor_resources=False))
+                root = client.get("/api/settings").json()["effective_storage_root"]
+                where = client.get("/api/collections/where", params={"name": "QNL — Web 2026!"}).json()
+                made = client.post("/api/collections", json={"name": "QNL — Web 2026!"}).json()
+                again = client.get("/api/collections/where", params={"name": "qnl web 2026"}).json()
+                numbered = client.get("/api/collections/where", params={"name": "1"}).json()
+                made_one = client.post("/api/collections", json={"name": "1"})
+                elsewhere = client.get("/api/collections/where",
+                                       params={"name": "x", "storage_dir": "/mnt/archive"}).json()
+            finally:
+                os.chdir(here)
+
+        self.assertTrue(Path(root).is_absolute())             # never the bare "warcs"
+        self.assertEqual(where["root_dir"], made["root_dir"])
+        self.assertFalse(where["taken"])
+        self.assertIsNone(where["problem"])
+        self.assertTrue(again["taken"])
+        self.assertIn("already exists. Choose another name.", again["problem"])
+        self.assertIsNone(numbered["problem"])          # "1" is a name, not collection number 1
+        self.assertEqual(made_one.status_code, 201)
+        self.assertEqual(elsewhere["root_dir"], str(Path("/mnt/archive/collections/x").resolve()))

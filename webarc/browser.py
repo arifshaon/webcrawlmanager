@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable
 
 from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .config import BehaviorConfig, BrowserConfig
 from .consent import dismiss_consent
@@ -49,6 +50,33 @@ _CAPTURE_ARGS = [
 # is typing the password. Automated crawls keep the default.
 _OPERATOR_ARGS = [*_CAPTURE_ARGS, "--disable-blink-features=AutomationControlled"]
 _OPERATOR_IGNORED_DEFAULTS = ["--enable-automation"]
+
+
+def disable_cache(page: Page):
+    """Have every response this page receives come from the network.
+
+    With the browser's cache on, a resource a page shares with the one before
+    it (a stylesheet, a logo, a script) is either not requested at all -- the
+    memory cache hands it over, and the capture sees a response nobody
+    fetched -- or revalidated, and the archive gets a 304 with an empty body
+    that replay can pick for the address. Archiving crawlers turn the cache
+    off for that reason. Returns the CDP session, which must be kept for as
+    long as the page lives; None where it could not be done (not Chromium).
+    """
+    try:
+        cdp = page.context.new_cdp_session(page)
+        # without the Network domain enabled on this session the setting only
+        # stops revalidation: the memory cache still hands over resources
+        # nobody fetched. Nothing is read through this session, so it keeps
+        # no copies of response bodies (Playwright's own session reads them).
+        cdp.send("Network.enable", {"maxTotalBufferSize": 0, "maxResourceBufferSize": 0})
+        cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+        return cdp
+    except Exception as exc:
+        log.warning("The browser cache could not be turned off for capture (%s); "
+                    "resources a page shares with an earlier one may be recorded "
+                    "from the cache", exc)
+        return None
 
 
 def operator_launch_kwargs() -> dict:
@@ -84,6 +112,8 @@ class BrowserDriver:
         self._context: BrowserContext | None = None
         self._native_proc: subprocess.Popen | None = None
         self.delay_multiplier = 1.0
+        self._cache_off: dict = {}           # page -> the CDP session keeping its cache off
+        self.last_unsettled = False          # the last visit timed out after the page arrived
 
     @property
     def context(self) -> BrowserContext:
@@ -227,6 +257,7 @@ class BrowserDriver:
                     break
         if page is None:
             page = self._context.new_page()
+        self._cache_off[page] = disable_cache(page)
         page.on("response", on_response)
         return page
 
@@ -234,12 +265,43 @@ class BrowserDriver:
         """Navigate like a human. Returns the main-document Response, or None
         if navigation failed outright."""
         b = self.behavior
+        # the page's own document, as it arrives: a page that loads but never
+        # falls quiet (analytics beacons, polling, a chat widget) times out
+        # waiting for network idle, yet it is there, in the archive, and
+        # must be counted and followed like any other
+        arrived: dict = {}
+
+        def note_document(response) -> None:
+            # a redirect is not the page: only a final answer counts
+            try:
+                if response.request.is_navigation_request() \
+                        and response.frame == page.main_frame \
+                        and not 300 <= response.status < 400:
+                    arrived["response"] = response
+            except Exception:
+                pass
+
+        self.last_unsettled = False
+        page.on("response", note_document)
         try:
             resp = page.goto(url, wait_until=b.wait_until,
                              timeout=int(b.page_timeout * 1000))
+        except PlaywrightTimeoutError as exc:
+            resp = arrived.get("response")
+            if resp is None:
+                log.warning("Navigation failed for %s: %s", url, exc)
+                return None
+            self.last_unsettled = True
+            log.warning("%s did not settle (%s) within %.0fs; carrying on with what "
+                        "had loaded", url, b.wait_until, b.page_timeout)
         except Exception as exc:
             log.warning("Navigation failed for %s: %s", url, exc)
             return None
+        finally:
+            try:
+                page.remove_listener("response", note_document)
+            except Exception:
+                pass
 
         self._wait_out_challenge(page, resp)
 

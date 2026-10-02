@@ -299,13 +299,16 @@ class RecordingSession:
         if page is None:
             return
         # bypass the browser cache for this reload: a cached revalidation
-        # (304, empty body) would defeat the point of capturing the page
+        # (304, empty body) would defeat the point of capturing the page.
+        # A page of this session has it off already, for good, and must not
+        # have it turned back on when the reload is done.
         cdp = None
-        try:
-            cdp = page.context.new_cdp_session(page)
-            cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
-        except Exception:
-            cdp = None
+        if not getattr(self, "_cache_off", {}).get(page):
+            try:
+                cdp = page.context.new_cdp_session(page)
+                cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
+            except Exception:
+                cdp = None
         try:
             page.reload(wait_until="load",
                         timeout=int(self.page_timeout * 1000))
@@ -464,9 +467,19 @@ class RecordingSession:
 
     # -- page lifecycle -----------------------------------------------------
     def _on_page(self, page) -> None:
-        # covers user-opened tabs, popups, and target=_blank links
+        # covers user-opened tabs, popups, and target=_blank links; once per
+        # page, however it is announced
+        if not hasattr(self, "_cache_off"):
+            self._cache_off = {}
+        if page in self._cache_off:
+            return
+        self._cache_off[page] = None
+        # the listeners first, so no navigation slips past while the cache
+        # is being turned off
         page.on("framenavigated", self._on_frame_navigated)
         page.on("download", self._on_download)
+        from .browser import disable_cache
+        self._cache_off[page] = disable_cache(page)
 
     @staticmethod
     def _download_headers(filename: str) -> dict[str, str]:
@@ -637,6 +650,7 @@ class RecordingSession:
             self._on_page(page)
 
         page = context.pages[0] if context.pages else context.new_page()
+        self._on_page(page)            # set up before it navigates, not when announced
         if navigate:
             try:
                 page.goto(self.start_url, wait_until="load",

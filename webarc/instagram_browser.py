@@ -181,19 +181,31 @@ def _richer(candidate: InstagramPost, current: InstagramPost) -> bool:
 
 
 def comments_page_state(documents) -> Optional[bool]:
-    """Whether the last comments page in these documents says more follow.
+    """Whether the last page of a post's comments in these documents says
+    more follow.
 
-    None when no comments connection with page info is present.
+    Only the thread's own connection counts: a replies page carries its own
+    page_info, and its "no more replies" is not an answer about the thread.
+    None when no such connection with page info is present.
     """
     state: Optional[bool] = None
     for document in documents:
         for obj, path, _ancestors in _walk(document):
-            if not isinstance(obj, dict) or "comment" not in ".".join(path).lower():
+            if not isinstance(obj, dict):
+                continue
+            joined = ".".join(path).lower()
+            if "comment" not in joined or _is_replies_path(joined):
                 continue
             info = obj.get("page_info")
             if isinstance(info, dict) and isinstance(info.get("has_next_page"), bool):
                 state = info["has_next_page"]
     return state
+
+
+def _is_replies_path(joined: str) -> bool:
+    """A path through a replies connection, a comment's child comments or
+    a preview of them, rather than the thread itself."""
+    return "child_comment" in joined or "repl" in joined
 
 
 def _connection_in(path) -> Optional[str]:
@@ -203,6 +215,8 @@ def _connection_in(path) -> Optional[str]:
             if key in lowered:
                 return str(segment)
     return None
+
+
 _SESSION_COOKIES = ("sessionid", "csrftoken", "ds_user_id", "mid", "ig_did")
 
 
@@ -595,6 +609,7 @@ class InstagramBrowserClient:
         self.settle = settle
         self.stall_rounds = max(1, stall_rounds)
         self.page_timeout = page_timeout
+        self.stopping: Callable[[], bool] = lambda: False
         self.observed = _Observed()
         self._pw = None
         self._context = None
@@ -863,6 +878,7 @@ class InstagramBrowserClient:
             more = comments_page_state(documents)
             if more is not None:
                 self.observed.comment_pages[navigation] = more
+                log.debug("Instagram comments page: has_next_page=%s", more)
         except Exception as exc:
             log.debug("Response handling failed: %s", exc)
 
@@ -1022,6 +1038,13 @@ class InstagramBrowserClient:
         """Whether the last comments page seen on the open page said more
         follow; None when Instagram said nothing either way."""
         return self.observed.comment_pages.get(self.navigation)
+
+    def attach_engine_controls(self, tick: Callable[[], None],
+                               stopping: Callable[[], bool]) -> None:
+        """``stopping()`` says whether the curator asked to stop, so a
+        comment thread being loaded gives up at once rather than when its
+        patience runs out. ``tick`` is not needed here."""
+        self.stopping = stopping
 
     def fetch(self, url: str) -> tuple[bytes, str]:
         """Media, requested from inside the browser.
@@ -1214,6 +1237,130 @@ async ({url, credentials}) => {
 }
 """
 
+# Where a post's comment scripts look: the dialog when a post is open over
+# a profile, else the page's main column. Instagram's navigation -- its own
+# "+" (create a post) among it -- sits outside both.
+_POST_ROOT_JS = r"""
+  const postRoot = () => document.querySelector('div[role="dialog"]')
+      || document.querySelector('main') || document.body;
+"""
+
+# Find the element that scrolls the comment thread and say where to aim the
+# wheel. This post's own comment links (/p/CODE/c/ID/) mark the thread
+# best; then any comment link, then the dialog's or post's longest list.
+# The last thread found is kept while it is still on the page, so a round
+# in which Instagram is re-rendering it does not lose it.
+_COMMENT_CONTAINER_JS = r"""
+(shortcode) => {
+""" + _POST_ROOT_JS + r"""
+  const root = postRoot();
+  const scrollable = el => {
+    const overflowY = window.getComputedStyle(el).overflowY;
+    return (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+        && el.scrollHeight > el.clientHeight + 10;
+  };
+  const longest = scope => Array.from(scope.querySelectorAll('ul'))
+    .sort((a, b) => b.querySelectorAll(':scope > li').length
+                    - a.querySelectorAll(':scope > li').length)[0];
+  const own = shortcode ? Array.from(root.querySelectorAll('a[href*="/c/"]'))
+    .find(a => a.getAttribute('href').includes('/' + shortcode + '/c/')) : null;
+  const dialog = document.querySelector('div[role="dialog"]');
+  const article = root.querySelector('article');
+  const seeds = [own, root.querySelector('a[href*="/c/"]'),
+                 dialog && longest(dialog), article && longest(article)];
+  let container = null;
+  for (const seed of seeds) {
+    for (let el = seed && seed.parentElement; el && el !== document.body; el = el.parentElement) {
+      if (scrollable(el)) { container = el; break; }
+    }
+    if (container) break;
+  }
+  const kept = window.__swmCommentContainer;
+  if (!container && kept && kept.isConnected) container = kept;
+  window.__swmCommentContainer = container;
+  if (!container) return null;
+  const box = container.getBoundingClientRect();
+  if (box.width === 0 || box.height === 0) return null;
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  return {x, y, inView: x >= 0 && y >= 0
+                        && x <= window.innerWidth && y <= window.innerHeight};
+}
+"""
+
+# Drive the found container directly to the bottom.
+_COMMENT_DRIVE_JS = r"""
+() => {
+  const container = window.__swmCommentContainer;
+  if (!container || !container.isConnected) return false;
+  const before = container.scrollTop;
+  container.scrollTop = container.scrollHeight;
+  container.dispatchEvent(new Event('scroll', {bubbles: true, cancelable: true}));
+  return container.scrollTop !== before;
+}
+"""
+
+# Where no thread scrolls on its own -- comments that run down the page --
+# the window is scrolled instead.
+_WINDOW_DRIVE_JS = r"""
+() => {
+  const before = window.scrollY;
+  window.scrollTo({top: document.documentElement.scrollHeight, left: 0, behavior: 'auto'});
+  window.dispatchEvent(new Event('scroll'));
+  return window.scrollY !== before;
+}
+"""
+
+# Open one comment's hidden replies ("View replies (2)", "View all 4
+# replies", "View more replies"), looking only inside the thread. Instagram
+# sends a comment's replies only when this is pressed; an opened comment's
+# control reads "Hide replies" and is left alone.
+_REPLIES_JS = r"""
+() => {
+""" + _POST_ROOT_JS + r"""
+  const thread = window.__swmCommentContainer;
+  const scope = thread && thread.isConnected ? thread : postRoot();
+  const wanted = /^[-—–\s]*view (all |more )?(\d[\d,.]* )?(more )?repl(y|ies)/;
+  for (const el of scope.querySelectorAll('button, [role="button"]')) {
+    const label = (el.getAttribute('aria-label') || el.innerText || '')
+      .trim().toLowerCase();
+    if (!label || label.length > 60 || !wanted.test(label)) continue;
+    const box = el.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) continue;
+    el.click();
+    return true;
+  }
+  return false;
+}
+"""
+
+# Press the post's "load more comments" control, if one is shown. Controls
+# that name comments count anywhere in the post; a bare "+" or a plain
+# "load more" / "view more" only inside the thread itself, since elsewhere
+# they are other controls (a "+" in the navigation creates a post).
+_CLICK_JS = r"""
+() => {
+""" + _POST_ROOT_JS + r"""
+  const root = postRoot();
+  const named = /(load|view) more comments|view all [\d.,]+ comments|view comments/;
+  const plain = /^\+$|load more|view more/;
+  const thread = window.__swmCommentContainer;
+  for (const el of root.querySelectorAll('button, [role="button"], svg[aria-label]')) {
+    const label = (el.getAttribute('aria-label') || el.innerText || '')
+      .trim().toLowerCase();
+    if (!label || label.length > 60 || /repl(y|ies)/.test(label)) continue;
+    const inThread = thread && thread.isConnected && thread.contains(el);
+    if (!named.test(label) && !(inThread && plain.test(label))) continue;
+    const target = el.closest('button, [role="button"]') || el;
+    const box = target.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) continue;
+    target.click();
+    return true;
+  }
+  return false;
+}
+"""
+
 
 def _shortcode_in(url: str) -> Optional[str]:
     match = re.search(r"/(?:p|reel|tv)/([A-Za-z0-9_-]+)", url or "")
@@ -1361,7 +1508,26 @@ class _ScrollingListing:
 
 
 class _ScrollingComments:
-    """A post's comments as the thread is scrolled, replies included."""
+    """A post's comments as the thread is scrolled, replies included.
+
+    Instagram loads the next page of a thread when its own scroll area is
+    wheeled to the bottom, or when its "load more comments" control is
+    pressed; a comment's replies only when its "View replies" is pressed.
+    Each round does all of these (replies only when asked for), one
+    comment's replies at a time, then waits for what arrives.
+
+    Pages arrive unevenly, so the thread is given up on by time rather than
+    by a count of rounds: after PATIENCE_SECONDS in which nothing new was
+    handed over, spread over at least ``stall_rounds`` rounds.
+    Instagram's own "no further page" ends it sooner, but only once two
+    rounds in a row have handed nothing over, so an answer that arrives before
+    the page it describes is not taken as the end. A curator's stop ends it
+    at once.
+    """
+
+    PATIENCE_SECONDS = 25.0
+    # how long one round waits for the page it asked for
+    ARRIVAL_SECONDS = 4.0
 
     def __init__(self, client: InstagramBrowserClient, navigation: int,
                  shortcode: str, include_replies: bool):
@@ -1370,10 +1536,52 @@ class _ScrollingComments:
         self.shortcode = shortcode
         self.include_replies = include_replies
         self.handed: set[str] = set()
-        self.stalls = 0
+        self.quiet = 0.0              # seconds since a comment was handed over
+        self.barren = 0               # rounds in a row that handed nothing over
+        self.rounds = 0
+        self.finished: Optional[str] = None
 
     def __iter__(self):
         return self
+
+    def __next__(self) -> InstagramComment:
+        found = self._pending()
+        if found is not None:
+            return found
+        while self.finished is None:
+            if self.client.stopping():
+                self._finish("stopped")
+                break
+            before = len(self._pool())
+            started = time.monotonic()
+            self._load_more()
+            self.client._check_page_state()
+            self.rounds += 1
+            found = self._pending()
+            if found is not None:
+                self.quiet = 0.0
+                self.barren = 0
+                return found
+            # a round that handed nothing over is barren even when the pool
+            # grew with comments not wanted here (replies left out, another
+            # post's), or the thread could be scrolled forever
+            self.quiet += time.monotonic() - started
+            self.barren += 1
+            more = self.client.comments_page_open()
+            log.debug("Instagram comments %s round %d: pool %d (was %d), "
+                      "has_next_page=%s, quiet %.1fs", self.shortcode,
+                      self.rounds, len(self._pool()), before, more, self.quiet)
+            if more is False and self.barren >= 2:
+                self._finish("instagram_reported_no_more")
+            elif (self.quiet >= self.PATIENCE_SECONDS
+                  and self.barren >= self.client.stall_rounds):
+                self._finish("nothing_new_loaded")
+        raise StopIteration
+
+    def _finish(self, reason: str) -> None:
+        self.finished = reason
+        log.info("Instagram comments for %s: %d handed over after %d rounds "
+                 "(%s)", self.shortcode, len(self.handed), self.rounds, reason)
 
     def _pool(self) -> "OrderedDict[str, InstagramComment]":
         return self.client.observed.comments_in(self.navigation)
@@ -1393,41 +1601,55 @@ class _ScrollingComments:
             return comment
         return None
 
-    def _load_more(self) -> None:
-        # The thread lives in its own scroll container on a permalink; the
-        # window may not move. Scroll the deepest scrollable region as well,
-        # and press any "load more comments" control that is offered.
-        try:
-            self.client._page.evaluate("""
-              () => {
-                const controls = Array.from(document.querySelectorAll('button, [role="button"]'));
-                for (const c of controls) {
-                  const label = (c.innerText || c.getAttribute('aria-label') || '').toLowerCase();
-                  if (/load more comments|view more comments|more comments|view all \\d+ comments/.test(label)) { c.click(); break; }
-                }
-                const boxes = Array.from(document.querySelectorAll('div, ul, section'))
-                  .filter(el => el.scrollHeight > el.clientHeight + 80 &&
-                                /auto|scroll/.test(getComputedStyle(el).overflowY));
-                for (const el of boxes.slice(-3)) el.scrollTop = el.scrollHeight;
-                window.scrollTo({top: document.documentElement.scrollHeight, left: 0, behavior: 'auto'});
-                window.dispatchEvent(new Event('scroll'));
-              }""")
-        except Exception:
-            pass
-        self.client._settle()
+    def _pause(self, low: float, high: float) -> None:
+        self.client._settle(random.uniform(low, high))
 
-    def __next__(self) -> InstagramComment:
-        found = self._pending()
-        if found is not None:
-            return found
-        while self.stalls < self.client.stall_rounds:
-            before = len(self._pool())
-            self._load_more()
-            self.client._check_page_state()
-            found = self._pending()
-            if found is not None:
-                self.stalls = 0
-                return found
-            if len(self._pool()) == before:
-                self.stalls += 1
-        raise StopIteration
+    def _load_more(self) -> bool:
+        """Wheel the thread, drive it to its bottom, press "load more" and,
+        when replies are wanted, one comment's "View replies"; then wait for
+        what that asked for. True when anything was done."""
+        page = self.client._page
+        before = len(self._pool())
+        acted = False
+        try:
+            point = page.evaluate(_COMMENT_CONTAINER_JS, self.shortcode)
+        except Exception as exc:
+            log.debug("Instagram comment thread not located: %s", exc)
+            point = None
+        # a real wheel over the thread is what Instagram listens for; only
+        # when the thread is on screen, or the wheel lands on something else
+        mouse = getattr(page, "mouse", None)
+        if isinstance(point, dict) and point.get("inView") and mouse is not None:
+            try:
+                mouse.move(float(point["x"]), float(point["y"]))
+                for _ in range(2):
+                    mouse.wheel(0, random.randint(700, 1000))
+                    self._pause(0.4, 0.8)
+                acted = True
+            except Exception as exc:
+                log.debug("Instagram comment wheel failed: %s", exc)
+        try:
+            drive = _COMMENT_DRIVE_JS if isinstance(point, dict) else _WINDOW_DRIVE_JS
+            if page.evaluate(drive):
+                acted = True
+                self._pause(0.5, 0.9)
+        except Exception as exc:
+            log.debug("Instagram comment thread not driven: %s", exc)
+        try:
+            if page.evaluate(_CLICK_JS):
+                acted = True
+                self._pause(0.7, 1.1)
+        except Exception as exc:
+            log.debug("Instagram load-more control not pressed: %s", exc)
+        if self.include_replies:
+            try:
+                if page.evaluate(_REPLIES_JS):
+                    acted = True
+                    self._pause(0.7, 1.1)
+            except Exception as exc:
+                log.debug("Instagram replies not opened: %s", exc)
+        waited = 0.0
+        while len(self._pool()) <= before and waited < self.ARRIVAL_SECONDS:
+            self.client._settle(0.2)
+            waited += 0.2
+        return acted
