@@ -3,7 +3,7 @@
 ; before release distribution. Unsigned builds are supported for testing.
 
 #ifndef AppVersion
-  #define AppVersion "0.5.2"
+  #define AppVersion "1.0"
 #endif
 #ifndef SourceBranch
   #define SourceBranch "feature/record-session"
@@ -71,6 +71,91 @@ Filename: "{app}\Start SWM Server.cmd"; Description: "Start Simple Webcrawl Mana
 [Code]
 var
   BootstrapExitCode: Integer;
+  SourcePage: TWizardPage;
+  LatestReleaseRadio: TNewRadioButton;
+  BranchRadio: TNewRadioButton;
+  SourceHelpLabel: TNewStaticText;
+  BranchLabel: TNewStaticText;
+  BranchEdit: TNewEdit;
+
+procedure UpdateSourceControls;
+begin
+  BranchLabel.Enabled := BranchRadio.Checked;
+  BranchEdit.Enabled := BranchRadio.Checked;
+end;
+
+procedure SourceChoiceClick(Sender: TObject);
+begin
+  UpdateSourceControls;
+end;
+
+procedure InitializeWizard;
+begin
+  SourcePage := CreateCustomPage(
+    wpSelectDir,
+    'Source version',
+    'Choose which Simple Webcrawl Manager source should be installed.'
+  );
+
+  LatestReleaseRadio := TNewRadioButton.Create(SourcePage);
+  LatestReleaseRadio.Parent := SourcePage.Surface;
+  LatestReleaseRadio.Left := 0;
+  LatestReleaseRadio.Top := 8;
+  LatestReleaseRadio.Width := SourcePage.SurfaceWidth;
+  LatestReleaseRadio.Caption := 'Latest published release (recommended)';
+  LatestReleaseRadio.Checked := True;
+  LatestReleaseRadio.OnClick := @SourceChoiceClick;
+
+  SourceHelpLabel := TNewStaticText.Create(SourcePage);
+  SourceHelpLabel.Parent := SourcePage.Surface;
+  SourceHelpLabel.Left := ScaleX(22);
+  SourceHelpLabel.Top := LatestReleaseRadio.Top + LatestReleaseRadio.Height + ScaleY(4);
+  SourceHelpLabel.Width := SourcePage.SurfaceWidth - ScaleX(22);
+  SourceHelpLabel.Height := ScaleY(34);
+  SourceHelpLabel.AutoSize := False;
+  SourceHelpLabel.WordWrap := True;
+  SourceHelpLabel.Caption :=
+    'The installer will resolve the latest published GitHub release and download source from that release tag.';
+
+  BranchRadio := TNewRadioButton.Create(SourcePage);
+  BranchRadio.Parent := SourcePage.Surface;
+  BranchRadio.Left := 0;
+  BranchRadio.Top := SourceHelpLabel.Top + SourceHelpLabel.Height + ScaleY(12);
+  BranchRadio.Width := SourcePage.SurfaceWidth;
+  BranchRadio.Caption := 'Advanced: install from a GitHub branch';
+  BranchRadio.OnClick := @SourceChoiceClick;
+
+  BranchLabel := TNewStaticText.Create(SourcePage);
+  BranchLabel.Parent := SourcePage.Surface;
+  BranchLabel.Left := ScaleX(22);
+  BranchLabel.Top := BranchRadio.Top + BranchRadio.Height + ScaleY(8);
+  BranchLabel.Caption := 'Branch name:';
+
+  BranchEdit := TNewEdit.Create(SourcePage);
+  BranchEdit.Parent := SourcePage.Surface;
+  BranchEdit.Left := ScaleX(22);
+  BranchEdit.Top := BranchLabel.Top + BranchLabel.Height + ScaleY(4);
+  BranchEdit.Width := SourcePage.SurfaceWidth - ScaleX(22);
+  BranchEdit.Text := '{#SourceBranch}';
+
+  UpdateSourceControls;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+
+  if (CurPageID = SourcePage.ID) and BranchRadio.Checked and
+     (Trim(BranchEdit.Text) = '') then
+  begin
+    MsgBox(
+      'Enter a GitHub branch name, or select Latest published release.',
+      mbError,
+      MB_OK
+    );
+    Result := False;
+  end;
+end;
 
 function PowerShellExe(): String;
 begin
@@ -99,8 +184,14 @@ begin
   Params := '-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' +
             AddQuotes(WrapperPath) +
             ' -BootstrapScript ' + AddQuotes(ScriptPath) +
-            ' -InstallDir ' + AddQuotes(ExpandConstant('{app}')) +
-            ' -Branch ' + AddQuotes('{#SourceBranch}');
+            ' -InstallDir ' + AddQuotes(ExpandConstant('{app}'));
+
+  if BranchRadio.Checked then
+    Params := Params +
+              ' -SourceMode Branch' +
+              ' -Branch ' + AddQuotes(Trim(BranchEdit.Text))
+  else
+    Params := Params + ' -SourceMode LatestRelease';
 
   Log('Starting SWM bootstrap wrapper: ' + PowerShellExe() + ' ' + Params);
   Ok := Exec(PowerShellExe(), Params, '', SW_SHOW, ewWaitUntilTerminated,
