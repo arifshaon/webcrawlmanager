@@ -51,7 +51,8 @@ class ConfirmationTests(unittest.TestCase):
         cls.port = probe.getsockname()[1]
         probe.close()
         cls.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=cls.port, log_level="error"))
-        threading.Thread(target=cls.server.run, daemon=True).start()
+        cls.thread = threading.Thread(target=cls.server.run, daemon=True)
+        cls.thread.start()
         while not cls.server.started:
             time.sleep(0.05)
         cls.pw = sync_playwright().start()
@@ -62,6 +63,7 @@ class ConfirmationTests(unittest.TestCase):
         cls.browser.close()
         cls.pw.stop()
         cls.server.should_exit = True
+        cls.thread.join(timeout=10)      # stopped before the next test sets up its own dashboard
         cls._dir.cleanup()
 
     def setUp(self):
@@ -81,6 +83,18 @@ class ConfirmationTests(unittest.TestCase):
 
     def names(self):
         return sorted(c["name"] for c in self.api("/api/collections"))
+
+    def menu(self, collection_id, label):
+        """Choose an item from a collection card's ⋮ menu."""
+        card = self.page.locator(f".ccard[data-id='{collection_id}']")
+        card.wait_for()
+        card.locator(".ccard-more summary").click()
+        card.locator(f".ccard-more .menu button:has-text('{label}')").click()
+
+    def new_collection(self):
+        self.page.goto(self.url("#/collections"))
+        self.page.click("#c-new-btn")
+        self.page.locator("#collection-overlay").wait_for(state="visible")
 
     def dialog(self):
         overlay = self.page.locator("#confirm-overlay")
@@ -105,7 +119,7 @@ class ConfirmationTests(unittest.TestCase):
 
     def test_creating_and_deleting_a_collection_each_wait_for_a_yes(self):
         page = self.page
-        page.goto(self.url("#/collections"))
+        self.new_collection()
         page.fill("#c-name", "Asked first")
         page.wait_for_function("document.querySelector('#c-saves-to code')")
         folder = page.text_content("#c-saves-to code")
@@ -119,13 +133,12 @@ class ConfirmationTests(unittest.TestCase):
         page.click("#c-create-btn")
         self.dialog()
         page.click("#confirm-yes")
-        page.wait_for_selector("#c-msg:has-text('Collection created.')")
+        page.wait_for_selector("#coll-page-msg:has-text('Collection \"Asked first\" created.')")
+        self.assertFalse(page.is_visible("#collection-overlay"))          # the pop-up closes
         made = next(c for c in self.api("/api/collections") if c["name"] == "Asked first")
         self.assertTrue(Path(made["root_dir"]).is_dir())
 
-        delete = f"#collection-list button[onclick='delCollection({made['id']})']"
-        page.wait_for_selector(delete)
-        page.click(delete)
+        self.menu(made["id"], "Delete")
         dialog = self.dialog()
         # a deletion starts on Cancel, and leaves the files unless ticked
         self.assertEqual(page.evaluate("document.activeElement.id"), "confirm-no")
@@ -134,17 +147,17 @@ class ConfirmationTests(unittest.TestCase):
         dialog.wait_for(state="hidden")
         self.assertIn("Asked first", self.names())
 
-        page.click(delete)
+        self.menu(made["id"], "Delete")
         self.dialog()
         page.click("#confirm-yes")
-        page.wait_for_function("() => !document.querySelector(\"" + delete.replace('"', '\\"') + "\")")
+        page.wait_for_selector(f".ccard[data-id='{made['id']}']", state="detached")
         self.assertNotIn("Asked first", self.names())
         self.assertTrue(Path(made["root_dir"]).is_dir())      # unticked: the folder stays
 
     def test_a_name_already_taken_is_refused_before_any_confirmation(self):
         page = self.page
         self.api("/api/collections", {"name": "QNL Web"}, "POST")
-        page.goto(self.url("#/collections"))
+        self.new_collection()
         page.fill("#c-name", "qnl  web!")                    # the identifier qnl-web again
         page.click("#c-create-btn")
         page.wait_for_function("document.querySelector('#c-msg').textContent.includes('already exists')")
@@ -159,8 +172,8 @@ class ConfirmationTests(unittest.TestCase):
         self.api("/api/collections", {"name": "Election 2026"}, "POST")
         mine = self.api("/api/collections", {"name": "Library news"}, "POST")
         page.goto(self.url("#/collections"))
-        page.wait_for_selector(f"#collection-list button[onclick='editCollection({mine['id']})']")
-        page.click(f"#collection-list button[onclick='editCollection({mine['id']})']")
+        self.menu(mine["id"], "Edit")
+        self.assertEqual(page.text_content("#collection-title"), "Edit collection: Library news")
         # the folder is fixed: no field or Browse to change it, even after the page refreshes
         page.wait_for_timeout(2500)
         self.assertFalse(page.is_visible("#c-storage"))
@@ -183,9 +196,59 @@ class ConfirmationTests(unittest.TestCase):
         page.click("#c-create-btn")
         self.dialog()
         page.click("#confirm-yes")
-        page.wait_for_selector("#c-msg:has-text('Collection updated.')")
+        page.wait_for_selector("#coll-page-msg:has-text('updated')")
         self.assertIn("Library news, Qatar", self.names())
-        self.assertTrue(page.is_visible("#c-storage"))         # back to a new collection: the field returns
+        page.click("#c-new-btn")
+        self.assertEqual(page.text_content("#collection-title"), "New collection")
+        self.assertTrue(page.is_visible("#c-storage"))         # a new collection: the field returns
+
+    def test_the_collections_page_finds_sorts_and_keeps_its_menu_open(self):
+        page = self.page
+        busy = self.api("/api/collections", {"name": "Zanzibar archive", "description": "Coastal towns"}, "POST")
+        self.api("/api/collections", {"name": "Alpha sites"}, "POST")
+        page.goto(self.url("#/collections"))
+        page.wait_for_selector(f".ccard[data-id='{busy['id']}']")
+        names = lambda: page.eval_on_selector_all(".ccard .ccard-name", "els => els.map(e => e.textContent)")
+
+        page.select_option("#coll-sort", "name")
+        listed = names()
+        self.assertEqual(listed, sorted(listed, key=str.lower))
+        self.assertLess(listed.index("Alpha sites"), listed.index("Zanzibar archive"))
+        page.fill("#coll-search", "coastal")                  # the description is searched too
+        self.assertEqual(names(), ["Zanzibar archive"])
+        page.fill("#coll-search", "")
+        page.select_option("#coll-filter", "running")
+        self.assertIn("No collection matches", page.text_content("#collection-list"))
+        page.click("#collection-list .linkish")               # Show all collections
+        self.assertGreaterEqual(len(names()), 2)
+        page.click(".coll-view[data-view=grid]")
+        self.assertEqual(page.get_attribute("#collection-list", "data-view"), "grid")
+        page.reload()
+        page.wait_for_selector(".ccard")
+        self.assertEqual(page.get_attribute("#collection-list", "data-view"), "grid")   # kept in this browser
+        self.assertEqual(page.input_value("#coll-sort"), "name")
+
+        card = page.locator(f".ccard[data-id='{busy['id']}']")
+        card.locator(".ccard-more summary").click()
+        page.wait_for_timeout(2500)                           # a refresh comes and goes
+        self.assertTrue(card.locator(".ccard-more").evaluate("d => d.open"))
+        page.keyboard.press("Escape")
+        self.assertFalse(card.locator(".ccard-more").evaluate("d => d.open"))
+        # an empty collection says so, rather than "not calculated"
+        self.assertIn("None yet", card.inner_text())
+        self.assertIn("Not indexed", card.inner_text())
+
+    def test_a_size_still_being_measured_says_so(self):
+        page = self.page
+        page.goto(self.url("#/collections"))
+        page.wait_for_function("typeof collCard === 'function'")
+        html = page.evaluate("""() => collCard({id: 9, name: "Big", slug: "big", root_dir: "/x", jobs: 0, by_status: {},
+            bytes: null, bytes_measuring: true, metadata_fields: 0, policy: {}, index: null, warc_index: null})""")
+        self.assertIn("Calculating…", html)
+        html = page.evaluate("""() => collCard({id: 9, name: "Big", slug: "big", root_dir: "/x", jobs: 0, by_status: {},
+            bytes: 2048, bytes_measuring: true, metadata_fields: 0, policy: {}, index: null, warc_index: null})""")
+        self.assertIn("2.0 KB", html)
+        self.assertIn("recalculating", html)
 
     def test_a_settings_save_waits_for_a_yes(self):
         page = self.page
@@ -221,6 +284,9 @@ class ConfirmationTests(unittest.TestCase):
             posted.append(route.request.post_data_json),
             route.fulfill(status=200, content_type="application/json", body='{"id": 1}'))
             if route.request.method == "POST" else route.continue_())
+        # what this machine has free is not this test's question: the check says there is room
+        page.route("**/api/resources/check*", lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"ok": true, "warnings": []}'))
         page.goto(self.url("#/new"))
         page.click('[data-job="crawl"]')
         page.fill("#seed-list .seed-url", "https://example.org/")

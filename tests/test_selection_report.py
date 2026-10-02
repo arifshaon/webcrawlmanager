@@ -130,7 +130,8 @@ class RecrawlTests(unittest.TestCase):
         cls.port = probe.getsockname()[1]
         probe.close()
         cls.server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=cls.port, log_level="error"))
-        threading.Thread(target=cls.server.run, daemon=True).start()
+        cls.thread = threading.Thread(target=cls.server.run, daemon=True)
+        cls.thread.start()
         while not cls.server.started:
             time.sleep(0.05)
         cls.pw = sync_playwright().start()
@@ -141,6 +142,7 @@ class RecrawlTests(unittest.TestCase):
         cls.browser.close()
         cls.pw.stop()
         cls.server.should_exit = True
+        cls.thread.join(timeout=10)      # stopped before the next test sets up its own dashboard
         cls._dir.cleanup()
 
     def test_chosen_pages_become_a_crawl_of_only_those_pages_without_the_theme(self):

@@ -901,6 +901,26 @@ collection cannot be created with, or renamed to, a name another
 collection has or whose identifier another collection has: the form says
 so at once ("Sorry ... Choose another name") and offers no confirmation.
 
+**The Collections page** opens with **New collection** beside its title,
+then a toolbar: search (name, identifier or description), a filter (with
+running jobs, needs attention, not indexed for search, empty), sorting
+(last activity, name, size, jobs) and a list or grid view, kept in the
+browser. Each collection is a card: its jobs and their states, its size on
+disk, metadata fields and last activity; its storage location with Copy
+(and Open on the dashboard's own machine); payloads reused across its jobs
+and search documents, each saying plainly when there are none ("Off: each
+job keeps its own copy", "None yet", "Not indexed"); **View jobs** and
+**Replay**; and a ⋮ menu with Edit, Metadata, Index for search, Rebuild
+duplicate index and Delete. Pages missing their original are flagged on the
+card with **Re-crawl them**. New collection and Edit open the same pop-up.
+
+Sizes on disk never hold up the dashboard. A folder of up to 2,000 files
+and folders is measured on every refresh; a larger one is measured in the
+background, the card saying "Calculating…" until the first figure arrives,
+and the figure is refreshed every 30 seconds ("recalculating" meanwhile).
+Deleting a job or collection still measures it exactly first, as part of
+what you confirm.
+
 Where things are is always on screen. Each job's card and each collection's
 card says where its files are ("Stored in"). Next to the path, **Open**
 shows that folder in the computer's own file manager: Explorer on Windows,

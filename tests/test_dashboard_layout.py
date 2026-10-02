@@ -351,10 +351,12 @@ class StorageLocationTests(DashboardTestCase):
 
     def test_every_job_and_collection_card_says_where_it_is_stored(self):
         self.assertIn('${storedIn(c.output_dir, "crawls", id)}', self.rows)
-        self.assertIn('${storedIn(c.root_dir, "collections", c.id)}', self.script)
+        self.assertIn("${collStorage(c)}", self.script)
         # Open where the server can show the folder, Copy where it cannot
         self.assertIn('class="act path-act open-path"', self.rows)
         self.assertIn('class="act path-act copy-path"', self.rows)
+        self.assertIn('class="act path-act copy-path" data-path="${p}"', self.script)    # a collection: Copy always
+        self.assertIn('data-kind="collections"', self.script)                            # and Open where it can
         self.assertIn("/open-folder`", self.script)
 
     def test_every_form_says_where_it_will_be_saved(self):

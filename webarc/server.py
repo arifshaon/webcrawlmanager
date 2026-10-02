@@ -460,6 +460,19 @@ def _parse_yaml(source: object) -> dict:
     return _validate_config(config)
 
 
+# Folder sizes for the views the dashboard refreshes every two seconds:
+# measured once, kept a while, large folders measured in the background
+# (see webarc/sizes.py). _dir_size stays for the exact figure a deletion shows.
+from .sizes import FolderSizes
+_SIZES = FolderSizes()
+
+
+def _folder_size(path: Path) -> dict:
+    """``{"bytes", "measuring"}`` for a folder, never waiting on a large one."""
+    found = _SIZES.get(path)
+    return {"bytes": found["bytes"], "measuring": found["measuring"]}
+
+
 def _dir_size(path: Path) -> int:
     total = 0
     if not path.exists():
@@ -659,10 +672,16 @@ def _collection_view(row: dict, counts: dict | None = None,
         "active_jobs": sum(n for status, n in entry["by_status"].items()
                            if status in ("running", "paused", "blocked", "stopping")),
         "last_activity": entry["last_activity"] or row.get("updated_at"),
-        "bytes": _dir_size(root) if with_bytes and root.exists() else 0,
+        **(_collection_bytes(root) if with_bytes else {"bytes": 0, "bytes_measuring": False}),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _collection_bytes(root: Path) -> dict:
+    size = _folder_size(root)
+    # bytes is None only while a large folder is measured for the first time
+    return {"bytes": size["bytes"], "bytes_measuring": size["measuring"]}
 
 
 def _collection_index_summary(root: Path) -> dict | None:
@@ -936,7 +955,8 @@ def _crawl_view(row: dict) -> dict:
     row = _reconcile(row)
     progress = _store().get_progress(row["id"])
     crawl_dir = _crawl_dir(row)
-    disk_bytes = _dir_size(crawl_dir)
+    disk = _folder_size(crawl_dir)
+    disk_bytes = disk["bytes"] or 0
     reported = sum(p["bytes"] for p in progress)
     visited = sum(p["visited"] for p in progress)
     queued = sum(p["queued"] for p in progress)
@@ -962,7 +982,7 @@ def _crawl_view(row: dict) -> dict:
         "dedup": _dedup_summary(crawl_dir),
         "changes": _page_changes(crawl_dir),
         "totals": {"visited": visited, "queued": queued, "failed": failed,
-                   "bytes": max(disk_bytes, reported)},
+                   "bytes": max(disk_bytes, reported), "bytes_measuring": disk["measuring"]},
         "seeds": progress,
         # what this job's worker, browser and helpers are using right now
         "resources": _job_usage(row),
@@ -1922,6 +1942,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                      "try again shortly")
         if purge:
             shutil.rmtree(_crawl_dir(row), ignore_errors=True)
+            _SIZES.forget(_crawl_dir(row))
         _store().delete_crawl(crawl_id)
         _refresh_collection_document(collection)
         return {"ok": True, "purged": purge, "forced": force,
@@ -2470,6 +2491,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         removed = _store().delete_collection(collection_id)
         if purge:
             shutil.rmtree(Path(row["root_dir"]), ignore_errors=True)
+            _SIZES.forget(Path(row["root_dir"]))
         # The WARCs may stay on disk; the index is bookkeeping about jobs
         # that no longer exist and must not be inherited by a namesake.
         colls.remove_index(row["root_dir"])
@@ -2695,18 +2717,23 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         crawls = _store().list_crawls()
         per_crawl = []
         total = 0
+        measuring = False
         for r in crawls:
-            b = _dir_size(_crawl_dir(r))
-            total += b
-            per_crawl.append({"id": r["id"], "name": r["name"], "bytes": b})
+            size = _folder_size(_crawl_dir(r))
+            measuring = measuring or size["measuring"]
+            total += size["bytes"] or 0
+            per_crawl.append({"id": r["id"], "name": r["name"], "bytes": size["bytes"],
+                              "measuring": size["measuring"]})
         usage = shutil.disk_usage(_WARC_ROOT)
-        per_collection = [
-            {"id": c["id"], "name": c["name"], "slug": c["slug"],
-             "bytes": _dir_size(Path(c["root_dir"])) if Path(c["root_dir"]).exists() else 0}
-            for c in _store().list_collections()]
+        per_collection = []
+        for c in _store().list_collections():
+            size = _folder_size(Path(c["root_dir"]))
+            per_collection.append({"id": c["id"], "name": c["name"], "slug": c["slug"],
+                                   "bytes": size["bytes"], "measuring": size["measuring"]})
         return {
             "warc_root": str(_WARC_ROOT),
             "total_bytes": total,
+            "measuring": measuring,             # a large folder is still being measured
             "per_crawl": per_crawl,
             "per_collection": per_collection,
             "disk": {"total": usage.total, "used": usage.used,

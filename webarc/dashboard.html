@@ -260,6 +260,90 @@
     box-shadow: 0 16px 48px rgba(0,0,0,.25); }
   .metadata-card .browse-head h2 { margin-bottom: 2px; }
   .metadata-card .md-body { padding: 16px; overflow-y: auto; }
+  /* the collection pop-up: New collection and Edit share it */
+  #collection-overlay { display: none; position: fixed; inset: 0; z-index: 998;
+    background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center;
+    padding: 24px; }
+  #collection-overlay.open { display: flex; }
+  .collection-card { width: min(820px, 100%); }
+  .collection-card .form-grid { margin: 0; }
+  /* the Collections page: a toolbar, then the collections as cards */
+  .coll-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .coll-head .eyebrow { margin-right: auto; }
+  /* the page's title: it should stand out, not whisper like a section label */
+  .coll-head .eyebrow.page-title { font-family: var(--ui); font-size: var(--t-xl); font-weight: 800; color: var(--ink);
+    letter-spacing: 0; text-transform: none; }
+  .coll-head .primary, .coll-head .primary svg { display: inline-flex; align-items: center; gap: 6px; }
+  .coll-head .primary svg { width: 16px; height: 16px; }
+  .coll-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 12px; }
+  .coll-toolbar .spacer { flex: 1 1 auto; }
+  .coll-search { position: relative; flex: 0 1 360px; min-width: 200px; display: flex; }
+  .coll-search svg { position: absolute; left: 11px; top: 50%; width: 16px; height: 16px; transform: translateY(-50%);
+    color: var(--muted); pointer-events: none; }
+  .coll-toolbar .coll-search input { width: 100%; padding-left: 36px; }
+  .coll-toolbar select { width: auto; }
+  .coll-views { display: inline-flex; gap: 4px; }
+  .coll-view { display: inline-grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid var(--rule);
+    background: var(--paper); color: var(--muted); }
+  .coll-view svg { width: 18px; height: 18px; }
+  .coll-view[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+  #coll-page-msg:empty { display: none; }
+  #coll-page-msg { margin: 0 0 10px; }
+  .ccards { display: grid; gap: 14px; }
+  .ccards[data-view="grid"] { grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); }
+  .ccard { background: var(--paper); border: 1px solid var(--rule); border-radius: 14px; padding: 16px 18px;
+    display: grid; gap: 14px; min-width: 0; }
+  .ccard-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; align-items: start; }
+  .ccard-icon.kind-icon { width: 48px; height: 48px; margin: 0; border-radius: 12px; }
+  .ccard-name { margin: 2px 0 0; font-size: var(--t-lg); font-weight: 700; overflow-wrap: anywhere; }
+  .ccard-slug { font-family: var(--mono); font-size: var(--t-xs); color: var(--muted); }
+  .ccard-desc { margin: 4px 0 0; color: var(--muted); font-size: var(--t-sm); max-width: 70ch; }
+  .ccard-more > summary { display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0;
+    border-radius: 9px; border: 1px solid transparent; color: var(--muted); cursor: pointer; }
+  .ccard-more > summary:hover, .ccard-more[open] > summary { background: var(--surface); border-color: var(--rule); }
+  .ccard-more > summary svg { width: 20px; height: 20px; }
+  .ccard .ccard-more .menu { left: auto; right: 0; min-width: 250px; }
+  .ccard-more .menu button { display: flex; align-items: center; gap: 10px; }
+  .ccard-more .menu svg { width: 16px; height: 16px; flex: none; color: var(--muted); }
+  .ccard-more .menu hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 2px; }
+  .ccard-more .menu .danger, .ccard-more .menu .danger svg { color: var(--stop); }
+  .ccard-stats { display: flex; flex-wrap: wrap; gap: 8px 10px; }
+  .cstat { display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; border-radius: 10px;
+    background: var(--surface); min-width: 150px; flex: 1 1 150px; }
+  .cstat-icon { flex: none; width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+    background: var(--paper); color: var(--muted); border: 1px solid var(--rule); }
+  .cstat-icon svg { width: 18px; height: 18px; }
+  .cstat-v { font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .cstat-l { font-size: var(--t-xs); color: var(--muted); }
+  .cstat-s { font-size: var(--t-xs); color: var(--muted); margin-top: 1px; }
+  .cstat.quiet .cstat-v { color: var(--muted); font-weight: 600; }
+  .cstat.warn .cstat-v, .cstat.warn .cstat-s { color: var(--stop); }
+  .cstat .measuring::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+    border: 2px solid var(--rule); border-top-color: var(--accent); border-radius: 50%; animation: cspin .8s linear infinite;
+    vertical-align: -1px; }
+  @keyframes cspin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .cstat .measuring::before { animation: none; } }
+  .ccard-store { display: grid; gap: 6px; min-width: 0; }
+  .ccard-store .store-label { font-size: var(--t-sm); font-weight: 600; color: var(--ink); }
+  .ccard-store .store-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+  .ccard-store code.path { flex: 1 1 260px; min-width: 0; font-family: var(--mono); font-size: var(--t-xs);
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+  .ccard-store .path-act { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+  .ccard-store .path-act svg { width: 16px; height: 16px; }
+  .ccard-mid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 14px; align-items: end; }
+  .ccard-alert { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border-radius: 10px;
+    background: var(--stop-bg); color: var(--stop); font-size: var(--t-sm); font-weight: 600; }
+  .ccard-alert .secondary { margin-left: auto; }
+  .ccard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ccard-actions button { display: inline-flex; align-items: center; gap: 6px; }
+  .ccard-actions svg { width: 16px; height: 16px; }
+  .ccards[data-view="grid"] .ccard-mid { grid-template-columns: minmax(0, 1fr); }
+  @media (max-width: 760px) {
+    .ccard-mid { grid-template-columns: minmax(0, 1fr); }
+    .ccard-top { grid-template-columns: auto minmax(0, 1fr) auto; }
+    .coll-search { flex: 1 1 100%; }
+  }
   /* the theme's selection report: what was accepted, what not and why */
   #selection-overlay { display: none; position: fixed; inset: 0; z-index: 998;
     background: rgba(15,23,42,.45); backdrop-filter: blur(2px); align-items: center; justify-content: center;
@@ -528,7 +612,6 @@
   .form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
     margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--rule); }
   .coll-status { color: var(--muted); font-size: var(--t-sm); }
-  .coll-new { margin-top: 18px; }
   .empty code { font-family: var(--mono); }
   #new-form, .job-form { border: 1px solid var(--rule); border-radius: var(--radius);
     overflow: hidden; background: var(--paper); box-shadow: var(--shadow); }
@@ -1147,51 +1230,34 @@
     <div class="viz-tip" id="viz-tip" role="tooltip" hidden></div>
   </section>
   <section class="view hidden" id="view-collections">
-    <h2 class="eyebrow">Collections</h2>
+    <div class="coll-head">
+      <h2 class="eyebrow page-title">Collections</h2>
+      <button type="button" class="primary" id="c-new-btn"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New collection</button>
+    </div>
     <span class="help">A collection groups the jobs that belong together and gives them a directory of their own. Each job in it inherits the collection's description for anything it does not say itself.</span>
-    <div class="manifest" id="collection-list"><div class="empty">Loading…</div></div>
-    <h2 class="eyebrow coll-new">New collection</h2>
-    <form id="collection-form" class="panel" onsubmit="return false">
-      <div class="form-grid">
-        <div class="field">
-          <label class="field-label" for="c-name">Name <button type="button" class="tip" aria-label="What is this for?" data-help="c-name">?</button></label>
-          <input type="text" id="c-name" placeholder="e.g. Qatar news sites 2026">
-        </div>
-        <div class="field wide">
-          <label class="field-label" for="c-description">Description <span style="font-weight:400;color:var(--muted)">— optional</span></label>
-          <textarea id="c-description" rows="2" placeholder="What this collection is for, in a sentence or two"></textarea>
-        </div>
-        <div class="field wide" id="c-storage-field">
-          <label class="field-label" for="c-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="c-storage">?</button></label>
-          <div class="storage-row">
-            <input type="text" id="c-storage" class="storage-dir" placeholder="Leave empty for the default location">
-            <button type="button" class="secondary browse-btn" data-target="c-storage">Browse…</button>
-          </div>
-            <div class="saves-to" id="c-saves-to" aria-live="polite"></div>
-        </div>
-        <div class="field wide" id="c-storage-fixed" hidden>
-          <span class="field-label">Storage location</span>
-          <div id="c-storage-fixed-path"></div>
-          <p class="help">A collection's storage location is fixed when it is made, and cannot be changed here. To keep a collection somewhere else, create a new collection with that storage location, then delete this one if you no longer need it.</p>
-        </div>
-        <div class="field wide">
-          <label class="check-row" style="gap:6px">
-            <input type="checkbox" id="c-dedup" checked>
-            <span class="check-copy"><strong>Store each payload once across the collection's jobs</strong><span>An image, stylesheet or script a job of this collection already holds is referred to rather than stored again. Replay a job together with its collection.</span></span>
-            <button type="button" class="tip" aria-label="What is this for?" data-help="c-dedup">?</button>
-          </label>
-        </div>
-        <div class="field wide">
-          <label class="field-label">Describe the collection <button type="button" class="tip" aria-label="What is this for?" data-help="c-metadata">?</button></label>
-          <div class="md-editor" id="c-metadata"></div>
-        </div>
+    <div class="coll-toolbar" role="search" aria-label="Find a collection">
+      <label class="coll-search"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg><input type="search" id="coll-search" placeholder="Search collections…" aria-label="Search collections by name, identifier or description"></label>
+      <select id="coll-filter" aria-label="Show">
+        <option value="all">All collections</option>
+        <option value="running">With running jobs</option>
+        <option value="attention">Needs attention</option>
+        <option value="unindexed">Not indexed for search</option>
+        <option value="empty">Empty</option>
+      </select>
+      <span class="spacer"></span>
+      <select id="coll-sort" aria-label="Sort by">
+        <option value="activity">Last activity (newest)</option>
+        <option value="name">Name (A–Z)</option>
+        <option value="size">Size (largest)</option>
+        <option value="jobs">Jobs (most)</option>
+      </select>
+      <div class="coll-views" role="group" aria-label="Layout">
+        <button type="button" class="coll-view" data-view="list" aria-pressed="true" aria-label="List" title="List"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg></button>
+        <button type="button" class="coll-view" data-view="grid" aria-pressed="false" aria-label="Grid" title="Grid"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg></button>
       </div>
-      <div class="form-actions">
-        <button type="button" class="primary" id="c-create-btn">Create collection</button>
-        <button type="button" class="secondary" id="c-cancel-btn" hidden>Cancel</button>
-        <span class="msg" id="c-msg"></span>
-      </div>
-    </form>
+    </div>
+    <div class="msg" id="coll-page-msg" aria-live="polite"></div>
+    <div class="ccards" id="collection-list" data-view="list"><div class="empty">Loading…</div></div>
   </section>
   <section class="view hidden" id="view-settings">
     <h2 class="eyebrow">Storage</h2>
@@ -2290,6 +2356,58 @@
       <button type="button" class="secondary" id="resource-cancel">Cancel</button>
       <button type="button" class="secondary" id="resource-wait" title="Create the job now; it starts by itself once every resource is above its warning level">Wait until it is free</button>
       <button type="button" class="primary" id="resource-start">Start anyway</button>
+    </div>
+  </div>
+</div>
+<div id="collection-overlay" role="dialog" aria-modal="true" aria-labelledby="collection-title">
+  <div class="metadata-card collection-card">
+    <div class="browse-head">
+      <h2 id="collection-title">New collection</h2>
+      <span class="help" id="collection-sub">A folder of its own for jobs that belong together.</span>
+    </div>
+    <div class="md-body">
+    <form id="collection-form" onsubmit="return false">
+      <div class="form-grid">
+        <div class="field">
+          <label class="field-label" for="c-name">Name <button type="button" class="tip" aria-label="What is this for?" data-help="c-name">?</button></label>
+          <input type="text" id="c-name" placeholder="e.g. Qatar news sites 2026">
+        </div>
+        <div class="field wide">
+          <label class="field-label" for="c-description">Description <span style="font-weight:400;color:var(--muted)">— optional</span></label>
+          <textarea id="c-description" rows="2" placeholder="What this collection is for, in a sentence or two"></textarea>
+        </div>
+        <div class="field wide" id="c-storage-field">
+          <label class="field-label" for="c-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="c-storage">?</button></label>
+          <div class="storage-row">
+            <input type="text" id="c-storage" class="storage-dir" placeholder="Leave empty for the default location">
+            <button type="button" class="secondary browse-btn" data-target="c-storage">Browse…</button>
+          </div>
+            <div class="saves-to" id="c-saves-to" aria-live="polite"></div>
+        </div>
+        <div class="field wide" id="c-storage-fixed" hidden>
+          <span class="field-label">Storage location</span>
+          <div id="c-storage-fixed-path"></div>
+          <p class="help">A collection's storage location is fixed when it is made, and cannot be changed here. To keep a collection somewhere else, create a new collection with that storage location, then delete this one if you no longer need it.</p>
+        </div>
+        <div class="field wide">
+          <label class="check-row" style="gap:6px">
+            <input type="checkbox" id="c-dedup" checked>
+            <span class="check-copy"><strong>Store each payload once across the collection's jobs</strong><span>An image, stylesheet or script a job of this collection already holds is referred to rather than stored again. Replay a job together with its collection.</span></span>
+            <button type="button" class="tip" aria-label="What is this for?" data-help="c-dedup">?</button>
+          </label>
+        </div>
+        <div class="field wide">
+          <label class="field-label">Describe the collection <button type="button" class="tip" aria-label="What is this for?" data-help="c-metadata">?</button></label>
+          <div class="md-editor" id="c-metadata"></div>
+        </div>
+      </div>
+    </form>
+    </div>
+    <div class="browse-foot">
+      <span class="msg" id="c-msg" role="alert"></span>
+      <span class="spacer"></span>
+      <button type="button" class="secondary" id="c-cancel-btn">Cancel</button>
+      <button type="button" class="primary" id="c-create-btn">Create collection</button>
     </div>
   </div>
 </div>
@@ -3680,55 +3798,189 @@ function fillCollectionFilter() {
   select.value = chosen;
   if (select.value !== chosen) select.value = "";
 }
+// The Collections page: a toolbar (search, filter, sort, list or grid) and
+// a card per collection. The toolbar's choices are kept in this browser.
+const COLL_VIEW_KEY = "swm.collections";
+const collView = (() => {
+  try { return {filter: "all", sort: "activity", view: "list", ...JSON.parse(localStorage.getItem(COLL_VIEW_KEY) || "{}")}; }
+  catch (_) { return {filter: "all", sort: "activity", view: "list"}; }
+})();
+const collMoreOpen = new Set();
+let collRendered = "";
+const COLL_ICONS = {
+  jobs: '<path d="M4 7h11l-3-3M20 17H9l3 3"/>',
+  disk: '<ellipse cx="12" cy="6" rx="7" ry="2.8"/><path d="M5 6v12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8V6M5 12c0 1.5 3.1 2.8 7 2.8s7-1.3 7-2.8"/>',
+  doc: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M14 3.5v5h5"/>',
+  clock: '<circle cx="12" cy="12" r="8"/><path d="M12 8v4.5l3 2"/>',
+  image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m20 15-4.5-4.5L6 19"/>',
+  search: '<path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5z"/><path d="M14 3.5v5h5M8.5 13h7M8.5 16.5h5"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  play: '<path d="M8 5.5v13l10.5-6.5z"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+  meta: '<rect x="4.5" y="4" width="15" height="16" rx="2"/><path d="M8 9h8M8 12.5h8M8 16h5"/>',
+  index: '<path d="M20 12a8 8 0 1 1-2.3-5.7M20 4.5v5h-5"/>',
+  trash: '<path d="M4.5 7h15M9.5 7V4.8h5V7M6.5 7l.9 12.2a1.5 1.5 0 0 0 1.5 1.3h6.2a1.5 1.5 0 0 0 1.5-1.3L17.5 7"/>',
+  dots: '<circle cx="12" cy="5.5" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="18.5" r="1.4" fill="currentColor"/>',
+};
+const collIcon = name => `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${COLL_ICONS[name]}</svg>`;
 function statusSummary(byStatus) {
-  const parts = Object.entries(byStatus || {}).sort().map(([k, n]) => `${n} ${escapeHtml(k)}`);
+  const order = ["running", "paused", "blocked", "stopping", "waiting", "pending", "completed", "stopped", "failed"];
+  const parts = Object.entries(byStatus || {}).filter(([, n]) => Number(n))
+    .sort(([a], [b]) => (order.indexOf(a) + 99) % 99 - (order.indexOf(b) + 99) % 99 || a.localeCompare(b))
+    .map(([k, n]) => `${n} ${escapeHtml(k)}`);
   return parts.length ? parts.join(" · ") : "no jobs yet";
+}
+function collNeedsAttention(c) {
+  return Boolean((c.index && Number(c.index.orphaned)) || (c.warc_index && c.warc_index.status === "failed"));
+}
+function collDate(iso) {
+  const t = Date.parse(iso || "");
+  if (!Number.isFinite(t)) return "—";
+  return new Date(t).toLocaleString(undefined, {day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit"});
+}
+function cstat(icon, value, label, sub = "", cls = "") {
+  return `<div class="cstat ${cls}"><span class="cstat-icon">${collIcon(icon)}</span><div><div class="cstat-v">${value}</div>`
+    + `<div class="cstat-l">${label}</div>${sub ? `<div class="cstat-s">${sub}</div>` : ""}</div></div>`;
+}
+function collSizeStat(c) {
+  if (c.bytes == null) return cstat("disk", `<span class="measuring">Calculating…</span>`, "on disk", "", "quiet");
+  return cstat("disk", fmtBytes(Number(c.bytes) || 0), "on disk", c.bytes_measuring ? `<span class="measuring">recalculating</span>` : "");
+}
+function collReusedStat(c) {
+  if (c.policy && c.policy.dedup_across_jobs === false)
+    return cstat("image", "Off", "payloads reused", "Each job keeps its own copy", "quiet");
+  if (c.index && Number(c.index.revisits))
+    return cstat("image", Number(c.index.revisits).toLocaleString(), "payloads reused",
+                 `${fmtBytes(Number(c.index.bytes_saved) || 0)} not stored twice`);
+  return cstat("image", "None yet", "payloads reused", "Nothing repeated across its jobs yet", "quiet");
+}
+function collSearchStat(c) {
+  const wi = c.warc_index || {};
+  if (wi.status === "running")
+    return cstat("search", `<span class="measuring">Indexing…</span>`, "search documents",
+                 `job #${escapeHtml(String(wi.current_job || "…"))} · ${Number(wi.documents || 0).toLocaleString()} so far`);
+  if (wi.status === "failed")
+    return cstat("search", "Failed", "search documents", escapeHtml(wi.error || "No reason recorded"), "warn");
+  if (wi.status === "done")
+    return cstat("search", Number(wi.documents || 0).toLocaleString(), "search documents", `from ${Number(wi.jobs_done || 0)} job(s)`);
+  return cstat("search", "Not indexed", "search documents", "Not searchable yet", "quiet");
+}
+function collStorage(c) {
+  const p = escapeHtml(c.root_dir || "");
+  const cap = typeof openFolderCapability !== "undefined" && openFolderCapability;
+  const open = cap && cap.available
+    ? `<button type="button" class="act path-act open-path" data-kind="collections" data-id="${Number(c.id)}" aria-label="Open this folder in the file manager">${PATH_ICONS.open}<span class="path-act-label">Open</span></button>` : "";
+  return `<div class="ccard-store"><span class="store-label">Storage location</span><div class="store-row">`
+    + `<code class="path" title="${p}">${p}</code>`
+    + `<button type="button" class="act path-act copy-path" data-path="${p}" aria-label="Copy the folder path">${PATH_ICONS.copy}<span class="path-act-label">Copy</span></button>${open}</div></div>`;
+}
+function collMenu(c) {
+  const id = Number(c.id);
+  const wi = c.warc_index || {};
+  const busy = Number(c.active_jobs) > 0;
+  const indexLabel = wi.status === "running" ? "Indexing for search…"
+    : wi.status === "done" ? `Index for search again (${Number(wi.documents || 0).toLocaleString()})`
+    : wi.status === "failed" ? "Index for search (retry)" : "Index for search";
+  const item = (icon, label, onclick, extra = "") =>
+    `<button type="button" role="menuitem" onclick="closeCollMenus(); ${onclick}" ${extra}>${collIcon(icon)}<span>${label}</span></button>`;
+  return `<details class="more ccard-more" ${collMoreOpen.has(id) ? "open" : ""} ontoggle="collMoreToggled(${id}, this.open)">
+    <summary aria-label="More actions for ${escapeHtml(c.name)}" title="More actions">${collIcon("dots")}</summary>
+    <div class="menu" role="menu">
+      ${item("edit", "Edit", `editCollection(${id})`, `title="Change the name, description or duplicates setting"`)}
+      ${item("meta", "Metadata", `describeCollection(${id})`, `title="Describe the collection: the fields its jobs inherit"`)}
+      <hr>
+      ${item("search", indexLabel, `indexCollectionWarcs(${id})`, `${busy || wi.status === "running" ? "disabled" : ""} title="Run warc-indexer over the collection's WARC files for full-text search"`)}
+      ${item("index", "Rebuild duplicate index", `rebuildIndex(${id})`, `${busy ? "disabled" : ""} title="Read the WARC files back into the index of payloads stored once"`)}
+      <hr>
+      ${item("trash", "Delete", `delCollection(${id})`, `class="danger" title="Delete this collection; you are told what it holds and asked to confirm"`)}
+    </div>
+  </details>`;
+}
+function collMoreToggled(id, open) {
+  // one menu open at a time; remembered so a refresh keeps it open
+  if (open) { collMoreOpen.clear(); collMoreOpen.add(id); } else collMoreOpen.delete(id);
+  $$(".ccard-more[open]").forEach(d => { if (!collMoreOpen.has(Number(d.closest(".ccard").dataset.id))) d.open = false; });
+}
+function closeCollMenus() { collMoreOpen.clear(); $$(".ccard-more[open]").forEach(d => { d.open = false; }); }
+function collCard(c) {
+  const id = Number(c.id), jobs = Number(c.jobs) || 0;
+  const orphaned = c.index && Number(c.index.orphaned);
+  return `<article class="ccard" data-id="${id}" aria-label="${escapeHtml(c.name)}">
+    <div class="ccard-top">
+      <span class="kind-icon kind-collection ccard-icon" aria-hidden="true"></span>
+      <div class="ccard-head">
+        <h3 class="ccard-name">${escapeHtml(c.name)}</h3>
+        <div class="ccard-slug">${escapeHtml(c.slug)}</div>
+        ${c.description ? `<p class="ccard-desc">${escapeHtml(c.description)}</p>` : ""}
+      </div>
+      ${collMenu(c)}
+    </div>
+    <div class="ccard-stats">
+      ${cstat("jobs", jobs, `job${jobs === 1 ? "" : "s"}`, jobs ? statusSummary(c.by_status) : "", Number(c.active_jobs) ? "" : (jobs ? "" : "quiet"))}
+      ${collSizeStat(c)}
+      ${cstat("doc", Number(c.metadata_fields) || 0, `metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}`)}
+      ${cstat("clock", escapeHtml(collDate(c.last_activity)), "last activity")}
+    </div>
+    <div class="ccard-mid">
+      ${collStorage(c)}
+      <div class="ccard-stats">${collReusedStat(c)}${collSearchStat(c)}</div>
+    </div>
+    ${orphaned ? `<div class="ccard-alert" role="status">${Number(orphaned).toLocaleString()} page(s) are missing their original: a job they referred to was deleted.<button type="button" class="secondary" onclick="recrawlOrphans(${id})">Re-crawl them</button></div>` : ""}
+    <div class="ccard-actions">
+      <button type="button" class="primary" onclick="collectionJobs(${id})">${collIcon("list")}View jobs</button>
+      <button type="button" class="secondary" onclick="replayCollection(${id})">${collIcon("play")}Replay</button>
+    </div>
+  </article>`;
+}
+function shownCollections() {
+  const q = ($("#coll-search").value || "").trim().toLowerCase();
+  const keep = {
+    all: () => true,
+    running: c => Number(c.active_jobs) > 0,
+    attention: collNeedsAttention,
+    unindexed: c => !(c.warc_index && c.warc_index.status === "done"),
+    empty: c => !Number(c.jobs),
+  }[collView.filter] || (() => true);
+  const by = {
+    activity: (a, b) => String(b.last_activity || "").localeCompare(String(a.last_activity || "")),
+    name: (a, b) => String(a.name).localeCompare(String(b.name)),
+    size: (a, b) => (Number(b.bytes) || 0) - (Number(a.bytes) || 0),
+    jobs: (a, b) => (Number(b.jobs) || 0) - (Number(a.jobs) || 0),
+  }[collView.sort] || (() => 0);
+  return lastCollections
+    .filter(c => !q || [c.name, c.slug, c.description].some(v => String(v || "").toLowerCase().includes(q)))
+    .filter(keep).sort(by);
 }
 function renderCollections() {
   const box = $("#collection-list");
+  box.dataset.view = collView.view;
+  $("#coll-filter").value = collView.filter;
+  $("#coll-sort").value = collView.sort;
+  $$(".coll-view").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === collView.view)));
+  let html;
   if (!lastCollections.length) {
-    box.innerHTML = `<div class="empty">No collections yet. Create one below, or from any job form.</div>`;
-    return;
+    html = `<div class="empty">No collections yet. Make one with New collection, or from any job form.</div>`;
+  } else {
+    const shown = shownCollections();
+    html = shown.length ? shown.map(collCard).join("")
+      : `<div class="empty">No collection matches. <button type="button" class="linkish" onclick="clearCollFilters()">Show all collections</button></div>`;
   }
-  const rows = lastCollections.map(c => {
-    const jobs = Number(c.jobs) || 0;
-    const notes = [];
-    if (c.index && Number(c.index.orphaned))
-      notes.push(`<div class="coll-status warn">${Number(c.index.orphaned)} page(s) missing their original <button type="button" class="secondary" style="margin-left:4px" onclick="recrawlOrphans(${Number(c.id)})">Re-crawl</button></div>`);
-    if (c.index && Number(c.index.revisits))
-      notes.push(`<div class="coll-status">${Number(c.index.revisits).toLocaleString()} payloads reused · ${fmtBytes(Number(c.index.bytes_saved) || 0)} not stored twice</div>`);
-    else if (c.policy && c.policy.dedup_across_jobs === false)
-      notes.push(`<div class="coll-status">stored in full per job</div>`);
-    const indexLine = collectionIndexLine(c.warc_index);
-    if (indexLine) notes.push(indexLine);
-    return `
-    <article class="coll" aria-label="${escapeHtml(c.name)}">
-      <div class="coll-main">
-        <div class="coll-title"><span class="coll-name"><span class="kind-icon kind-collection" aria-hidden="true"></span>${escapeHtml(c.name)}</span><span class="coll-slug">${escapeHtml(c.slug)}</span></div>
-        ${c.description ? `<div class="coll-desc">${escapeHtml(c.description)}</div>` : ""}
-        <div class="coll-meta">
-          <span><b>${jobs}</b> job${jobs === 1 ? "" : "s"}${jobs ? ` · ${statusSummary(c.by_status)}` : ""}</span>
-          <span><b>${fmtBytes(Number(c.bytes) || 0)}</b> on disk</span>
-          <span><b>${Number(c.metadata_fields) || 0}</b> metadata field${Number(c.metadata_fields) === 1 ? "" : "s"}</span>
-          ${c.last_activity ? `<span>last activity <b>${escapeHtml(String(c.last_activity).slice(0, 16).replace("T", " "))}</b></span>` : ""}
-        </div>
-        ${storedIn(c.root_dir, "collections", c.id)}
-        ${notes.length ? `<div class="coll-notes">${notes.join("")}</div>` : ""}
-      </div>
-      <div class="coll-actions">
-        <button type="button" class="secondary" onclick="collectionJobs(${Number(c.id)})">Jobs</button>
-        <button type="button" class="secondary" onclick="editCollection(${Number(c.id)})" title="Change the name, description or store-once policy; the identifier and the directory are fixed at creation">Edit</button>
-        <button type="button" class="secondary" onclick="describeCollection(${Number(c.id)})">Describe</button>
-        <button type="button" class="secondary" onclick="replayCollection(${Number(c.id)})">Replay</button>
-        <button type="button" class="secondary" onclick="indexCollectionWarcs(${Number(c.id)})" ${Number(c.active_jobs) || (c.warc_index && c.warc_index.status === "running") ? "disabled" : ""} title="Run warc-indexer over every crawl's and recording's WARC files in the collection; each document carries the collection's name">${c.warc_index && c.warc_index.status === "running" ? "Indexing…" : c.warc_index && c.warc_index.status === "done" ? `Re-index WARCs · ${Number(c.warc_index.documents || 0).toLocaleString()}` : c.warc_index && c.warc_index.status === "failed" ? "Index WARCs · retry" : "Index WARCs"}</button>
-        <button type="button" class="secondary" onclick="rebuildIndex(${Number(c.id)})" ${Number(c.active_jobs) ? "disabled" : ""} title="Read the collection's WARC files back into its payload index: for jobs made before the index existed, or an index that was lost">Rebuild index</button>
-        <span class="spacer"></span>
-        <button type="button" class="act ghost danger" onclick="delCollection(${Number(c.id)})" title="Delete this collection; you are told what it holds and asked to confirm">Delete</button>
-      </div>
-    </article>`;
-  }).join("");
-  box.innerHTML = rows;
+  // redrawn only when something changed, so an open menu or a selection survives the refresh
+  if (html === collRendered) return;
+  collRendered = html;
+  box.innerHTML = html;
 }
+function saveCollView() {
+  try { localStorage.setItem(COLL_VIEW_KEY, JSON.stringify(collView)); } catch (_) { /* per-browser convenience */ }
+  renderCollections();
+}
+function clearCollFilters() { $("#coll-search").value = ""; collView.filter = "all"; saveCollView(); }
+$("#coll-search").addEventListener("input", renderCollections);
+$("#coll-filter").addEventListener("change", e => { collView.filter = e.target.value; saveCollView(); });
+$("#coll-sort").addEventListener("change", e => { collView.sort = e.target.value; saveCollView(); });
+$$(".coll-view").forEach(b => b.addEventListener("click", () => { collView.view = b.dataset.view; saveCollView(); }));
+document.addEventListener("click", e => { if (!e.target.closest(".ccard-more")) { if (collMoreOpen.size) closeCollMenus(); } });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && collMoreOpen.size) closeCollMenus(); });
 function collectionIndexLine(wi) {
   if (!wi || !wi.status) return "";
   const n = Number(wi.documents || 0).toLocaleString();
@@ -3818,15 +4070,17 @@ async function recrawlOrphans(id) {
     nameField.value = `recrawl-${collection ? collection.slug : id}`;
   setMessage(`${urls.length} page(s) whose original was deleted are set as seeds${(found.urls || []).length > urls.length ? " (the first 200)" : ""}. Start the crawl to store them again.`, "ok");
 }
-// The form below the list makes a collection, or, after Edit on a row,
-// changes one: its name, description and policy. The identifier and the
-// directory are fixed at creation, and the metadata has its own editor.
-let editingCollectionId = null;
+// One pop-up makes a collection (New collection) or changes one (Edit):
+// its name, description and policy. The identifier and the directory are
+// fixed at creation, and the metadata has its own editor (Metadata).
+let editingCollectionId = null, collectionReturnFocus = null;
 function collectionFormMode(edit) {
   const editing = !!edit;
-  $(".coll-new").textContent = editing ? `Edit collection: ${edit.name}` : "New collection";
+  $("#collection-title").textContent = editing ? `Edit collection: ${edit.name}` : "New collection";
+  $("#collection-sub").textContent = editing
+    ? `Identifier ${edit.slug}. The name, description and duplicates setting can change; the identifier and folder cannot.`
+    : "A folder of its own for jobs that belong together.";
   $("#c-create-btn").textContent = editing ? "Save changes" : "Create collection";
-  $("#c-cancel-btn").hidden = !editing;
   // a collection's folder is fixed when it is made: while editing, the
   // storage field and Browse are not shown at all, only where it is
   $("#c-storage-field").hidden = editing;
@@ -3843,6 +4097,23 @@ function resetCollectionForm() {
   collectionMetadata.load({job: [], seeds: {}});
   collectionFormMode(null);
 }
+function openCollectionDialog() {
+  collectionReturnFocus = document.activeElement;
+  $("#c-msg").textContent = ""; $("#c-msg").className = "msg";
+  $("#collection-overlay").classList.add("open");
+  $("#c-name").focus();
+}
+function closeCollectionDialog() {
+  $("#collection-overlay").classList.remove("open");
+  resetCollectionForm();
+  $("#c-msg").textContent = "";
+  if (collectionReturnFocus && document.contains(collectionReturnFocus)) collectionReturnFocus.focus();
+  collectionReturnFocus = null;
+}
+function newCollection() {
+  resetCollectionForm();
+  openCollectionDialog();
+}
 function editCollection(id) {
   const c = lastCollections.find(x => Number(x.id) === Number(id));
   if (!c) return;
@@ -3851,9 +4122,7 @@ function editCollection(id) {
   $("#c-description").value = c.description || "";
   $("#c-dedup").checked = !(c.policy && c.policy.dedup_across_jobs === false);
   collectionFormMode(c);
-  $("#c-msg").textContent = ""; $("#c-msg").className = "msg";
-  $("#collection-form").scrollIntoView({behavior: "smooth", block: "start"});
-  $("#c-name").focus();
+  openCollectionDialog();
 }
 async function createCollection() {
   const msg = $("#c-msg");
@@ -3906,14 +4175,23 @@ async function createCollection() {
       await api("/api/collections", {method: "POST", headers: {"Content-Type": "application/json"},
                                      body: JSON.stringify(body)});
     }
-    resetCollectionForm();
-    say(editing ? "Collection updated." : "Collection created.", "ok");
+    closeCollectionDialog();
+    const page = $("#coll-page-msg");
+    page.textContent = editing ? `Collection "${name}" updated.` : `Collection "${name}" created.`;
+    page.className = "msg ok";
+    setTimeout(() => { if (page.textContent.includes(name)) page.textContent = ""; }, 6000);
     refresh();
   } catch (e) { say(e.message, "err"); }
   finally { $("#c-create-btn").disabled = false; }
 }
 $("#c-create-btn").addEventListener("click", createCollection);
-$("#c-cancel-btn").addEventListener("click", () => { resetCollectionForm(); $("#c-msg").textContent = ""; });
+$("#c-cancel-btn").addEventListener("click", closeCollectionDialog);
+$("#c-new-btn").addEventListener("click", newCollection);
+$("#collection-overlay").addEventListener("click", e => { if (e.target.id === "collection-overlay") closeCollectionDialog(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && $("#collection-overlay").classList.contains("open") && !confirmDecision
+      && !browseTarget) closeCollectionDialog();
+});
 async function rebuildIndex(id) {
   const c = lastCollections.find(x => Number(x.id) === Number(id));
   const name = c ? c.name : `#${id}`;
