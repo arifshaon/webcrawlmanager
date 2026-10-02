@@ -6,9 +6,9 @@ it, with its images, stylesheets, scripts, fonts, data requests and media.
 You can open an archive again later and browse it as it was, on your own
 computer, without anything being uploaded.
 
-SWM is made for people who need a faithful record of web content, not a
-screenshot: archivists and librarians, researchers, journalists, and legal
-and compliance teams.
+SWM is for anyone who wants to capture a website or other web-based
+content and keep a faithful record of it, not a screenshot: archivists and
+librarians, researchers, and anyone else preserving what is on the web.
 
 > **Licence:** SWM is source-available under the
 > [PolyForm Noncommercial License 1.0.0](LICENSE). Non-commercial use is
@@ -64,32 +64,67 @@ You can work from the **web dashboard** or the **command line**.
 
 ## Install
 
-### On Windows: the one-file installer
+### On Windows: the installer
 
-`install/SWM-Setup-1.0.ps1` installs SWM with its own private copy of
-Python and the browser it needs. It does not touch any Python already on
-your computer.
+1. Open the repository's
+   [latest release](https://github.com/arifshaon/webcrawlmanager/releases/latest)
+   and download **`SWM-Setup-<version>.exe`** (for example
+   `SWM-Setup-1.1.1.exe`).
+2. Run it and follow the steps:
+   - **Install mode:** if SWM is already installed in the chosen folder,
+     **Update existing installation** is selected. An update keeps your
+     configuration, jobs and settings, and refreshes SWM and everything it
+     needs. **Fresh installation / reinstall** sets SWM up from scratch.
+   - **Source:** **Latest published release** (recommended), or a
+     **branch** of this repository, chosen from a list loaded from
+     GitHub, if you want to try work in progress.
+   - **Dashboard port:** 8080 by default. **Check / find available**
+     finds a free port if 8080 is in use.
+   - Optionally, a desktop shortcut. A Start menu shortcut is always
+     made.
+3. At the end, the installer can start SWM. Later, start it from the
+   **Simple Webcrawl Manager** shortcut, or with **Start SWM Server.cmd**
+   in the installation folder
+   (`%LOCALAPPDATA%\Programs\Simple Webcrawl Manager` by default). It
+   opens the dashboard in your browser at <http://127.0.0.1:8080>, or the
+   port you chose.
 
-1. Download `SWM-Setup-1.0.ps1` from the `install` folder of this
-   repository.
-2. Right-click it and choose **Run with PowerShell**, or run it from a
-   PowerShell window:
+What the installer sets up:
 
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\SWM-Setup-1.0.ps1
-   ```
+- its own private Python (CPython 3.13) and the browser SWM needs, all
+  inside the installation folder. Any Python already on your computer is
+  left alone;
+- SWM with every optional feature: Instagram listing (gallery-dl),
+  YouTube capture (yt-dlp) and the AI theme judge, plus FFmpeg for joining
+  YouTube video and audio;
+- `START-HERE.txt`, which explains how to start SWM and change its port.
+  To change the port later, edit `server-port.txt` in the installation
+  folder and restart SWM;
+- `swm.cmd`, for the command line.
 
-3. When it finishes, start SWM with **Start SWM Server.cmd** in the
-   installation folder, which is
-   `%LOCALAPPDATA%\Programs\Simple Webcrawl Manager` unless you chose
-   another. Then open <http://127.0.0.1:8080> in your browser.
+Not included: **Deno** (or Node.js), which YouTube captures need for some
+videos. Install it with `winget install --id DenoLand.Deno -e` if the
+YouTube tab says it is missing.
 
-The installation folder also has `swm.cmd` for the command line. The
-installer's options (`-InstallDir`, `-DashboardPort`, `-ReplayPort`,
-`-Branch` and others) are listed at the top of the script; `-Branch` sets
-which branch of this repository it installs. If a download fails, the
-installer shows the address so you can download the file yourself and
-select it. More detail: [install/README.md](install/README.md).
+If a download fails during installation, the installer shows the address
+so you can download the file yourself and select it, try again, or stop.
+
+The installer is signed with a self-signed certificate, which Windows does
+not trust by default, so Windows may warn you before it runs. Each release
+lists the installer's SHA-256 checksum, and its origin can be checked with
+`gh attestation verify SWM-Setup-1.1.1.exe --repo arifshaon/webcrawlmanager`.
+
+**Without the .exe:** the same installer is available as a PowerShell
+script, `install/SWM-Setup-1.1.1.ps1` (also attached to each release):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\SWM-Setup-1.1.1.ps1
+```
+
+Its options include `-InstallMode Fresh|Update`,
+`-SourceMode LatestRelease|Branch` with `-Branch <name>`, `-InstallDir`,
+`-DashboardPort` and `-ReplayPort`. More detail:
+[install/README.md](install/README.md).
 
 ### On any system: install from source
 
@@ -121,24 +156,23 @@ Install these only for the features that need them.
 | The AI judge for themes, using Claude | `pip install -e ".[theme-ai]"` (a local model through Ollama or LM Studio needs nothing extra) |
 | Full-text search of crawls and recordings | Java 11 or newer, then build the bundled warc-indexer once; see [Search indexing](docs/user-guide.md#search-indexing) |
 
-Install Python packages into the same Python that runs SWM. The Windows
-installer does not add these extras; for an installed copy, use its own
-Python, for example
-`"<install folder>\.runtime\python\python.exe" -m pip install "yt-dlp[default,curl-cffi]"`.
-The dashboard's YouTube tab and **Settings** page report what they found
-and what is missing.
+Install Python packages into the same Python that runs SWM. (The Windows
+installer already includes the Python extras and FFmpeg.) The dashboard's
+YouTube tab and **Settings** page report what they found and what is
+missing.
 
 ## Get started
 
 ### With the dashboard
 
-1. Start it:
+1. Start it. On Windows after using the installer, use the **Simple
+   Webcrawl Manager** shortcut, which also opens the dashboard. Otherwise:
 
    ```bash
    python -m webarc.cli serve
    ```
 
-2. Open <http://127.0.0.1:8080>.
+2. Open <http://127.0.0.1:8080> (or the port you chose).
 3. Go to **Collections** and choose **New collection**, for example
    "Library news 2026". (You can skip this; jobs without a collection go
    into one called *Default*.)
@@ -168,8 +202,8 @@ python -m webarc.cli replay ./warcs/example-session
 ```
 
 `config.yaml` in this repository is a commented example of a crawl
-configuration. If you installed with the Windows installer, use `swm`
-in place of `python -m webarc.cli`.
+configuration. If you used the Windows installer, run `swm.cmd` from the
+installation folder in place of `python -m webarc.cli`.
 
 ## Documentation
 

@@ -269,20 +269,40 @@ then `SWM_JAVA`, `SWM_WARC_INDEXER_JAR` and `SWM_WARC_INDEXER_CONF`, then
 
 ## The Windows installer and releases
 
-`install/` holds the Windows installers and the scripts that build them;
-[install/README.md](../install/README.md) explains the layout and build.
+`install/` holds the Windows installer and the scripts that build it;
+[install/README.md](../install/README.md) has more on the layout and build.
 
-- `install/SWM-Setup-1.0.ps1` is the one-file installer for SWM 1.0. It
-  installs a private Python (CPython 3.13, with pinned SHA-256 checks), SWM
-  and Playwright's Chromium under the installation folder, and writes the
-  launchers `Start SWM Server.cmd` and `swm.cmd`. Its `-Branch` option
-  chooses which branch it installs.
-- The older Inno Setup installers (`SWM-Windows-Setup.iss`,
-  `build-windows-installer.ps1`) build `SWM-Setup-<version>.exe`.
-- `.github/workflows/build-unsigned-windows-installer.yml` builds an
-  unsigned installer for testing; `.github/workflows/release-windows-1.0.yml`
-  builds and publishes the signed 1.0 release. Production releases should
-  be signed with a trusted code-signing certificate and timestamp.
+- **The installer** is an Inno Setup wizard, `install/SWM-Windows-Setup.iss`,
+  around a PowerShell engine, `install/install-windows.ps1`, which is
+  published unchanged as `install/SWM-Setup-<version>.ps1` (the release
+  workflow checks that the two are identical). The engine installs a
+  private Python (CPython 3.13, with pinned SHA-256 checks) and uv, SWM
+  with every optional extra declared in `pyproject.toml`, and Playwright's
+  Chromium under `<install folder>\.runtime`; copies Playwright's FFmpeg to
+  `.runtime\tools` for yt-dlp; picks free dashboard and replay ports; and
+  writes `Start SWM Server.cmd`, `swm.cmd`, `server-port.txt`,
+  `START-HERE.txt` and `.swm-install.json` (what was installed, from
+  where, and when).
+- **Its options:** `-SourceMode LatestRelease` (the latest published
+  GitHub release, the default) or `-SourceMode Branch -Branch <name>`;
+  `-InstallMode Fresh` (replaces the private runtime) or `Update` (keeps
+  the configuration, state and runtime where possible; `config.yaml` is
+  backed up before the source is refreshed); `-InstallDir`,
+  `-DashboardPort`, `-ReplayPort`, `-SourceArchivePath` (install from a
+  downloaded source zip) and `-NonInteractive`. The wizard offers
+  the same choices, loading the branch list from GitHub.
+- **Releases** are built by `.github/workflows/release-windows-<version>.yml`
+  (currently 1.1.1) on GitHub's Windows runners: it compiles the wizard,
+  signs it, attaches the `.exe`, the `.ps1` and their SHA-256 checksums to
+  a GitHub release, and records build provenance that
+  `gh attestation verify` checks. The signing certificate is self-signed,
+  so Windows does not trust it by default; production releases should use
+  a trusted code-signing certificate and timestamp.
+  `.github/workflows/build-unsigned-windows-installer.yml` builds an
+  unsigned installer for testing.
+- The version is `version` in `pyproject.toml`.
+- Older installers (`SWM-Setup-0.*.zip`, `SWM-Setup-1.0.*`) are kept in
+  `install/` for reference.
 
 ## Research notes
 
