@@ -229,7 +229,11 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(page.input_value("#coll-sort"), "name")
 
         card = page.locator(f".ccard[data-id='{busy['id']}']")
-        card.locator(".ccard-more summary").click()
+        summary = card.locator(".ccard-more summary")
+        box, dots = summary.bounding_box(), summary.locator("svg").bounding_box()
+        self.assertAlmostEqual(dots["x"] + dots["width"] / 2, box["x"] + box["width"] / 2, delta=1)   # dots centred
+        self.assertAlmostEqual(dots["y"] + dots["height"] / 2, box["y"] + box["height"] / 2, delta=1)
+        summary.click()
         page.wait_for_timeout(2500)                           # a refresh comes and goes
         self.assertTrue(card.locator(".ccard-more").evaluate("d => d.open"))
         page.keyboard.press("Escape")
