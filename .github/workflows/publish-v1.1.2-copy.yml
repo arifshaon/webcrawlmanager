@@ -1,0 +1,39 @@
+name: Publish exact SWM v1.1.2 asset copy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/publish-v1.1.2-copy.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact main snapshot
+        uses: actions/checkout@v4
+        with:
+          ref: cfe732f17b4fc5fac0175268757f880c52e9b756
+          fetch-depth: 0
+
+      - name: Verify exact installer asset
+        shell: bash
+        run: |
+          test -f install/SWM-Setup-1.1.1.exe
+          echo "55c7fcba6a38e89efc36a1ec87ede46fa2721d2507307ac660e8f3af42601222  install/SWM-Setup-1.1.1.exe" | sha256sum -c -
+
+      - name: Publish v1.1.2 without rebuilding or renaming installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if gh release view v1.1.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v1.1.2 already exists; refusing to overwrite it."
+            exit 1
+          fi
+
+          gh release create v1.1.2             install/SWM-Setup-1.1.1.exe             --repo "$GITHUB_REPOSITORY"             --target "cfe732f17b4fc5fac0175268757f880c52e9b756"             --title "Simple Webcrawl Manager 1.1.2"             --notes "Release tag v1.1.2 from the current main snapshot. Installer asset is the unchanged SWM-Setup-1.1.1.exe."
