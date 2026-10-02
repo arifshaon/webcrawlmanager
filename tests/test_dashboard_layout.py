@@ -340,6 +340,19 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class HeadingTests(DashboardTestCase):
+    """Every page says what it is in a dark, bold title, and its sections
+    in headings of their own; none whispers in the small grey label style."""
+
+    def test_every_page_has_a_title_and_no_heading_is_a_grey_label(self):
+        for _, view in self.views():
+            with self.subTest(view):
+                self.assertIn('class="page-title"', self.section(view))
+        self.assertEqual(re.findall(r'<h\d class="eyebrow', self.markup), [])
+        self.assertIn('<h3 class="section-title">Storage</h3>', self.section("settings"))
+        self.assertIn("`All jobs (${shown.length})`", self.script)
+
+
 class StorageLocationTests(DashboardTestCase):
     """Where a job's or collection's files are is always on screen, and an
     empty storage field says what it means, path and all."""

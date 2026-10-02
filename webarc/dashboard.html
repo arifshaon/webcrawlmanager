@@ -220,6 +220,14 @@
     font-family: var(--mono); font-size: var(--t-xs); letter-spacing: .08em;
     text-transform: uppercase; color: var(--faint); margin: 28px 0 10px;
   }
+  /* two levels of heading, the same on every page: the page's title, and
+     the sections within it. Dark and bold, so a page says what it is. */
+  .page-title { font-family: var(--ui); font-size: var(--t-xl); font-weight: 800; color: var(--ink);
+    line-height: 1.2; margin: 0 0 4px; }
+  .page-lead { color: var(--muted); font-size: var(--t-sm); margin: 0 0 18px; max-width: 90ch; }
+  .section-title { font-family: var(--ui); font-size: var(--t-lg); font-weight: 700; color: var(--ink);
+    line-height: 1.3; margin: 30px 0 10px; }
+  .page-lead + .section-title { margin-top: 8px; }
   .storage { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px;
     background: var(--rule); border: 1px solid var(--rule);
     border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
@@ -269,10 +277,7 @@
   .collection-card .form-grid { margin: 0; }
   /* the Collections page: a toolbar, then the collections as cards */
   .coll-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .coll-head .eyebrow { margin-right: auto; }
-  /* the page's title: it should stand out, not whisper like a section label */
-  .coll-head .eyebrow.page-title { font-family: var(--ui); font-size: var(--t-xl); font-weight: 800; color: var(--ink);
-    letter-spacing: 0; text-transform: none; }
+  .coll-head .page-title { margin: 0 auto 0 0; }
   .coll-head .primary, .coll-head .primary svg { display: inline-flex; align-items: center; gap: 6px; }
   .coll-head .primary svg { width: 16px; height: 16px; }
   .coll-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 14px 0 12px; }
@@ -858,7 +863,7 @@
   .check-inline { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-sm); }
   /* ---- overview cards ---- */
   .overview-head { display: flex; align-items: baseline; gap: 12px; margin: 0 0 10px; }
-  .overview-head .eyebrow { margin: 0; }
+  .overview-head .page-title { margin: 0; }
   .customise { position: relative; margin-left: auto; }
   .customise > summary { list-style: none; cursor: pointer; font: inherit; font-size: var(--t-sm);
     color: var(--muted); border: 1px solid var(--rule); border-radius: 8px; padding: 4px 10px; background: var(--paper); }
@@ -979,7 +984,7 @@
   .panel { position: relative; background: var(--paper); border: 1px solid var(--rule); border-radius: 16px; padding: 18px 20px;
     box-shadow: var(--shadow); min-width: 0; }
   .board-head { display: flex; align-items: center; gap: 12px; margin: 0 0 18px; }
-  .board-head .eyebrow { margin: 0; font-family: var(--ui); }
+  .board-head .page-title { margin: 0; }
   /* a card's handle: a pill on its top edge, shown on hover or focus, that
      never covers the card's content; ordering by keyboard is in Customise */
   .bcard-tools { position: absolute; top: -13px; left: 50%; transform: translateX(-50%); z-index: 2;
@@ -1046,7 +1051,7 @@
   .jobs-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 16px;
     background: var(--paper); border: 1px solid var(--rule); border-bottom: 0;
     border-radius: 16px 16px 0 0; padding: 16px 20px 12px; }
-  .jobs-head h2 { margin: 0 auto 0 0; font-size: calc(22px * var(--scale)); font-weight: 700;
+  .jobs-head h3 { margin: 0 auto 0 0; font-size: var(--t-lg); font-weight: 700;
     letter-spacing: -.01em; color: var(--ink); }
   .job-sort { display: flex; align-items: center; gap: 8px; font-size: var(--t-sm); color: var(--muted); }
   .job-sort select { border-radius: 10px; min-height: 36px; }
@@ -1161,7 +1166,7 @@
 <main id="main">
   <section class="view" id="view-jobs">
     <div class="board-head board-only">
-      <h2 class="eyebrow">Overview</h2>
+      <h2 class="page-title">Jobs</h2>
       <details class="customise" id="board-customise">
         <summary aria-label="Customise the overview: show, hide and order its tiles and panels">Customise</summary>
         <div class="menu" id="board-customise-menu"></div>
@@ -1169,7 +1174,7 @@
     </div>
     <div class="board-top board-only" id="board-top"></div>
     <div class="overview-head classic-only">
-      <h2 class="eyebrow">Overview</h2>
+      <h2 class="page-title">Jobs</h2>
       <details class="customise" id="customise">
         <summary aria-label="Customise the overview: show, hide and order its cards">Customise</summary>
         <div class="menu" id="customise-menu"></div>
@@ -1177,7 +1182,7 @@
     </div>
     <div class="cards classic-only" id="overview" aria-label="Overview cards"></div>
     <span class="help" id="resources-note"></span>
-    <h2 class="eyebrow classic-only">Jobs</h2>
+    <h3 class="section-title classic-only">All jobs</h3>
     <div class="filter-bar" id="job-filters">
       <input type="search" id="jf-search" placeholder="Search by name or #id" aria-label="Search jobs by name" autocomplete="off">
       <select id="jf-kind" aria-label="Job type">
@@ -1209,7 +1214,7 @@
       <span class="jf-count" id="jf-count"></span>
     </div>
     <div class="jobs-head board-only">
-      <h2 id="board-jobs-title">Jobs</h2>
+      <h3 id="board-jobs-title">All jobs</h3>
       <label class="job-sort">Sort
         <select id="job-sort" aria-label="Sort jobs">
           <option value="newest">Created (newest)</option>
@@ -1231,7 +1236,7 @@
   </section>
   <section class="view hidden" id="view-collections">
     <div class="coll-head">
-      <h2 class="eyebrow page-title">Collections</h2>
+      <h2 class="page-title">Collections</h2>
       <button type="button" class="primary" id="c-new-btn"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>New collection</button>
     </div>
     <span class="help">A collection groups the jobs that belong together and gives them a directory of their own. Each job in it inherits the collection's description for anything it does not say itself.</span>
@@ -1260,7 +1265,9 @@
     <div class="ccards" id="collection-list" data-view="list"><div class="empty">Loading…</div></div>
   </section>
   <section class="view hidden" id="view-settings">
-    <h2 class="eyebrow">Storage</h2>
+    <h2 class="page-title">Settings</h2>
+    <p class="page-lead">Where captures are stored, when to warn about the machine, search indexing, the AI judge and the dashboard's look.</p>
+    <h3 class="section-title">Storage</h3>
   <div class="storage-default" id="storage-default">
       <label class="field-label" for="storage-root">Default storage location <button type="button" class="tip" aria-label="What is this for?" data-help="storage-root">?</button></label>
       <div class="storage-default-row">
@@ -1271,7 +1278,7 @@
       </div>
       <span class="help" id="storage-help"></span>
     </div>
-    <h2 class="eyebrow">Resource warnings</h2>
+    <h3 class="section-title">Resource warnings</h3>
     <div class="resource-settings" id="resource-settings">
       <label class="check-row" style="gap:6px">
         <input type="checkbox" id="res-enabled">
@@ -1289,7 +1296,7 @@
       </div>
       <span class="help" id="res-help"></span>
     </div>
-    <h2 class="eyebrow">Indexer (warc-indexer, for crawls and recordings)</h2>
+    <h3 class="section-title">Indexer (warc-indexer, for crawls and recordings)</h3>
     <div class="resource-settings" id="indexer-settings">
       <div class="levels">
         <label for="idx-java">Java <button type="button" class="tip" aria-label="What is this for?" data-help="idx-java">?</button>
@@ -1305,7 +1312,7 @@
       </div>
       <span class="help" id="idx-help"></span>
     </div>
-    <h2 class="eyebrow">Theme judge (AI, optional)</h2>
+    <h3 class="section-title">Theme judge (AI, optional)</h3>
     <div class="resource-settings" id="theme-ai-settings">
       <div class="levels">
         <label for="tai-provider">Provider <button type="button" class="tip" aria-label="What is this for?" data-help="tai-provider">?</button>
@@ -1335,7 +1342,7 @@
       </div>
       <span class="help" id="tai-help"></span>
     </div>
-    <h2 class="eyebrow" id="themes-heading">Dashboard themes</h2>
+    <h3 class="section-title" id="themes-heading">Dashboard themes</h3>
     <div class="resource-settings" id="theme-settings">
       <div class="theme-install">
         <label for="theme-file">Install a theme <button type="button" class="tip" aria-label="What is this for?" data-help="theme-install">?</button></label>
@@ -1349,7 +1356,8 @@
     </div>
   </section>
   <section class="view hidden" id="view-new">
-  <h2 class="eyebrow">New job</h2>
+  <h2 class="page-title">New job</h2>
+  <p class="page-lead">Choose what to capture: a website crawl, a recording you browse yourself, or a social media account.</p>
   <div class="mode-tabs job-tabs" role="tablist" aria-label="Job type">
     <button type="button" class="mode-tab active" id="job-tab-crawl"
       data-job="crawl" role="tab" aria-selected="true"><span class="kind-icon kind-crawl" aria-hidden="true"></span>Automated crawl</button>
@@ -5377,7 +5385,7 @@ function renderJobList() {
     ? (filtering ? `${shown.length} of ${lastCrawls.length} jobs` : `${lastCrawls.length} job${lastCrawls.length === 1 ? "" : "s"}`)
     : "";
   $("#jf-clear").hidden = !filtering;
-  $("#board-jobs-title").textContent = `Jobs (${shown.length})`;
+  $("#board-jobs-title").textContent = `All jobs (${shown.length})`;
   const head = `<div class="bhead" aria-hidden="true"><span></span><span>Job</span><span></span><span class="c">Captured</span><span></span><span class="c">Status</span><span>Size · created</span><span></span></div>`;
   $("#manifest").innerHTML = shown.length
     ? head + sortJobs(shown).map(crawlRow).join("")
