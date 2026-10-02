@@ -1,4 +1,5 @@
 name: Release SWM 1.1.1 for Windows
+# compile retry after installer UI validation
 
 on:
   push:
