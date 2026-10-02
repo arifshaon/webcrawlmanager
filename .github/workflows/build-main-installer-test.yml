@@ -1,0 +1,151 @@
+name: Build SWM 1.1.1 test installer on main
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-main-installer-test.yml'
+      - 'install/SWM-Windows-Setup.iss'
+      - 'install/install-windows.ps1'
+      - 'install/run-bootstrap.ps1'
+      - 'install/SWM-Setup-1.1.1.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  INSTALLER_VERSION: '1.1.1'
+  SOURCE_BRANCH: 'main'
+
+jobs:
+  build-test-installer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate installer scripts
+        shell: powershell
+        run: |
+          foreach ($script in @('.\install\install-windows.ps1', '.\install\run-bootstrap.ps1', '.\install\SWM-Setup-1.1.1.ps1')) {
+            if (-not (Test-Path -LiteralPath $script)) {
+              throw "Required installer script is missing: $script"
+            }
+            [void][scriptblock]::Create((Get-Content -LiteralPath $script -Raw))
+          }
+
+          $engineHash = (Get-FileHash -LiteralPath '.\install\install-windows.ps1' -Algorithm SHA256).Hash
+          $plainHash = (Get-FileHash -LiteralPath '.\install\SWM-Setup-1.1.1.ps1' -Algorithm SHA256).Hash
+          if ($engineHash -ne $plainHash) {
+            throw 'SWM-Setup-1.1.1.ps1 is not aligned with install-windows.ps1.'
+          }
+
+          $iss = Get-Content -LiteralPath '.\install\SWM-Windows-Setup.iss' -Raw
+          if ($iss -notmatch '#define AppVersion "1\.1\.1"') {
+            throw 'SWM-Windows-Setup.iss is not version 1.1.1.'
+          }
+
+      - name: Install Inno Setup 6
+        shell: powershell
+        run: |
+          choco install innosetup -y --no-progress
+          $pf86 = [Environment]::GetFolderPath('ProgramFilesX86')
+          $iscc = Join-Path $pf86 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw 'Inno Setup 6 compiler was not found.'
+          }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build SWM 1.1.1
+        shell: powershell
+        run: |
+          $outDir = Join-Path $env:RUNNER_TEMP 'swm-main-test'
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+          & $env:ISCC '/Qp' "/DAppVersion=$env:INSTALLER_VERSION" "/DSourceBranch=$env:SOURCE_BRANCH" "/O$outDir" '.\install\SWM-Windows-Setup.iss'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE."
+          }
+
+          $exe = Join-Path $outDir "SWM-Setup-$env:INSTALLER_VERSION.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Expected installer was not created: $exe"
+          }
+
+          "UNSIGNED_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Self-sign test installer
+        shell: powershell
+        run: |
+          $openssl = Get-Command openssl.exe -ErrorAction SilentlyContinue
+          if (-not $openssl) {
+            $gitOpenSSL = 'C:\Program Files\Git\usr\bin\openssl.exe'
+            if (Test-Path -LiteralPath $gitOpenSSL) {
+              $openssl = Get-Item -LiteralPath $gitOpenSSL
+            }
+          }
+          if (-not $openssl) {
+            choco install openssl -y --no-progress
+            $openssl = Get-Command openssl.exe -ErrorAction SilentlyContinue
+          }
+          if (-not $openssl) {
+            throw 'OpenSSL was not found on the runner.'
+          }
+
+          $certWork = Join-Path $env:RUNNER_TEMP 'swm-main-test-sign'
+          New-Item -ItemType Directory -Path $certWork -Force | Out-Null
+          $keyPath = Join-Path $certWork 'key.pem'
+          $pemPath = Join-Path $certWork 'cert.pem'
+          $pfxPath = Join-Path $certWork 'cert.pfx'
+          $password = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N'))
+          Write-Host "::add-mask::$password"
+
+          & $openssl.Source req -x509 -newkey rsa:2048 -sha256 -days 30 -nodes -keyout $keyPath -out $pemPath -subj '/CN=Simple Webcrawl Manager/O=Arif Shaon' -addext 'keyUsage=critical,digitalSignature' -addext 'extendedKeyUsage=codeSigning'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create test signing certificate.' }
+
+          & $openssl.Source pkcs12 -export -out $pfxPath -inkey $keyPath -in $pemPath -passout "pass:$password" -name 'Simple Webcrawl Manager 1.1.1 main test'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create test PFX.' }
+
+          $pf86 = [Environment]::GetFolderPath('ProgramFilesX86')
+          $signTool = Get-ChildItem -Path (Join-Path $pf86 'Windows Kits\10\bin') -Filter signtool.exe -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signTool) { throw 'signtool.exe was not found.' }
+
+          $target = Join-Path $PWD "install\SWM-Setup-$env:INSTALLER_VERSION.exe"
+          Copy-Item -LiteralPath $env:UNSIGNED_EXE -Destination $target -Force
+
+          & $signTool.FullName sign /f $pfxPath /p $password /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /d "Simple Webcrawl Manager $env:INSTALLER_VERSION main test" /du https://github.com/arifshaon/webcrawlmanager $target
+          if ($LASTEXITCODE -ne 0) { throw 'Authenticode signing failed.' }
+
+          $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  SWM-Setup-$env:INSTALLER_VERSION.exe" | Set-Content -LiteralPath ".\install\SWM-Setup-$env:INSTALLER_VERSION.sha256.txt" -Encoding ascii
+          Write-Host "Test EXE SHA-256: $hash"
+
+      - name: Commit test EXE to main
+        shell: powershell
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -- "install/SWM-Setup-$env:INSTALLER_VERSION.exe" "install/SWM-Setup-$env:INSTALLER_VERSION.sha256.txt"
+
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'The test EXE is already current; nothing to commit.'
+            exit 0
+          }
+
+          git commit -m "Build corrected SWM 1.1.1 test installer"
+          git push origin HEAD:main
