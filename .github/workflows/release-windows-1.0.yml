@@ -8,6 +8,9 @@ on:
       - '.github/workflows/release-windows-1.0.yml'
       - 'install/SWM-Setup-1.0.zip'
       - 'install/SWM-Setup-1.0.ps1'
+      - 'install/install-windows.ps1'
+      - 'install/run-bootstrap.ps1'
+      - 'install/SWM-Windows-Setup.iss'
   workflow_dispatch:
 
 permissions:
@@ -309,7 +312,8 @@ jobs:
             '- RFC 3161 timestamp applied.',
             '- SHA-256 checksums are included in SHA256SUMS.txt.',
             '- GitHub artifact attestations are published for the signed EXE, ZIP, and one-file PowerShell installer.',
-            '- SWM-Setup-1.0.ps1 is a byte-identical copy of the proven PowerShell installation engine used by the EXE.',
+            '- SWM-Setup-1.0.ps1 is a byte-identical copy of the PowerShell installation engine used by the EXE.',
+            '- The installer uses the latest published GitHub release tag by default; an advanced option allows installation from a named branch.',
             '- The public signing certificate is attached.',
             '',
             'Important: this is a self-signed Authenticode certificate. Windows does not trust it by default, so it does not provide the same SmartScreen publisher trust as a commercial CA-issued certificate.',
