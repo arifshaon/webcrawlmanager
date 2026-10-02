@@ -303,6 +303,9 @@ then `SWM_JAVA`, `SWM_WARC_INDEXER_JAR` and `SWM_WARC_INDEXER_CONF`, then
 - The version is `version` in `pyproject.toml`.
 - Older installers (`SWM-Setup-0.*.zip`, `SWM-Setup-1.0.*`) are kept in
   `install/` for reference.
+- SWM is not yet published on PyPI. [Publishing on PyPI](publishing-plan.md)
+  is the plan for it: what already works, what must change first, and the
+  release workflow.
 
 ## Research notes
 
