@@ -161,8 +161,12 @@ class ConfirmationTests(unittest.TestCase):
         page.goto(self.url("#/collections"))
         page.wait_for_selector(f"#collection-list button[onclick='editCollection({mine['id']})']")
         page.click(f"#collection-list button[onclick='editCollection({mine['id']})']")
-        self.assertTrue(page.is_disabled("#c-storage"))
-        self.assertTrue(page.is_disabled(".browse-btn[data-target='c-storage']"))   # the folder is fixed
+        # the folder is fixed: no field or Browse to change it, even after the page refreshes
+        page.wait_for_timeout(2500)
+        self.assertFalse(page.is_visible("#c-storage"))
+        self.assertFalse(page.is_visible(".browse-btn[data-target='c-storage']"))
+        self.assertIn(mine["root_dir"], page.inner_text("#c-storage-fixed"))
+        self.assertIn("create a new collection with that storage location", page.inner_text("#c-storage-fixed"))
 
         page.fill("#c-name", "election-2026")            # another collection's identifier
         page.click("#c-create-btn")
@@ -181,6 +185,7 @@ class ConfirmationTests(unittest.TestCase):
         page.click("#confirm-yes")
         page.wait_for_selector("#c-msg:has-text('Collection updated.')")
         self.assertIn("Library news, Qatar", self.names())
+        self.assertTrue(page.is_visible("#c-storage"))         # back to a new collection: the field returns
 
     def test_a_settings_save_waits_for_a_yes(self):
         page = self.page

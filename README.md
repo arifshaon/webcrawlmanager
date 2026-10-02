@@ -893,7 +893,9 @@ changes nothing, and a deletion's dialog opens on Cancel, so Enter alone
 never deletes. Pausing and resuming are not asked about: both can be
 undone at once. Every edit is confirmed the same way: saving changes to a
 collection (the dialog lists what changes; its identifier and folder never
-do, so its storage location and Browse are locked while editing), saving
+do, so while editing the storage field and Browse are not shown, only the
+folder it is in and how to keep a collection elsewhere: make a new one
+there, then delete this one if no longer needed), saving
 a job's or collection's description, and each Save under Settings. A
 collection cannot be created with, or renamed to, a name another
 collection has or whose identifier another collection has: the form says

@@ -660,7 +660,7 @@
   .field.wide { grid-column: span 2; }
   .field.full { grid-column: 1 / -1; }
   .field.full > .check-row { display: inline-flex; width: min(100%, 420px); vertical-align: top; margin-right: 18px; }
-  label.field-label { display: block; font-weight: 600; margin-bottom: 5px; }
+  label.field-label, span.field-label { display: block; font-weight: 600; margin-bottom: 5px; }
   .tip { display: inline-flex; align-items: center; justify-content: center;
     width: 20px; height: 20px; margin-left: 5px; padding: 0; border-radius: 50%;
     border: 1px solid var(--faint); background: transparent; color: var(--muted);
@@ -1161,13 +1161,18 @@
           <label class="field-label" for="c-description">Description <span style="font-weight:400;color:var(--muted)">— optional</span></label>
           <textarea id="c-description" rows="2" placeholder="What this collection is for, in a sentence or two"></textarea>
         </div>
-        <div class="field wide">
+        <div class="field wide" id="c-storage-field">
           <label class="field-label" for="c-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="c-storage">?</button></label>
           <div class="storage-row">
-            <input type="text" id="c-storage" class="storage-dir" placeholder="leave empty for the default location">
+            <input type="text" id="c-storage" class="storage-dir" placeholder="Leave empty for the default location">
             <button type="button" class="secondary browse-btn" data-target="c-storage">Browse…</button>
           </div>
             <div class="saves-to" id="c-saves-to" aria-live="polite"></div>
+        </div>
+        <div class="field wide" id="c-storage-fixed" hidden>
+          <span class="field-label">Storage location</span>
+          <div id="c-storage-fixed-path"></div>
+          <p class="help">A collection's storage location is fixed when it is made, and cannot be changed here. To keep a collection somewhere else, create a new collection with that storage location, then delete this one if you no longer need it.</p>
         </div>
         <div class="field wide">
           <label class="check-row" style="gap:6px">
@@ -1193,7 +1198,7 @@
   <div class="storage-default" id="storage-default">
       <label class="field-label" for="storage-root">Default storage location <button type="button" class="tip" aria-label="What is this for?" data-help="storage-root">?</button></label>
       <div class="storage-default-row">
-        <input type="text" id="storage-root" placeholder="the server's own storage directory">
+        <input type="text" id="storage-root" placeholder="The server's own storage directory">
         <button type="button" class="secondary browse-btn" data-target="storage-root">Browse…</button>
         <button type="button" class="secondary" id="storage-save">Save</button>
         <span class="msg" id="storage-msg"></span>
@@ -1249,7 +1254,7 @@
         <label for="tai-model"><span id="tai-model-label">Model</span> <button type="button" class="tip" aria-label="What is this for?" data-help="tai-model">?</button>
           <input type="text" id="tai-model" placeholder="claude-opus-5"></label>
         <label for="tai-key">API key <button type="button" class="tip" aria-label="What is this for?" data-help="tai-key">?</button>
-          <input type="password" id="tai-key" placeholder="leave empty to keep the stored key" autocomplete="off"></label>
+          <input type="password" id="tai-key" placeholder="Leave empty to keep the stored key" autocomplete="off"></label>
         <label for="tai-api-version">API version (Azure) <button type="button" class="tip" aria-label="What is this for?" data-help="tai-api-version">?</button>
           <input type="text" id="tai-api-version" placeholder="2024-10-21"></label>
         <label for="tai-tpm">Tokens per minute allowed <button type="button" class="tip" aria-label="What is this for?" data-help="tai-tpm">?</button>
@@ -1554,7 +1559,7 @@
             <div class="field wide">
               <label class="field-label" for="f-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="f-storage">?</button></label>
               <div class="storage-row">
-              <input type="text" id="f-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
+              <input type="text" id="f-storage" class="storage-dir" placeholder="Leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="f-storage">Browse…</button>
             </div>
               <span class="help storage-hint" id="f-storage-hint" aria-live="polite"></span>
@@ -1601,7 +1606,7 @@
           </div>
           <div class="field">
             <label class="field-label" for="r-name">Session name <button type="button" class="tip" aria-label="What is this for?" data-help="r-name">?</button></label>
-            <input type="text" id="r-name" placeholder="derived from the host if empty">
+            <input type="text" id="r-name" placeholder="Derived from the host if empty">
           </div>
           <div class="field">
             <label class="field-label" for="r-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="r-operator">?</button></label>
@@ -1626,7 +1631,7 @@
           <div class="field wide">
             <label class="field-label" for="r-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="r-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="r-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
+              <input type="text" id="r-storage" class="storage-dir" placeholder="Leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="r-storage">Browse…</button>
             </div>
               <span class="help storage-hint" id="r-storage-hint" aria-live="polite"></span>
@@ -1674,7 +1679,7 @@
           </div>
           <div class="field">
             <label class="field-label" for="fb-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-help="fb-name">?</button></label>
-            <input type="text" id="fb-name" placeholder="derived from the Page if empty">
+            <input type="text" id="fb-name" placeholder="Derived from the Page if empty">
           </div>
           <div class="field">
             <label class="field-label" for="fb-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="fb-operator">?</button></label>
@@ -1700,7 +1705,7 @@
           <div class="field wide">
             <label class="field-label" for="fb-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="fb-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="fb-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
+              <input type="text" id="fb-storage" class="storage-dir" placeholder="Leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="fb-storage">Browse…</button>
             </div>
               <span class="help storage-hint" id="fb-storage-hint" aria-live="polite"></span>
@@ -1807,7 +1812,7 @@
           </div>
           <div class="field">
             <label class="field-label" for="ig-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-help="ig-name">?</button></label>
-            <input type="text" id="ig-name" placeholder="derived from the targets if empty">
+            <input type="text" id="ig-name" placeholder="Derived from the targets if empty">
           </div>
           <div class="field">
             <label class="field-label" for="ig-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="ig-operator">?</button></label>
@@ -1841,7 +1846,7 @@
           <div class="field wide">
             <label class="field-label" for="ig-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="ig-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="ig-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
+              <input type="text" id="ig-storage" class="storage-dir" placeholder="Leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="ig-storage">Browse…</button>
             </div>
               <span class="help storage-hint" id="ig-storage-hint" aria-live="polite"></span>
@@ -1957,7 +1962,7 @@
           </div>
           <div class="field">
             <label class="field-label" for="x-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-help="x-name">?</button></label>
-            <input type="text" id="x-name" placeholder="derived from the targets if empty">
+            <input type="text" id="x-name" placeholder="Derived from the targets if empty">
           </div>
           <div class="field">
             <label class="field-label" for="x-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="x-operator">?</button></label>
@@ -1990,7 +1995,7 @@
           <div class="field wide">
             <label class="field-label" for="x-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="x-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="x-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
+              <input type="text" id="x-storage" class="storage-dir" placeholder="Leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="x-storage">Browse…</button>
             </div>
               <span class="help storage-hint" id="x-storage-hint" aria-live="polite"></span>
@@ -2106,7 +2111,7 @@
           </div>
           <div class="field">
             <label class="field-label" for="yt-name">Capture name <button type="button" class="tip" aria-label="What is this for?" data-help="yt-name">?</button></label>
-            <input type="text" id="yt-name" placeholder="derived from the targets if empty">
+            <input type="text" id="yt-name" placeholder="Derived from the targets if empty">
           </div>
           <div class="field">
             <label class="field-label" for="yt-operator">Operator <button type="button" class="tip" aria-label="What is this for?" data-help="yt-operator">?</button></label>
@@ -2144,7 +2149,7 @@
           <div class="field wide">
             <label class="field-label" for="yt-storage">Storage location <span style="font-weight:400;color:var(--muted)">— optional</span> <button type="button" class="tip" aria-label="What is this for?" data-help="yt-storage">?</button></label>
             <div class="storage-row">
-              <input type="text" id="yt-storage" class="storage-dir" placeholder="leave empty: inside the collection’s folder">
+              <input type="text" id="yt-storage" class="storage-dir" placeholder="Leave empty: inside the collection’s folder">
               <button type="button" class="secondary browse-btn" data-target="yt-storage">Browse…</button>
             </div>
               <span class="help storage-hint" id="yt-storage-hint" aria-live="polite"></span>
@@ -3822,11 +3827,12 @@ function collectionFormMode(edit) {
   $(".coll-new").textContent = editing ? `Edit collection: ${edit.name}` : "New collection";
   $("#c-create-btn").textContent = editing ? "Save changes" : "Create collection";
   $("#c-cancel-btn").hidden = !editing;
-  $("#c-storage").disabled = editing;
-  $("#c-storage").placeholder = editing ? "fixed at creation" : "leave empty for the default location";
-  const browse = $(".browse-btn[data-target='c-storage']");
-  browse.disabled = editing;
-  browse.title = editing ? "A collection's folder is fixed when it is made" : "";
+  // a collection's folder is fixed when it is made: while editing, the
+  // storage field and Browse are not shown at all, only where it is
+  $("#c-storage-field").hidden = editing;
+  $("#c-storage-fixed").hidden = !editing;
+  $("#c-storage-fixed-path").innerHTML = editing ? storedIn(edit.root_dir, "collections", edit.id) : "";
+  if (editing) $("#c-storage").value = "";
   updateStorageHints();
   $("#c-metadata").closest(".field").hidden = editing;
 }
@@ -3843,7 +3849,6 @@ function editCollection(id) {
   editingCollectionId = Number(id);
   $("#c-name").value = c.name || "";
   $("#c-description").value = c.description || "";
-  $("#c-storage").value = c.root_dir || "";
   $("#c-dedup").checked = !(c.policy && c.policy.dedup_across_jobs === false);
   collectionFormMode(c);
   $("#c-msg").textContent = ""; $("#c-msg").className = "msg";
@@ -5247,7 +5252,7 @@ function renderStorageDefault(settings) {
   if ($("#storage-help").innerHTML !== helpHtml) $("#storage-help").innerHTML = helpHtml;
   document.querySelectorAll(".storage-dir").forEach(field => {
     field.disabled = !choosable;
-    if (!choosable) field.placeholder = "unavailable on a networked dashboard";
+    if (!choosable) field.placeholder = "Unavailable on a networked dashboard";
   });
 }
 
@@ -5285,13 +5290,13 @@ function updateStorageHints() {
     if (!box) return;
     const own = field && !field.disabled ? field.value.trim() : "";
     if (own) {
-      savesTo(box, joinPath(own, "<job number>"), "a folder of its own, as set under Storage location; the job still belongs to its collection");
+      savesTo(box, joinPath(own, "<job number>"), "A folder of its own, as set under Storage location. The job still belongs to its collection.");
       return;
     }
     const c = collectionFolder(pick ? pick.value : "");
     if (!c.root) { savesTo(box, "", "The collection's folder."); return; }
     savesTo(box, joinPath(c.root, "jobs", "<job number>"),
-            c.made ? `the ${c.name} collection's folder` : `the ${c.name} collection's folder, made with its first job`);
+            c.made ? `The ${c.name} collection's folder.` : `The ${c.name} collection's folder, made with its first job.`);
   });
   updateCollectionWhere();
 }
@@ -5300,11 +5305,7 @@ let collectionWhereTimer = null, collectionWhereAsked = "";
 function updateCollectionWhere() {
   const box = $("#c-saves-to"), field = $("#c-storage"), name = $("#c-name");
   if (!box || !field) return;
-  if (field.placeholder === "fixed at creation") {        // editing: the folder is the collection's own
-    const editing = lastCollections.find(c => String(c.id) === String(editingCollectionId || ""));
-    savesTo(box, editing ? editing.root_dir : "", editing ? "fixed when the collection was made" : "Fixed when the collection was made.");
-    return;
-  }
+  if (editingCollectionId) return;                      // editing: the folder is shown as fixed instead
   const query = new URLSearchParams({name: name ? name.value.trim() : "", storage_dir: field.disabled ? "" : field.value.trim()}).toString();
   if (query === collectionWhereAsked) return;
   clearTimeout(collectionWhereTimer);
@@ -5312,7 +5313,7 @@ function updateCollectionWhere() {
     collectionWhereAsked = query;
     try {
       const w = await api(`/api/collections/where?${query}`);
-      if (!w.root_dir) savesTo(box, joinPath(w.parent, "<identifier>"), "the identifier is made from the name");
+      if (!w.root_dir) savesTo(box, joinPath(w.parent, "<identifier>"), "The identifier is made from the name.");
       else if (w.problem) savesTo(box, w.root_dir, w.problem);
       else savesTo(box, w.root_dir, "");
     } catch (_) { collectionWhereAsked = ""; }
@@ -5388,7 +5389,7 @@ function shapeThemeAiFields() {
   const provider = $("#tai-provider").value;
   const azure = provider === "azure_openai";
   $("#tai-model-label").textContent = azure ? "Deployment name" : "Model";
-  $("#tai-model").placeholder = azure ? "the deployment you created on the resource"
+  $("#tai-model").placeholder = azure ? "The deployment you created on the resource"
     : provider === "anthropic" ? "claude-opus-5" : "llama3";
   $("#tai-endpoint").placeholder = azure ? "https://my-resource.openai.azure.com"
     : provider === "openai_compatible" ? "http://127.0.0.1:11434/v1" : "not used for Anthropic";
