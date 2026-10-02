@@ -555,8 +555,8 @@ begin
         'Port ' + IntToStr(FreePort) + ' has been selected instead.';
       MsgBox(
         'Port ' + IntToStr(RequestedPort) + ' is currently in use.' + #13#10 + #13#10 +
-        'The next available port, ' + IntToStr(FreePort) + ', has been selected.' +
-        #13#10 + 'Review it and click Next again.',
+        'The next available port, ' + IntToStr(FreePort) + ', has been selected.' + #13#10 +
+        'Review it and click Next again.',
         mbInformation,
         MB_OK
       );
