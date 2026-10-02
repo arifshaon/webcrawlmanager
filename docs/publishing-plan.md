@@ -135,21 +135,19 @@ say it too.
 
 ### 3. One version number
 
-The version is written in three places that disagree:
-
-| Where | Version |
-|---|---|
-| `pyproject.toml` | `1.1` |
-| `webarc/__init__.py` | `0.4.0` |
-| Latest GitHub release | `v1.1.2` |
+The version is **1.1.2**, the latest GitHub release. It is written in
+two places, `version` in `pyproject.toml` and `__version__` in
+`webarc/__init__.py` (which also goes into each new WARC's `warcinfo`
+record as `webarc/1.1.2`), and the two must be changed together.
 
 - Keep one source: either `__version__` in `webarc/__init__.py`, read by
   setuptools as a dynamic version, or git tags through `setuptools-scm`.
 - Add `swm --version`.
 - PyPI never accepts the same version twice, even after a deletion, so
-  every upload needs a new number. The first PyPI release should be at
-  least `1.1.3` (or `1.2.0`) so it does not clash with the GitHub
-  releases.
+  every upload needs a new number. A PyPI release and the GitHub
+  release of the same number should be the same code, so if the first
+  PyPI release includes changes made after `v1.1.2`, it is `1.1.3` (or
+  `1.2.0`).
 
 ### 4. Package metadata
 

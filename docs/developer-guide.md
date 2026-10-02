@@ -300,7 +300,8 @@ then `SWM_JAVA`, `SWM_WARC_INDEXER_JAR` and `SWM_WARC_INDEXER_CONF`, then
   a trusted code-signing certificate and timestamp.
   `.github/workflows/build-unsigned-windows-installer.yml` builds an
   unsigned installer for testing.
-- The version is `version` in `pyproject.toml`.
+- The version, currently 1.1.2, is `version` in `pyproject.toml` and
+  `__version__` in `webarc/__init__.py`; change both together.
 - Older installers (`SWM-Setup-0.*.zip`, `SWM-Setup-1.0.*`) are kept in
   `install/` for reference.
 - SWM is not yet published on PyPI. [Publishing on PyPI](publishing-plan.md)
