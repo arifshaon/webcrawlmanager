@@ -1636,6 +1636,11 @@ Design research that shaped, or will shape, a capture mode lives under
   and downloads the videos while a browser reads the Posts tab, what the
   spike from this environment showed, and what the first real capture
   must confirm.
+- [A language-processing judge for themes, without AI](docs/research/theme-nlp-fallback.md)
+  (parked): how established NLP libraries could judge theme pages when
+  no AI judge is configured, the libraries' sizes and licences, how their
+  stemmers handle English and Arabic, and the comparison to run before
+  choosing.
 
 ## Licence and citation
 
