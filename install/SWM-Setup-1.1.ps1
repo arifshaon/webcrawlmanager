@@ -26,9 +26,6 @@ param(
     [ValidateSet("LatestRelease", "Branch")]
     [string]$SourceMode = "LatestRelease",
     [string]$Branch = "main",
-    [ValidateSet("Fresh", "Update")]
-    [string]$InstallMode = "Fresh",
-    [string]$InstallerVersion = "1.1.1",
     [int]$DashboardPort = 8080,
     [int]$ReplayPort = 8091,
     [string]$SourceArchivePath,
@@ -51,7 +48,6 @@ $UvDir = Join-Path $RuntimeRoot "uv"
 $UvExe = Join-Path $UvDir "uv.exe"
 $UvCacheDir = Join-Path $RuntimeRoot "uv-cache"
 $PlaywrightDir = Join-Path $RuntimeRoot "ms-playwright"
-$ToolsDir = Join-Path $RuntimeRoot "tools"
 
 $UvVersion = "0.11.29"
 $UvUrl = "https://github.com/astral-sh/uv/releases/download/$UvVersion/uv-x86_64-pc-windows-msvc.zip"
@@ -362,34 +358,16 @@ function Download-SourceZip([string]$TargetDir) {
 
         New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
 
-        # Configuration and runtime state belong to the installation/user,
-        # not the source checkout. Keep them while refreshing application code.
         $config = Join-Path $TargetDir "config.yaml"
         if (Test-Path -LiteralPath $config) {
             $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
             Copy-Item -LiteralPath $config -Destination "$config.$stamp.bak" -Force
-            Write-Info "Existing config.yaml preserved; backup written before source refresh."
+            Write-Info "Existing config.yaml backed up before source refresh."
         }
 
         foreach ($item in Get-ChildItem -LiteralPath $sourceRoot.FullName -Force) {
-            if ($item.Name -in @('.runtime', 'install.log', 'server-port.txt',
-                                 'START-HERE.txt', '.swm-install.json')) {
+            if ($item.Name -in @('.runtime', 'install.log', 'server-port.txt')) {
                 continue
-            }
-
-            $destination = Join-Path $TargetDir $item.Name
-
-            # Never overwrite an installation's active configuration with a
-            # repository copy. The backup above remains as an audit trail.
-            if (($item.Name -eq 'config.yaml') -and (Test-Path -LiteralPath $config)) {
-                Write-Info "Keeping existing config.yaml."
-                continue
-            }
-
-            # Replace source-controlled items cleanly so removed/renamed code
-            # does not linger across an update.
-            if (Test-Path -LiteralPath $destination) {
-                Remove-Item -LiteralPath $destination -Recurse -Force
             }
             Copy-Item -LiteralPath $item.FullName -Destination $TargetDir -Recurse -Force
         }
@@ -543,44 +521,6 @@ function Install-LocalPython {
 }
 
 
-function Get-DeclaredOptionalExtras([string]$TargetDir) {
-    $pyproject = Join-Path $TargetDir "pyproject.toml"
-    $probe = @(
-        & $PythonExe -c "import pathlib,sys,tomllib; d=tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')); print(','.join(sorted(d.get('project', {}).get('optional-dependencies', {}).keys())))" $pyproject 2>&1
-    )
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not read optional dependency groups from pyproject.toml: $($probe -join ' ')"
-    }
-    return (($probe -join "").Trim())
-}
-
-function Test-SwmFeatureDependencies {
-    $probe = @"
-import importlib
-modules = {
-    "dashboard / FastAPI": "fastapi",
-    "dashboard / Uvicorn": "uvicorn",
-    "browser capture / Playwright": "playwright",
-    "WARC / warcio": "warcio",
-    "configuration / PyYAML": "yaml",
-    "resource monitoring / psutil": "psutil",
-    "Instagram listing / gallery-dl": "gallery_dl",
-    "YouTube capture / yt-dlp": "yt_dlp",
-    "AI theme adviser / Anthropic": "anthropic",
-}
-missing = []
-for label, module in modules.items():
-    try:
-        importlib.import_module(module)
-    except Exception as exc:
-        missing.append(f"{label} ({module}): {exc}")
-if missing:
-    raise SystemExit("Missing SWM feature dependencies:\n" + "\n".join(missing))
-print("Verified SWM core, dashboard, Instagram, YouTube and AI Python dependencies.")
-"@
-    Invoke-External -Exe $PythonExe -ArgumentList @("-c", $probe) -Description "Verifying SWM feature dependencies"
-}
-
 function Install-SwmPythonPackages([string]$TargetDir) {
     $coreRequirements = Join-Path $TargetDir "requirements.txt"
     $dashboardRequirements = Join-Path $TargetDir "requirements-dashboard.txt"
@@ -589,13 +529,6 @@ function Install-SwmPythonPackages([string]$TargetDir) {
         if (-not (Test-Path -LiteralPath $requiredFile)) {
             throw "Required dependency file is missing: $requiredFile"
         }
-    }
-
-    $extras = Get-DeclaredOptionalExtras -TargetDir $TargetDir
-    $editableTarget = $TargetDir
-    if ($extras) {
-        $editableTarget = "${TargetDir}[$extras]"
-        Write-Info "Installing every optional SWM feature group declared in pyproject.toml: $extras"
     }
 
     $requirementsArgs = @(
@@ -610,14 +543,18 @@ function Install-SwmPythonPackages([string]$TargetDir) {
         "pip", "install",
         "--python", $PythonExe,
         "--reinstall",
-        "-e", $editableTarget
+        "--no-deps",
+        "-e", $TargetDir
     )
 
     while ($true) {
         try {
+            # Follow the repository's documented dashboard installation path
+            # explicitly, rather than relying only on the pyproject dashboard
+            # extra. This makes requirements-dashboard.txt visible in the log
+            # and guarantees it is installed before launchers are created.
             Invoke-External -Exe $UvExe -ArgumentList $requirementsArgs -Description "Installing requirements.txt and requirements-dashboard.txt into the local SWM Python"
-            Invoke-External -Exe $UvExe -ArgumentList $packageArgs -Description "Installing SWM and all declared optional feature dependencies into the local SWM Python"
-            Test-SwmFeatureDependencies
+            Invoke-External -Exe $UvExe -ArgumentList $packageArgs -Description "Installing the SWM package into the local SWM Python"
             return
         } catch {
             $reason = $_.Exception.Message
@@ -639,11 +576,9 @@ YES  = open PyPI and select a folder containing the downloaded .whl/.tar.gz depe
 NO   = retry the automatic package installation
 CANCEL = abort the installation
 
-The Windows installer installs:
+The installer must satisfy both:
   requirements.txt
   requirements-dashboard.txt
-  every optional dependency group declared in pyproject.toml
-  (currently dashboard, Instagram/gallery-dl, YouTube/yt-dlp and AI adviser)
 
 For offline installation, place all required packages (including build requirements such as setuptools) in one folder.
 "@
@@ -677,18 +612,9 @@ For offline installation, place all required packages (including build requireme
                     "--find-links", $folder,
                     "-r", $coreRequirements,
                     "-r", $dashboardRequirements
-                ) -Description "Installing core/dashboard requirements from manually downloaded packages"
+                ) -Description "Installing requirements.txt and requirements-dashboard.txt from manually downloaded packages"
 
-                $offlinePackageArgs = @(
-                    "pip", "install",
-                    "--python", $PythonExe,
-                    "--reinstall",
-                    "--no-index",
-                    "--find-links", $folder,
-                    "-e", $editableTarget
-                )
-                Invoke-External -Exe $UvExe -ArgumentList $offlinePackageArgs -Description "Installing SWM optional feature dependencies from manually downloaded packages"
-                Test-SwmFeatureDependencies
+                Invoke-External -Exe $UvExe -ArgumentList $packageArgs -Description "Installing the SWM package into the local SWM Python"
                 Write-Ok "Python dependencies installed from $folder"
                 return
             } catch {
@@ -922,21 +848,6 @@ function Install-PlaywrightChromium {
     }
 }
 
-function Expose-LocalMediaTools {
-    New-Item -ItemType Directory -Path $ToolsDir -Force | Out-Null
-
-    $ffmpeg = Get-ChildItem -LiteralPath $PlaywrightDir -Filter "ffmpeg*.exe" -File -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-
-    if ($ffmpeg) {
-        $target = Join-Path $ToolsDir "ffmpeg.exe"
-        Copy-Item -LiteralPath $ffmpeg.FullName -Destination $target -Force
-        Write-Ok "Exposed Playwright's local FFmpeg for SWM/yt-dlp: $target"
-    } else {
-        Write-Warn "Playwright FFmpeg was not found. yt-dlp remains installed, but YouTube downloads may fall back to single-file renditions when FFmpeg is unavailable."
-    }
-}
-
 function Install-SwmIntoLocalPython([string]$TargetDir) {
     New-Item -ItemType Directory -Path $UvCacheDir -Force | Out-Null
     New-Item -ItemType Directory -Path $PlaywrightDir -Force | Out-Null
@@ -946,7 +857,6 @@ function Install-SwmIntoLocalPython([string]$TargetDir) {
 
     Install-SwmPythonPackages -TargetDir $TargetDir
     Install-PlaywrightChromium
-    Expose-LocalMediaTools
 }
 
 function Test-PortAvailable([int]$Port) {
@@ -993,7 +903,6 @@ setlocal
 cd /d "%~dp0"
 set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
 set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
-set "SWM_TOOLS_DIR=%~dp0.runtime\tools"
 if not exist "%SWM_PYTHON%" (
   echo SWM local Python was not found: "%SWM_PYTHON%"
   exit /b 1
@@ -1009,9 +918,7 @@ setlocal
 cd /d "%~dp0"
 set "SWM_PYTHON=%~dp0.runtime\python\python.exe"
 set "PLAYWRIGHT_BROWSERS_PATH=%~dp0.runtime\ms-playwright"
-set "SWM_TOOLS_DIR=%~dp0.runtime\tools"
 set "SWM_PORT=$ServerPort"
-if exist "%~dp0server-port.txt" set /p SWM_PORT=<"%~dp0server-port.txt"
 if not exist "%SWM_PYTHON%" (
   echo SWM local Python was not found: "%SWM_PYTHON%"
   pause
@@ -1026,37 +933,7 @@ endlocal
     $serverText | Set-Content -LiteralPath $serverLauncher -Encoding ASCII
 
     Set-Content -LiteralPath (Join-Path $TargetDir "server-port.txt") -Value $ServerPort -Encoding ASCII
-
-    $startHere = @"
-Simple Webcrawl Manager (SWM)
-=============================
-
-START THE DASHBOARD
--------------------
-Double-click:
-
-    Start SWM Server.cmd
-
-This is the normal launcher for the SWM web dashboard.
-The installer also creates Start-menu and optional desktop shortcuts that
-point to the same file.
-
-Dashboard address:
-    http://127.0.0.1:$ServerPort
-
-CHANGE THE DASHBOARD PORT
--------------------------
-Edit server-port.txt and put one available port number in the file, then
-close/restart SWM using Start SWM Server.cmd.
-
-COMMAND-LINE USE
-----------------
-swm.cmd is the command-line launcher. Ordinary dashboard users do not need it.
-"@
-    Set-Content -LiteralPath (Join-Path $TargetDir "START-HERE.txt") -Value $startHere -Encoding UTF8
-
-    Write-Ok "Created dashboard launcher: $serverLauncher"
-    Write-Ok "Created start instructions: $(Join-Path $TargetDir 'START-HERE.txt')"
+    Write-Ok "Created local-runtime server launcher: $serverLauncher"
 }
 
 try {
@@ -1066,17 +943,9 @@ try {
     } else {
         Write-Host "Source: latest published GitHub release"
     }
-    Write-Host "Install mode: $InstallMode"
-    Write-Host "Installer version: $InstallerVersion"
     Write-Host "Install directory: $InstallDir"
     Write-Host "Local Python: $PythonExe"
     Write-Host "Download fallback: retry / manual file selection / abort"
-
-    if (($InstallMode -eq "Fresh") -and (Test-Path -LiteralPath $RuntimeRoot)) {
-        Write-Step "0. Prepare fresh local runtime"
-        Write-Info "Fresh installation selected; replacing the existing private SWM runtime."
-        Remove-Item -LiteralPath $RuntimeRoot -Recurse -Force
-    }
 
     Write-Step "1. Download / update SWM"
     Download-SourceZip -TargetDir $InstallDir
@@ -1107,24 +976,6 @@ try {
 
     Write-Step "5. Create launchers"
     Write-Launchers -TargetDir $InstallDir -ServerPort $actualDashboardPort
-
-    $projectVersion = $null
-    $pyprojectText = Get-Content -LiteralPath (Join-Path $InstallDir "pyproject.toml") -Raw
-    $versionMatch = [regex]::Match($pyprojectText, '(?m)^version\s*=\s*"([^"]+)"')
-    if ($versionMatch.Success) {
-        $projectVersion = $versionMatch.Groups[1].Value
-    }
-
-    $installRecord = [ordered]@{
-        installer_version = $InstallerVersion
-        application_version = $projectVersion
-        install_mode = $InstallMode
-        source_mode = $SourceMode
-        branch = if ($SourceMode -eq "Branch") { $Branch } else { $null }
-        dashboard_port = $actualDashboardPort
-        installed_at = (Get-Date).ToUniversalTime().ToString("o")
-    }
-    $installRecord | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $InstallDir ".swm-install.json") -Encoding UTF8
 
     Write-Step "Installation complete"
     Write-Host "Installed to: $InstallDir" -ForegroundColor Green
