@@ -2372,16 +2372,19 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
 
     @app.get("/api/collections/where")
     def collection_location(name: str = "", storage_dir: str = ""):
-        """Where a collection of this name would be saved, before it is made:
-        the folder the create form shows. Nothing is created or checked on
-        disk."""
+        """Where a collection of this name would be saved, before it is made,
+        and why it could not be (``problem``): the folder the create form
+        shows, and the check it makes before offering to create. Nothing is
+        created."""
         slug = colls.slugify(name) if name.strip() else None
         own = storage_dir.strip()
         base = Path(own).expanduser() if own else _default_storage_root()
         parent = (base / colls.COLLECTIONS_DIR).resolve()
+        problem = colls.creation_problem(_store(), slug, parent / slug) if slug else None
         return {"slug": slug, "parent": str(parent),
                 "root_dir": str(parent / slug) if slug else None,
-                "taken": bool(slug and _store().find_collection(slug))}
+                "taken": bool(slug and _store().collection_by_slug(slug)),
+                "problem": problem}
 
     @app.get("/api/collections")
     def list_collections():

@@ -434,6 +434,20 @@ DEFAULT_NAME = "Default"
 DEFAULT_DESCRIPTION = "Jobs not filed in a collection of their own."
 
 
+def creation_problem(store, slug: str, root: Path | str) -> Optional[str]:
+    """Why a collection with this identifier cannot be made at this root,
+    in words for the curator; None when it can. Asked by the form before it
+    offers to create, and again on creating."""
+    if store.collection_by_slug(slug):
+        return (f"Sorry, a collection with the identifier '{slug}' already exists. "
+                "Choose another name.")
+    leftover = index_leftover(root)
+    if leftover:
+        return (f"Sorry, {leftover} belongs to an earlier collection of this name. Choose "
+                "another name or storage location, or move that file away.")
+    return None
+
+
 def create(store, name: str, description: str, metadata: list[dict], base: Path | str,
            storage_dir: str | None = None, policy: dict | None = None) -> dict:
     """A collection: its directory and collection.json first, then its row,
@@ -446,17 +460,14 @@ def create(store, name: str, description: str, metadata: list[dict], base: Path 
     name = validate_name(name)
     description = validate_description(description)
     slug = slugify(name)
-    if store.find_collection(slug):
-        raise ValueError(f"A collection with the identifier '{slug}' already exists.")
     root = collection_root(Path(storage_dir) if storage_dir else Path(base), slug)
     try:
         root = root.expanduser().resolve()   # stored absolute: the same place from any cwd
     except OSError:
         pass
-    leftover = index_leftover(root)
-    if leftover:
-        raise ValueError(f"{leftover} belongs to an earlier collection of this name; move "
-                         "or remove it, or choose another name or storage location.")
+    problem = creation_problem(store, slug, root)
+    if problem:
+        raise ValueError(problem)
     policy = policy or dict(DEFAULT_POLICY)
     root.mkdir(parents=True, exist_ok=True)
     write_document(root, document(

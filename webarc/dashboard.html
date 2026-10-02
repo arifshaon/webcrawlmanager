@@ -3387,9 +3387,15 @@ function settleConfirm(answer) {
   confirmReturnFocus = null;
   if (resolve) resolve(answer);
 }
-function confirmYes() {
+async function confirmYes() {
   const value = $("#confirm-input").value.trim();
-  const problem = confirmCheck ? confirmCheck(value) : "";
+  let problem = "";
+  if (confirmCheck) {
+    const yes = $("#confirm-yes");
+    yes.disabled = true;
+    try { problem = await confirmCheck(value); } finally { yes.disabled = false; }
+    if (!confirmDecision) return;                          // closed meanwhile
+  }
   if (problem) {
     $("#confirm-msg").textContent = problem; $("#confirm-msg").className = "msg err";
     $("#confirm-input").focus();
@@ -3848,6 +3854,9 @@ async function createCollection() {
   if (!name) { say("Give the collection a name.", "err"); return; }
   const editing = editingCollectionId;
   if (!editing) {
+    // the confirmation is offered only for a collection that can be made
+    const problem = await collectionProblem(name, $("#c-storage").value.trim());
+    if (problem) { say(problem, "err"); $("#c-name").focus(); return; }
     const where = $("#c-saves-to code");
     const sure = await askConfirm({
       title: `Create the collection "${name}"?`, kind: "create", yes: "Create collection",
@@ -3894,13 +3903,22 @@ async function rebuildIndex(id) {
   } catch (e) { done(); alert("The index could not be rebuilt: " + e.message); }
 }
 // "New collection…" beside a job form's picker: name it, and it is chosen.
+// Why a collection of this name cannot be made, asked of the server before
+// anything is offered: its identifier taken, or an earlier collection's
+// index at its folder. "" when it can be made; a failed check lets the
+// server decide on creating.
+async function collectionProblem(name, storageDir) {
+  try {
+    const w = await api(`/api/collections/where?${new URLSearchParams({name, storage_dir: storageDir || ""})}`);
+    return w.problem || "";
+  } catch (_) { return ""; }
+}
 async function newCollectionFor(selectId) {
   const sure = await askConfirm({
     title: "Create a new collection", kind: "create", yes: "Create collection",
     why: `Its folder is made now, under ${effectiveStorageRoot ? joinPath(effectiveStorageRoot, "collections") : "the default storage location"}, and it is chosen for this job.`,
     field: {label: "Name", placeholder: "e.g. Qatar news sites",
-            check: v => !v ? "Give the collection a name."
-              : lastCollections.some(c => String(c.name).toLowerCase() === v.toLowerCase()) ? "A collection of that name exists; pick it from the list instead." : ""},
+            check: async v => !v ? "Give the collection a name." : await collectionProblem(v, "")},
   });
   if (!sure) return;
   const name = sure.value;
@@ -5261,7 +5279,7 @@ function updateCollectionWhere() {
     try {
       const w = await api(`/api/collections/where?${query}`);
       if (!w.root_dir) savesTo(box, joinPath(w.parent, "<identifier>"), "the identifier is made from the name");
-      else if (w.taken) savesTo(box, w.root_dir, `a collection with the identifier ${w.slug} already exists; choose another name`);
+      else if (w.problem) savesTo(box, w.root_dir, w.problem);
       else savesTo(box, w.root_dir, "");
     } catch (_) { collectionWhereAsked = ""; }
   }, 250);

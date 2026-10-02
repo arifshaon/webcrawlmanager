@@ -141,6 +141,19 @@ class ConfirmationTests(unittest.TestCase):
         self.assertNotIn("Asked first", self.names())
         self.assertTrue(Path(made["root_dir"]).is_dir())      # unticked: the folder stays
 
+    def test_a_name_already_taken_is_refused_before_any_confirmation(self):
+        page = self.page
+        self.api("/api/collections", {"name": "QNL Web"}, "POST")
+        page.goto(self.url("#/collections"))
+        page.fill("#c-name", "qnl  web!")                    # the identifier qnl-web again
+        page.click("#c-create-btn")
+        page.wait_for_function("document.querySelector('#c-msg').textContent.includes('already exists')")
+        self.assertEqual(page.text_content("#c-msg"),
+                         "Sorry, a collection with the identifier 'qnl-web' already exists. Choose another name.")
+        self.assertFalse(page.locator("#confirm-overlay").is_visible())
+        self.assertEqual(page.evaluate("document.activeElement.id"), "c-name")
+        self.assertEqual(self.names().count("QNL Web"), 1)
+
     def test_new_collection_beside_a_picker_asks_its_name_in_the_dialog(self):
         page = self.page
         self.api("/api/collections", {"name": "Taken"}, "POST")
@@ -148,9 +161,10 @@ class ConfirmationTests(unittest.TestCase):
         page.click('[data-job="crawl"]')
         page.click(".collection-new-btn[data-target='f-collection']")
         self.dialog()
-        page.fill("#confirm-input", "taken")
+        page.fill("#confirm-input", "TAKEN!")             # another spelling, the same identifier
         page.click("#confirm-yes")
-        self.assertIn("exists", page.text_content("#confirm-msg"))
+        page.wait_for_function("document.querySelector('#confirm-msg').textContent.includes('already exists')")
+        self.assertIn("Choose another name", page.text_content("#confirm-msg"))
         page.fill("#confirm-input", "Picked here")
         page.keyboard.press("Enter")
         page.wait_for_function("document.querySelector('#f-collection').selectedOptions[0].textContent.includes('Picked here')")

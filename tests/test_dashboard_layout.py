@@ -397,6 +397,8 @@ class StorageLocationTests(DashboardTestCase):
                 where = client.get("/api/collections/where", params={"name": "QNL — Web 2026!"}).json()
                 made = client.post("/api/collections", json={"name": "QNL — Web 2026!"}).json()
                 again = client.get("/api/collections/where", params={"name": "qnl web 2026"}).json()
+                numbered = client.get("/api/collections/where", params={"name": "1"}).json()
+                made_one = client.post("/api/collections", json={"name": "1"})
                 elsewhere = client.get("/api/collections/where",
                                        params={"name": "x", "storage_dir": "/mnt/archive"}).json()
             finally:
@@ -405,5 +407,9 @@ class StorageLocationTests(DashboardTestCase):
         self.assertTrue(Path(root).is_absolute())             # never the bare "warcs"
         self.assertEqual(where["root_dir"], made["root_dir"])
         self.assertFalse(where["taken"])
+        self.assertIsNone(where["problem"])
         self.assertTrue(again["taken"])
+        self.assertIn("already exists. Choose another name.", again["problem"])
+        self.assertIsNone(numbered["problem"])          # "1" is a name, not collection number 1
+        self.assertEqual(made_one.status_code, 201)
         self.assertEqual(elsewhere["root_dir"], str(Path("/mnt/archive/collections/x").resolve()))

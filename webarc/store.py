@@ -684,6 +684,13 @@ class Store:
                                 (text,)).fetchone()
             return self._collection_row(row) if row else None
 
+    def collection_by_slug(self, slug: str) -> Optional[dict]:
+        """The collection with this identifier, and nothing else: a name
+        such as "1" is not mistaken for the collection whose id is 1."""
+        with self._conn() as c:
+            row = c.execute("SELECT * FROM collections WHERE slug=?", (str(slug),)).fetchone()
+            return self._collection_row(row) if row else None
+
     def list_collections(self) -> list[dict]:
         with self._conn() as c:
             rows = c.execute("SELECT * FROM collections ORDER BY lower(name)").fetchall()
