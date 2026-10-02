@@ -58,7 +58,7 @@ defaults:
 #   keep_hubs: true
 #   date_from: 2026-01-01
 #   min_score: 3
-#   unsure_action: review     # review | keep | reject
+#   unsure_action: reject     # reject (list it in the Selection report) | keep
 #   stop_after_misses: 0
 #   ai_enabled: true
 #   ai_policy: decide         # decide | tie_break | agree
