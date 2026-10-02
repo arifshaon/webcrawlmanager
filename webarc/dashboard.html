@@ -3824,6 +3824,9 @@ function collectionFormMode(edit) {
   $("#c-cancel-btn").hidden = !editing;
   $("#c-storage").disabled = editing;
   $("#c-storage").placeholder = editing ? "fixed at creation" : "leave empty for the default location";
+  const browse = $(".browse-btn[data-target='c-storage']");
+  browse.disabled = editing;
+  browse.title = editing ? "A collection's folder is fixed when it is made" : "";
   updateStorageHints();
   $("#c-metadata").closest(".field").hidden = editing;
 }
@@ -3853,6 +3856,24 @@ async function createCollection() {
   const name = $("#c-name").value.trim();
   if (!name) { say("Give the collection a name.", "err"); return; }
   const editing = editingCollectionId;
+  if (editing) {
+    const problem = await collectionProblem(name, "", editing);
+    if (problem) { say(problem, "err"); $("#c-name").focus(); return; }
+    const before = lastCollections.find(c => Number(c.id) === Number(editing)) || {};
+    const dedup = $("#c-dedup").checked;
+    const was = !(before.policy && before.policy.dedup_across_jobs === false);
+    const changes = [];
+    if (name !== (before.name || "")) changes.push(["Name", `${before.name || ""} → ${name}`]);
+    if ($("#c-description").value.trim() !== (before.description || "")) changes.push(["Description", "changed"]);
+    if (dedup !== was) changes.push(["Duplicates", dedup ? "stored once across all its jobs, from its next job" : "checked within each job only, from its next job"]);
+    if (!changes.length) { say("Nothing has changed."); return; }
+    const sure = await askConfirm({
+      title: `Save changes to the collection "${before.name || name}"?`, kind: "info", yes: "Save changes",
+      why: "Its identifier and folder stay as they are, and nothing already captured is changed; its jobs' metadata.json files are rewritten with what they now inherit.",
+      facts: [...changes, ["Identifier", before.slug || ""], ["Folder", before.root_dir || "", true]],
+    });
+    if (!sure) { say("Cancelled."); return; }
+  }
   if (!editing) {
     // the confirmation is offered only for a collection that can be made
     const problem = await collectionProblem(name, $("#c-storage").value.trim());
@@ -3907,9 +3928,11 @@ async function rebuildIndex(id) {
 // anything is offered: its identifier taken, or an earlier collection's
 // index at its folder. "" when it can be made; a failed check lets the
 // server decide on creating.
-async function collectionProblem(name, storageDir) {
+async function collectionProblem(name, storageDir, collectionId) {
+  const query = {name, storage_dir: storageDir || ""};
+  if (collectionId != null) query.collection_id = String(collectionId);
   try {
-    const w = await api(`/api/collections/where?${new URLSearchParams({name, storage_dir: storageDir || ""})}`);
+    const w = await api(`/api/collections/where?${new URLSearchParams(query)}`);
     return w.problem || "";
   } catch (_) { return ""; }
 }
@@ -3962,6 +3985,17 @@ $("#metadata-cancel").addEventListener("click", closeMetadata);
 $("#metadata-overlay").addEventListener("click", e => { if (e.target.id === "metadata-overlay") closeMetadata(); });
 $("#metadata-save").addEventListener("click", async () => {
   const msg = $("#metadata-msg");
+  const value = modalMetadata.value();
+  const fields = (value.job || []).length + Object.values(value.seeds || {}).reduce((n, f) => n + (f || []).length, 0);
+  const coll = metadataCollectionId != null ? lastCollections.find(c => Number(c.id) === Number(metadataCollectionId)) : null;
+  const sure = await askConfirm({
+    title: coll ? `Save the description of the collection "${coll.name}"?` : `Save the description of job ${jobLabel(metadataJobId)}?`,
+    kind: "info", yes: "Save description",
+    why: coll ? "Every job in the collection inherits it: their metadata.json files are rewritten. Nothing in their WARCs is changed."
+              : "The job's metadata.json is rewritten. Nothing in its WARCs is changed.",
+    facts: [["Fields", String(fields)]],
+  });
+  if (!sure) return;
   msg.textContent = "Saving…"; msg.className = "msg";
   try {
     if (metadataCollectionId != null) {
@@ -5322,6 +5356,11 @@ document.addEventListener("click", async e => {
 
 async function saveStorageDefault() {
   const msg = $("#storage-msg");
+  const wanted = $("#storage-root").value.trim();
+  if (!await askConfirm({title: "Change the default storage location?", kind: "info", yes: "Save location",
+      why: "Only collections made from now on, and the Default collection if it is made again, go here. Nothing is moved: existing jobs and collections stay where they are.",
+      facts: [["New location", wanted || "SWM's own default (empty)", Boolean(wanted)],
+              ["Currently", effectiveStorageRoot, true]]})) return;
   msg.textContent = "Saving…";
   msg.className = "msg";
   try {
@@ -5378,6 +5417,12 @@ function renderThemeAiSettings(settings) {
 }
 async function saveThemeAiSettings() {
   const msg = $("#tai-msg");
+  const provider = $("#tai-provider");
+  if (!await askConfirm({title: "Save the AI judge settings?", kind: "info", yes: "Save settings",
+      why: "They apply to themed jobs started from now on; running jobs keep the judge they began with.",
+      facts: [["Provider", provider.selectedOptions[0] ? provider.selectedOptions[0].textContent.trim() : provider.value],
+              ["Model", $("#tai-model").value.trim()],
+              ["API key", $("#tai-key").value ? "replaced with the one entered" : "unchanged"]]})) return;
   msg.textContent = "Saving…"; msg.className = "msg";
   const theme_ai = {provider: $("#tai-provider").value, endpoint: $("#tai-endpoint").value.trim(),
                     model: $("#tai-model").value.trim(), max_calls: Number($("#tai-max-calls").value) || 2000,
@@ -5425,6 +5470,10 @@ function renderResourceSettings(settings) {
 
 async function saveResourceSettings() {
   const msg = $("#res-msg");
+  if (!await askConfirm({title: "Save the resource levels?", kind: "info", yes: "Save levels",
+      why: $("#res-enabled").checked
+        ? "They are checked whenever a job is about to start. Running jobs are not affected."
+        : "With the check off, jobs start without asking whether the machine has room."})) return;
   msg.textContent = "Saving…";
   msg.className = "msg";
   const resources = {enabled: $("#res-enabled").checked};
@@ -5473,6 +5522,8 @@ function renderIndexerSettings(settings) {
 }
 async function saveIndexerSettings() {
   const msg = $("#idx-msg");
+  if (!await askConfirm({title: "Save the indexer settings?", kind: "info", yes: "Save settings",
+      why: "They apply to indexing started from now on. Indexes already made are not changed."})) return;
   msg.textContent = "Saving…";
   msg.className = "msg";
   const indexer = {};

@@ -299,6 +299,22 @@ class ServerTests(ServerTestCase):
 
         self.assertEqual(again.status_code, 409)
 
+    def test_a_rename_may_not_take_another_collections_name(self):
+        first = self.collection("QNL 2026")
+        second = self.collection("Election")
+        for name in ("qnl 2026", "QNL-2026!"):              # its name, or its identifier
+            with self.subTest(name):
+                reply = self.client.put(f"/api/collections/{second['id']}", json={"name": name})
+                self.assertEqual(reply.status_code, 409)
+                self.assertIn("Choose another name", reply.json()["detail"])
+        self.assertEqual(self.client.put(f"/api/collections/{first['id']}",
+                                         json={"name": "qnl 2026"}).status_code, 200)   # its own, re-cased
+        renamed = self.client.put(f"/api/collections/{second['id']}", json={"name": "Elections"}).json()
+        self.assertEqual((renamed["name"], renamed["slug"]), ("Elections", "election"))  # identifier kept
+        where = self.client.get("/api/collections/where",
+                                params={"name": "QNL 2026", "collection_id": second["id"]}).json()
+        self.assertIn("already has that name", where["problem"])
+
     def test_a_nameless_collection_is_refused(self):
         self.assertEqual(self.client.post("/api/collections", json={"name": " "}).status_code, 400)
 

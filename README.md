@@ -891,7 +891,13 @@ depends on it and where its files are. The button names the action
 ("Start crawl", "Delete collection"); Cancel, Escape or a click outside
 changes nothing, and a deletion's dialog opens on Cancel, so Enter alone
 never deletes. Pausing and resuming are not asked about: both can be
-undone at once.
+undone at once. Every edit is confirmed the same way: saving changes to a
+collection (the dialog lists what changes; its identifier and folder never
+do, so its storage location and Browse are locked while editing), saving
+a job's or collection's description, and each Save under Settings. A
+collection cannot be created with, or renamed to, a name another
+collection has or whose identifier another collection has: the form says
+so at once ("Sorry ... Choose another name") and offers no confirmation.
 
 Where things are is always on screen. Each job's card and each collection's
 card says where its files are ("Stored in"). Next to the path, **Open**

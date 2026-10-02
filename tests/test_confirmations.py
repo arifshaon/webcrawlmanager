@@ -154,6 +154,45 @@ class ConfirmationTests(unittest.TestCase):
         self.assertEqual(page.evaluate("document.activeElement.id"), "c-name")
         self.assertEqual(self.names().count("QNL Web"), 1)
 
+    def test_editing_a_collection_checks_the_name_and_confirms_the_changes(self):
+        page = self.page
+        self.api("/api/collections", {"name": "Election 2026"}, "POST")
+        mine = self.api("/api/collections", {"name": "Library news"}, "POST")
+        page.goto(self.url("#/collections"))
+        page.wait_for_selector(f"#collection-list button[onclick='editCollection({mine['id']})']")
+        page.click(f"#collection-list button[onclick='editCollection({mine['id']})']")
+        self.assertTrue(page.is_disabled("#c-storage"))
+        self.assertTrue(page.is_disabled(".browse-btn[data-target='c-storage']"))   # the folder is fixed
+
+        page.fill("#c-name", "election-2026")            # another collection's identifier
+        page.click("#c-create-btn")
+        page.wait_for_function("document.querySelector('#c-msg').textContent.includes('already has that name')")
+        self.assertFalse(page.locator("#confirm-overlay").is_visible())
+
+        page.fill("#c-name", "Library news, Qatar")
+        page.click("#c-create-btn")
+        dialog = self.dialog()
+        self.assertIn("Library news → Library news, Qatar", dialog.text_content())
+        self.assertIn(mine["root_dir"], dialog.text_content())
+        page.click("#confirm-no")
+        self.assertIn("Library news", self.names())
+        page.click("#c-create-btn")
+        self.dialog()
+        page.click("#confirm-yes")
+        page.wait_for_selector("#c-msg:has-text('Collection updated.')")
+        self.assertIn("Library news, Qatar", self.names())
+
+    def test_a_settings_save_waits_for_a_yes(self):
+        page = self.page
+        page.goto(self.url("#/settings"))
+        before = self.api("/api/settings")["effective_storage_root"]
+        page.fill("#storage-root", str(self.root / "elsewhere"))
+        page.click("#storage-save")
+        dialog = self.dialog()
+        self.assertIn("Nothing is moved", dialog.text_content())
+        page.click("#confirm-no")
+        self.assertEqual(self.api("/api/settings")["effective_storage_root"], before)
+
     def test_new_collection_beside_a_picker_asks_its_name_in_the_dialog(self):
         page = self.page
         self.api("/api/collections", {"name": "Taken"}, "POST")

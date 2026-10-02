@@ -448,6 +448,22 @@ def creation_problem(store, slug: str, root: Path | str) -> Optional[str]:
     return None
 
 
+def rename_problem(store, collection_id: int, name: str) -> Optional[str]:
+    """Why a collection may not take this name; None when it may. A rename
+    keeps the collection's own identifier and folder, but must not give it
+    the name of another collection, or a name whose identifier is another
+    collection's: the two could no longer be told apart by name."""
+    wanted = str(name or "").strip().lower()
+    slug = slugify(name)
+    for other in store.list_collections():
+        if int(other["id"]) == int(collection_id):
+            continue
+        if str(other.get("name") or "").strip().lower() == wanted or other.get("slug") == slug:
+            return (f"Sorry, the collection \"{other['name']}\" (identifier '{other['slug']}') "
+                    "already has that name. Choose another name.")
+    return None
+
+
 def create(store, name: str, description: str, metadata: list[dict], base: Path | str,
            storage_dir: str | None = None, policy: dict | None = None) -> dict:
     """A collection: its directory and collection.json first, then its row,

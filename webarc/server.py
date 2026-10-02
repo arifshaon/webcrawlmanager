@@ -2371,7 +2371,7 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         return _open_known_folder(row.get("root_dir"), "collection")
 
     @app.get("/api/collections/where")
-    def collection_location(name: str = "", storage_dir: str = ""):
+    def collection_location(name: str = "", storage_dir: str = "", collection_id: int | None = None):
         """Where a collection of this name would be saved, before it is made,
         and why it could not be (``problem``): the folder the create form
         shows, and the check it makes before offering to create. Nothing is
@@ -2381,6 +2381,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
         base = Path(own).expanduser() if own else _default_storage_root()
         parent = (base / colls.COLLECTIONS_DIR).resolve()
         problem = colls.creation_problem(_store(), slug, parent / slug) if slug else None
+        if collection_id is not None:               # a rename: the folder stays, the name must not clash
+            _require_collection(collection_id)
+            problem = colls.rename_problem(_store(), collection_id, name) if slug else None
         return {"slug": slug, "parent": str(parent),
                 "root_dir": str(parent / slug) if slug else None,
                 "taken": bool(slug and _store().collection_by_slug(slug)),
@@ -2416,6 +2419,9 @@ def create_app(db_path: str, warc_root: str, simulate: bool = False,
                            if "description" in payload else None)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        clash = colls.rename_problem(_store(), collection_id, name) if name is not None else None
+        if clash:
+            raise HTTPException(409, clash)
         metadata = _collection_metadata_from(payload)
         policy = _collection_policy_from(payload)
         if policy is not None:
