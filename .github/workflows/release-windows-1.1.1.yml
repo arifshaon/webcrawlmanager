@@ -1,0 +1,321 @@
+name: Release SWM 1.1.1 for Windows
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/release-windows-1.1.1.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  INSTALLER_VERSION: '1.1.1'
+  APPLICATION_VERSION: '1.1'
+  SWM_TAG: 'v1.1.1'
+  SOURCE_BRANCH: 'main'
+
+jobs:
+  build-sign-attest-release:
+    runs-on: windows-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out main release source
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate SWM 1.1.1 installer source
+        shell: powershell
+        run: |
+          foreach ($script in @('.\install\install-windows.ps1', '.\install\run-bootstrap.ps1', '.\install\SWM-Setup-1.1.1.ps1')) {
+            if (-not (Test-Path -LiteralPath $script)) {
+              throw "Required installer script is missing: $script"
+            }
+            $text = Get-Content -LiteralPath $script -Raw
+            [void][scriptblock]::Create($text)
+          }
+
+          if (-not (Test-Path -LiteralPath '.\install\SWM-Windows-Setup.iss')) {
+            throw 'Inno Setup definition is missing.'
+          }
+
+          $engineHash = (Get-FileHash -LiteralPath '.\install\install-windows.ps1' -Algorithm SHA256).Hash
+          $plainHash = (Get-FileHash -LiteralPath '.\install\SWM-Setup-1.1.1.ps1' -Algorithm SHA256).Hash
+          if ($engineHash -ne $plainHash) {
+            throw 'SWM-Setup-1.1.1.ps1 is not an exact copy of install-windows.ps1.'
+          }
+
+          $pyproject = Get-Content -LiteralPath '.\pyproject.toml' -Raw
+          if ($pyproject -notmatch 'version\s*=\s*"1\.1"') {
+            throw 'This maintenance release expects the SWM application source to remain version 1.1.'
+          }
+
+          $iss = Get-Content -LiteralPath '.\install\SWM-Windows-Setup.iss' -Raw
+          if ($iss -notmatch '#define AppVersion "1\.1\.1"') {
+            throw 'SWM-Windows-Setup.iss is not version 1.1.1.'
+          }
+
+          Write-Host "Validated installer 1.1.1 over SWM application 1.1."
+          Write-Host "PowerShell installer SHA-256: $plainHash"
+
+      - name: Install Inno Setup 6
+        shell: powershell
+        run: |
+          choco install innosetup -y --no-progress
+          $pf86 = [Environment]::GetFolderPath('ProgramFilesX86')
+          $iscc = Join-Path $pf86 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            $iscc = Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path -LiteralPath $iscc)) {
+            throw 'Inno Setup 6 compiler was not found.'
+          }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build SWM 1.1.1 installer
+        shell: powershell
+        run: |
+          $unsignedDir = Join-Path $env:RUNNER_TEMP 'swm-1.1.1-unsigned'
+          New-Item -ItemType Directory -Path $unsignedDir -Force | Out-Null
+
+          & $env:ISCC '/Qp' "/DAppVersion=$env:INSTALLER_VERSION" "/DSourceBranch=$env:SOURCE_BRANCH" "/O$unsignedDir" '.\install\SWM-Windows-Setup.iss'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup failed with exit code $LASTEXITCODE."
+          }
+
+          $exe = Join-Path $unsignedDir "SWM-Setup-$env:INSTALLER_VERSION.exe"
+          if (-not (Test-Path -LiteralPath $exe)) {
+            throw "Expected installer was not created: $exe"
+          }
+
+          "UNSIGNED_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Built installer from main: $exe"
+
+      - name: Create self-signed code-signing certificate
+        shell: powershell
+        run: |
+          $releaseDir = Join-Path $PWD 'release'
+          New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+
+          $openssl = Get-Command openssl.exe -ErrorAction SilentlyContinue
+          if (-not $openssl) {
+            $gitOpenSSL = 'C:\Program Files\Git\usr\bin\openssl.exe'
+            if (Test-Path -LiteralPath $gitOpenSSL) {
+              $openssl = Get-Item -LiteralPath $gitOpenSSL
+            }
+          }
+          if (-not $openssl) {
+            choco install openssl -y --no-progress
+            $openssl = Get-Command openssl.exe -ErrorAction SilentlyContinue
+          }
+          if (-not $openssl) {
+            throw 'OpenSSL was not found on the runner.'
+          }
+
+          $certWork = Join-Path $env:RUNNER_TEMP 'swm-self-sign-1.1.1'
+          New-Item -ItemType Directory -Path $certWork -Force | Out-Null
+
+          $keyPath = Join-Path $certWork 'swm-code-signing.key.pem'
+          $pemPath = Join-Path $certWork 'swm-code-signing.cert.pem'
+          $pfxPath = Join-Path $certWork 'swm-code-signing.pfx'
+          $cerPath = Join-Path $releaseDir 'SWM-1.1.1-self-signed-code-signing.cer'
+          $pfxPassword = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N'))
+          Write-Host "::add-mask::$pfxPassword"
+
+          & $openssl.Source req -x509 -newkey rsa:2048 -sha256 -days 1825 -nodes -keyout $keyPath -out $pemPath -subj '/CN=Simple Webcrawl Manager/O=Arif Shaon' -addext 'keyUsage=critical,digitalSignature' -addext 'extendedKeyUsage=codeSigning'
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenSSL certificate creation failed with exit code $LASTEXITCODE."
+          }
+
+          & $openssl.Source pkcs12 -export -out $pfxPath -inkey $keyPath -in $pemPath -passout "pass:$pfxPassword" -name 'Simple Webcrawl Manager 1.1.1'
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenSSL PFX creation failed with exit code $LASTEXITCODE."
+          }
+
+          & $openssl.Source x509 -in $pemPath -outform DER -out $cerPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenSSL CER export failed with exit code $LASTEXITCODE."
+          }
+
+          "PFX_PATH=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PFX_PASSWORD=$pfxPassword" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CERT_PATH=$cerPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Self-sign SWM 1.1.1 installer
+        shell: powershell
+        run: |
+          $pf86 = [Environment]::GetFolderPath('ProgramFilesX86')
+          $signTool = Get-ChildItem -Path (Join-Path $pf86 'Windows Kits\10\bin') -Filter signtool.exe -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\signtool\.exe$' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+
+          if (-not $signTool) {
+            throw 'Windows SDK signtool.exe was not found on the runner.'
+          }
+
+          $signedExe = Join-Path $PWD "release\SWM-Setup-$env:INSTALLER_VERSION.exe"
+          Copy-Item -LiteralPath $env:UNSIGNED_EXE -Destination $signedExe -Force
+
+          & $signTool.FullName sign /f $env:PFX_PATH /p $env:PFX_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /d "Simple Webcrawl Manager $env:INSTALLER_VERSION" /du https://github.com/arifshaon/webcrawlmanager $signedExe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Authenticode signing failed with exit code $LASTEXITCODE."
+          }
+
+          $sig = Get-AuthenticodeSignature -FilePath $signedExe
+          if (-not $sig.SignerCertificate) {
+            throw 'The built EXE does not contain an Authenticode signer certificate.'
+          }
+          if ($sig.Status -eq 'NotSigned' -or $sig.Status -eq 'HashMismatch') {
+            throw "Authenticode verification failed: $($sig.Status) - $($sig.StatusMessage)"
+          }
+
+          "SIGNED_EXE=$signedExe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "Signed installer: $signedExe"
+          Write-Host "Publisher: $($sig.SignerCertificate.Subject)"
+          Write-Host "Signature status on an untrusted self-signed chain: $($sig.Status)"
+
+      - name: Package release and generate SHA-256
+        shell: powershell
+        run: |
+          $releaseDir = Join-Path $PWD 'release'
+          $zipPath = Join-Path $releaseDir "SWM-Setup-$env:INSTALLER_VERSION.zip"
+          $psPath = Join-Path $releaseDir "SWM-Setup-$env:INSTALLER_VERSION.ps1"
+          $hashPath = Join-Path $releaseDir 'SHA256SUMS.txt'
+
+          Copy-Item -LiteralPath '.\install\SWM-Setup-1.1.1.ps1' -Destination $psPath -Force
+          Compress-Archive -LiteralPath $env:SIGNED_EXE -DestinationPath $zipPath -CompressionLevel Optimal -Force
+
+          $exeHash = (Get-FileHash -LiteralPath $env:SIGNED_EXE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $zipHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $psHash = (Get-FileHash -LiteralPath $psPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $certHash = (Get-FileHash -LiteralPath $env:CERT_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          @(
+            "$exeHash  SWM-Setup-$env:INSTALLER_VERSION.exe",
+            "$zipHash  SWM-Setup-$env:INSTALLER_VERSION.zip",
+            "$psHash  SWM-Setup-$env:INSTALLER_VERSION.ps1",
+            "$certHash  SWM-1.1.1-self-signed-code-signing.cer"
+          ) | Set-Content -LiteralPath $hashPath -Encoding ascii
+
+          "SIGNED_ZIP=$zipPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PLAIN_PS1=$psPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "HASH_FILE=$hashPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "EXE_SHA256=$exeHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ZIP_SHA256=$zipHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "PS1_SHA256=$psHash" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "EXE SHA-256: $exeHash"
+          Write-Host "ZIP SHA-256: $zipHash"
+          Write-Host "PS1 SHA-256: $psHash"
+
+      - name: Attest SWM 1.1.1 EXE provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release/SWM-Setup-1.1.1.exe
+
+      - name: Attest SWM 1.1.1 ZIP provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release/SWM-Setup-1.1.1.zip
+
+      - name: Attest SWM 1.1.1 PowerShell provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: release/SWM-Setup-1.1.1.ps1
+
+      - name: Verify GitHub attestation
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh attestation verify "release\SWM-Setup-$env:INSTALLER_VERSION.exe" --repo $env:GITHUB_REPOSITORY
+
+      - name: Create release notes
+        shell: powershell
+        run: |
+          $notesPath = Join-Path $PWD 'release\RELEASE_NOTES.md'
+          @(
+            '# Simple Webcrawl Manager installer 1.1.1',
+            '',
+            'Installer-only maintenance release built from main. The SWM application source remains version 1.1.',
+            '',
+            'Installer improvements:',
+            '- Detects an existing SWM installation and defaults to Update existing installation.',
+            '- Provides Fresh installation / reinstall as an alternative.',
+            '- Adds dashboard-port selection with availability checking and next-free-port suggestion.',
+            '- Makes Start SWM Server.cmd the documented dashboard launcher and writes START-HERE.txt.',
+            '- Stores the selected dashboard port in server-port.txt; the launcher reads it every time it starts.',
+            '- Installs every optional dependency group declared in pyproject.toml, including gallery-dl, yt-dlp[default,curl-cffi], and Anthropic.',
+            '- Verifies core/dashboard/Instagram/YouTube/AI Python dependencies before installation completes.',
+            '- Exposes Playwright FFmpeg to SWM/yt-dlp when available.',
+            '- Update mode refreshes source/dependencies while preserving config and runtime state.',
+            '',
+            'Default source behavior remains the latest published GitHub release; Advanced allows a live branch selection.',
+            '',
+            'Security and provenance:',
+            '- Authenticode self-signed as Simple Webcrawl Manager / Arif Shaon for testing.',
+            '- RFC 3161 timestamp applied.',
+            '- SHA-256 checksums are included in SHA256SUMS.txt.',
+            '- GitHub artifact attestations are published for the EXE, ZIP, and PowerShell installer.',
+            '',
+            'Important: this remains a self-signed Authenticode certificate. Windows does not trust it by default.',
+            '',
+            "EXE SHA-256: $env:EXE_SHA256",
+            "ZIP SHA-256: $env:ZIP_SHA256",
+            "PS1 SHA-256: $env:PS1_SHA256",
+            '',
+            'Verify GitHub provenance:',
+            'gh attestation verify SWM-Setup-1.1.1.exe --repo arifshaon/webcrawlmanager'
+          ) | Set-Content -LiteralPath $notesPath -Encoding utf8
+
+          "RELEASE_NOTES=$notesPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Publish GitHub Release v1.1.1
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $previousErrorAction = $ErrorActionPreference
+          $ErrorActionPreference = 'SilentlyContinue'
+          gh release view $env:SWM_TAG --repo $env:GITHUB_REPOSITORY --json tagName *> $null
+          $releaseExists = ($LASTEXITCODE -eq 0)
+          $ErrorActionPreference = $previousErrorAction
+
+          if ($releaseExists) {
+            throw 'Release v1.1.1 already exists. Refusing to overwrite a published version.'
+          }
+
+          $assets = @(
+            "release\SWM-Setup-$env:INSTALLER_VERSION.exe",
+            "release\SWM-Setup-$env:INSTALLER_VERSION.zip",
+            "release\SWM-Setup-$env:INSTALLER_VERSION.ps1",
+            'release\SHA256SUMS.txt',
+            'release\SWM-1.1.1-self-signed-code-signing.cer'
+          )
+
+          gh release create $env:SWM_TAG @assets --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title 'Simple Webcrawl Manager 1.1.1' --notes-file $env:RELEASE_NOTES
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not create the v1.1.1 release.'
+          }
+
+      - name: Upload SWM 1.1.1 release bundle as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SWM-1.1.1-signed-windows-release
+          path: |
+            release/SWM-Setup-1.1.1.exe
+            release/SWM-Setup-1.1.1.zip
+            release/SWM-Setup-1.1.1.ps1
+            release/SHA256SUMS.txt
+            release/SWM-1.1.1-self-signed-code-signing.cer
+            release/RELEASE_NOTES.md
+          if-no-files-found: error
+          retention-days: 30
