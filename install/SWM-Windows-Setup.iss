@@ -100,18 +100,19 @@ begin
   LatestReleaseRadio := TNewRadioButton.Create(SourcePage);
   LatestReleaseRadio.Parent := SourcePage.Surface;
   LatestReleaseRadio.Left := 0;
-  LatestReleaseRadio.Top := 8;
+  LatestReleaseRadio.Top := ScaleY(10);
   LatestReleaseRadio.Width := SourcePage.SurfaceWidth;
+  LatestReleaseRadio.Height := ScaleY(24);
   LatestReleaseRadio.Caption := 'Latest published release (recommended)';
   LatestReleaseRadio.Checked := True;
   LatestReleaseRadio.OnClick := @SourceChoiceClick;
 
   SourceHelpLabel := TNewStaticText.Create(SourcePage);
   SourceHelpLabel.Parent := SourcePage.Surface;
-  SourceHelpLabel.Left := ScaleX(22);
-  SourceHelpLabel.Top := LatestReleaseRadio.Top + LatestReleaseRadio.Height + ScaleY(4);
-  SourceHelpLabel.Width := SourcePage.SurfaceWidth - ScaleX(22);
-  SourceHelpLabel.Height := ScaleY(34);
+  SourceHelpLabel.Left := ScaleX(28);
+  SourceHelpLabel.Top := LatestReleaseRadio.Top + LatestReleaseRadio.Height + ScaleY(6);
+  SourceHelpLabel.Width := SourcePage.SurfaceWidth - ScaleX(28);
+  SourceHelpLabel.Height := ScaleY(42);
   SourceHelpLabel.AutoSize := False;
   SourceHelpLabel.WordWrap := True;
   SourceHelpLabel.Caption :=
@@ -120,22 +121,24 @@ begin
   BranchRadio := TNewRadioButton.Create(SourcePage);
   BranchRadio.Parent := SourcePage.Surface;
   BranchRadio.Left := 0;
-  BranchRadio.Top := SourceHelpLabel.Top + SourceHelpLabel.Height + ScaleY(12);
+  BranchRadio.Top := SourceHelpLabel.Top + SourceHelpLabel.Height + ScaleY(14);
   BranchRadio.Width := SourcePage.SurfaceWidth;
+  BranchRadio.Height := ScaleY(24);
   BranchRadio.Caption := 'Advanced: install from a GitHub branch';
   BranchRadio.OnClick := @SourceChoiceClick;
 
   BranchLabel := TNewStaticText.Create(SourcePage);
   BranchLabel.Parent := SourcePage.Surface;
-  BranchLabel.Left := ScaleX(22);
+  BranchLabel.Left := ScaleX(28);
   BranchLabel.Top := BranchRadio.Top + BranchRadio.Height + ScaleY(8);
   BranchLabel.Caption := 'Branch name:';
 
   BranchEdit := TNewEdit.Create(SourcePage);
   BranchEdit.Parent := SourcePage.Surface;
-  BranchEdit.Left := ScaleX(22);
-  BranchEdit.Top := BranchLabel.Top + BranchLabel.Height + ScaleY(4);
-  BranchEdit.Width := SourcePage.SurfaceWidth - ScaleX(22);
+  BranchEdit.Left := ScaleX(28);
+  BranchEdit.Top := BranchLabel.Top + BranchLabel.Height + ScaleY(6);
+  BranchEdit.Width := SourcePage.SurfaceWidth - ScaleX(28);
+  BranchEdit.Height := ScaleY(24);
   BranchEdit.Text := '{#SourceBranch}';
 
   UpdateSourceControls;
