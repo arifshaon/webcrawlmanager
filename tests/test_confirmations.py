@@ -254,6 +254,29 @@ class ConfirmationTests(unittest.TestCase):
         self.assertIn("2.0 KB", html)
         self.assertIn("recalculating", html)
 
+    def test_a_job_form_section_folds_from_its_head_and_says_what_it_holds(self):
+        page = self.page
+        page.goto(self.url("#/new"))
+        page.click('[data-job="crawl"]')
+        details = page.locator("#view-new .form-section").first
+        head = details.locator(".section-head")
+        # the title over its description, not run together on one line
+        title, hint = head.locator(".section-title").bounding_box(), head.locator(".section-hint").bounding_box()
+        self.assertLess(title["y"] + title["height"] - 2, hint["y"])
+        head.click(position={"x": 400, "y": 20})                      # anywhere on the head
+        self.assertTrue(details.evaluate("s => s.classList.contains('collapsed')"))
+        self.assertEqual(head.locator(".section-toggle").get_attribute("aria-expanded"), "false")
+        self.assertIn(page.input_value("#f-crawl-name"), head.locator(".section-summary").inner_text())
+        head.locator(".section-toggle").click()
+        self.assertFalse(details.evaluate("s => s.classList.contains('collapsed')"))
+        self.assertFalse(head.locator(".section-summary").is_visible())
+
+        seeds = page.locator("#view-new .form-section").nth(1)
+        count = page.locator(".seed-url").count()
+        seeds.locator(".section-head button:has-text('Add seed')").click()   # a button in the head keeps its job
+        self.assertEqual(page.locator(".seed-url").count(), count + 1)
+        self.assertFalse(seeds.evaluate("s => s.classList.contains('collapsed')"))
+
     def test_a_settings_save_waits_for_a_yes(self):
         page = self.page
         page.goto(self.url("#/settings"))

@@ -714,29 +714,43 @@
   .guided { padding: 18px; }
   .form-section { border: 1px solid var(--rule); border-radius: 10px; margin-bottom: 14px; overflow: hidden; }
   .form-section:last-child { margin-bottom: 0; }
+  /* a panel's head: the fold button, the title with its description on the
+     line below, and, when folded, what has been filled in. The whole bar
+     folds and unfolds the panel; buttons in it keep their own job. */
   .section-head {
-    display: flex; align-items: center; gap: 10px; padding: 10px 13px;
+    display: flex; align-items: center; gap: 12px; padding: 12px 14px;
     background: var(--surface); border-bottom: 1px solid var(--rule);
     border-left: 3px solid var(--accent);
   }
-  .section-title { font-weight: 700; }
-  .section-hint { font-size: var(--t-sm); color: var(--muted); }
-  .section-head button.secondary { margin-left: auto; }
-  .section-toggle { font: inherit; width: 26px; height: 26px; padding: 0; border: 1px solid transparent;
-    border-radius: 6px; background: none; color: var(--muted); cursor: pointer; flex: none;
+  .form-section > .section-head { cursor: pointer; }
+  .form-section > .section-head:hover { background: var(--accent-bg); }
+  .section-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+  .section-title { font-weight: 700; color: var(--ink); line-height: 1.3; }
+  .section-hint { font-size: var(--t-sm); color: var(--muted); line-height: 1.4; }
+  .section-summary { display: none; flex: 0 1 45%; min-width: 0; font-size: var(--t-sm); color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+  .form-section.collapsed .section-summary { display: block; }
+  .section-head button.secondary { margin-left: auto; flex: none; }
+  .section-toggle { font: inherit; width: 28px; height: 28px; padding: 0; border: 1px solid var(--rule);
+    border-radius: 8px; background: var(--paper); color: var(--muted); cursor: pointer; flex: none;
     display: inline-flex; align-items: center; justify-content: center; }
-  .section-toggle:hover { background: var(--paper); color: var(--ink); border-color: var(--rule); }
-  .section-toggle::before { content: "▾"; }
-  .form-section.collapsed .section-toggle::before { content: "▸"; }
+  .section-toggle:hover, .section-toggle:focus-visible { color: var(--ink); border-color: var(--faint); }
+  .section-toggle svg { width: 16px; height: 16px; transition: transform .15s; }
+  .form-section.collapsed .section-toggle svg { transform: rotate(-90deg); }
+  @media (prefers-reduced-motion: reduce) { .section-toggle svg { transition: none; } }
   .form-section.collapsed .section-head { border-bottom: 0; }
   .form-section.collapsed .section-body { display: none; }
   .section-body { padding: 14px; }
   .advanced { border: 1px dashed var(--rule); border-radius: 10px; margin-bottom: 14px; }
-  .advanced > summary { list-style: none; cursor: pointer; display: flex; flex-wrap: wrap; align-items: baseline;
-    gap: 4px 10px; padding: 12px 13px; }
+  .advanced > summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 28px minmax(0, 1fr);
+    align-items: center; column-gap: 12px; row-gap: 2px; padding: 12px 14px; }
   .advanced > summary::-webkit-details-marker { display: none; }
-  .advanced > summary::before { content: "▸"; color: var(--muted); }
-  .advanced[open] > summary::before { content: "▾"; }
+  .advanced > summary > .chev { grid-row: 1 / span 2; width: 28px; height: 28px; box-sizing: border-box;
+    border: 1px solid var(--rule); border-radius: 8px; background: var(--paper); color: var(--muted);
+    display: inline-flex; align-items: center; justify-content: center; }
+  .advanced > summary > .chev svg { width: 16px; height: 16px; transition: transform .15s; }
+  .advanced:not([open]) > summary > .chev svg { transform: rotate(-90deg); }
+  .advanced > summary .section-title, .advanced > summary .section-hint { grid-column: 2; }
   .advanced > summary:hover { background: var(--surface); border-radius: 10px; }
   .advanced[open] > summary { border-bottom: 1px dashed var(--rule); }
   .advanced-body { padding: 14px 14px 0; }
@@ -4537,21 +4551,81 @@ $("#manage-themes").addEventListener("click", () => {
   showView("settings");
   $("#themes-heading").scrollIntoView({block: "start"});
 });
-// Every settings section on a job form folds with the chevron before its
-// title, so a long configuration can be scanned section by section.
+// Every settings section on a job form folds, so a long configuration can be
+// scanned section by section: the chevron button, or a click anywhere on the
+// head that is not one of its own controls. A folded section says on its
+// head what has been filled in.
+const CHEVRON = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+function sectionSummary(section) {
+  const body = section.querySelector(".section-body");
+  if (!body) return "";
+  const values = [];
+  body.querySelectorAll("input, select, textarea").forEach(el => {
+    if (el.closest(".hidden, [hidden]") || el.type === "hidden" || el.type === "password" || el.disabled) return;
+    if (el.tagName === "SELECT") {
+      const option = el.selectedOptions[0];
+      if (option && option.value !== "") values.push(option.textContent.trim());
+    } else if (el.type === "checkbox" || el.type === "radio") {
+      if (!el.checked) return;
+      const label = el.closest("label");
+      const text = label ? (label.querySelector("strong") || label).textContent.trim() : "";
+      if (text) values.push(text.split("\n")[0]);
+    } else if (el.type !== "file" && String(el.value || "").trim()) {
+      values.push(String(el.value).trim().split("\n")[0]);
+    }
+  });
+  const shown = values.filter(Boolean).slice(0, 4).join(" · ");
+  return shown || "Nothing filled in";
+}
+function setSectionCollapsed(section, collapsed) {
+  section.classList.toggle("collapsed", collapsed);
+  const head = section.querySelector(":scope > .section-head");
+  const button = head && head.querySelector(".section-toggle");
+  if (button) button.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  const summary = head && head.querySelector(".section-summary");
+  if (summary) {
+    summary.textContent = collapsed ? sectionSummary(section) : "";
+    summary.title = summary.textContent;
+  }
+}
 $$(".form-section > .section-head").forEach(head => {
   if (head.querySelector(".section-toggle")) return;
   const section = head.parentElement;
+  // the title and its description stacked, so the description reads as one
+  const title = head.querySelector(".section-title");
+  const hint = head.querySelector(":scope > .section-hint");
+  if (title) {
+    const text = document.createElement("div");
+    text.className = "section-text";
+    title.before(text);
+    text.append(title);
+    if (hint) text.append(hint);
+    const summary = document.createElement("span");
+    summary.className = "section-summary";
+    text.after(summary);
+  }
   const button = document.createElement("button");
   button.type = "button"; button.className = "section-toggle";
-  const title = (head.querySelector(".section-title") || {}).textContent || "section";
-  button.setAttribute("aria-label", `Collapse or expand ${title.trim()}`);
+  button.innerHTML = CHEVRON;
+  const name = (title || {}).textContent || "section";
+  button.setAttribute("aria-label", `Fold or unfold ${name.replace("?", "").trim()}`);
   button.setAttribute("aria-expanded", "true");
-  button.addEventListener("click", () => {
-    const collapsed = section.classList.toggle("collapsed");
-    button.setAttribute("aria-expanded", collapsed ? "false" : "true");
-  });
+  button.addEventListener("click", () => setSectionCollapsed(section, !section.classList.contains("collapsed")));
   head.insertBefore(button, head.firstChild);
+  head.addEventListener("click", e => {
+    if (e.target.closest("button, a, input, select, textarea, label, .tip")) return;
+    setSectionCollapsed(section, !section.classList.contains("collapsed"));
+  });
+});
+// the Advanced fold carries the same chevron
+$$(".advanced > summary").forEach(summary => {
+  if (!summary.querySelector(".chev")) summary.insertAdjacentHTML("afterbegin", `<span class="chev" aria-hidden="true">${CHEVRON}</span>`);
+});
+// a folded section's summary follows its fields as they change elsewhere (a
+// template loaded, a form reset)
+document.addEventListener("change", e => {
+  const section = e.target.closest && e.target.closest(".form-section.collapsed");
+  if (section) setSectionCollapsed(section, true);
 });
 // The menu's width: drag the divider, or focus it and use the arrow keys
 // (Shift for larger steps); a double-click puts it back. Kept in the browser.
