@@ -5,7 +5,11 @@ param(
     [Parameter(Mandatory=$true)][string]$InstallDir,
     [ValidateSet("LatestRelease", "Branch")]
     [string]$SourceMode = "LatestRelease",
-    [string]$Branch = "main"
+    [string]$Branch = "main",
+    [ValidateSet("Fresh", "Update")]
+    [string]$InstallMode = "Fresh",
+    [string]$InstallerVersion = "1.1.1",
+    [int]$DashboardPort = 8080
 )
 
 $ErrorActionPreference = 'Continue'
@@ -16,6 +20,9 @@ $LogPath = Join-Path $InstallDir 'install.log'
 "=== SWM installer bootstrap $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') ===" |
     Set-Content -LiteralPath $LogPath -Encoding UTF8
 "InstallDir: $InstallDir" | Add-Content -LiteralPath $LogPath -Encoding UTF8
+"InstallMode: $InstallMode" | Add-Content -LiteralPath $LogPath -Encoding UTF8
+"InstallerVersion: $InstallerVersion" | Add-Content -LiteralPath $LogPath -Encoding UTF8
+"DashboardPort: $DashboardPort" | Add-Content -LiteralPath $LogPath -Encoding UTF8
 "SourceMode: $SourceMode" | Add-Content -LiteralPath $LogPath -Encoding UTF8
 if ($SourceMode -eq 'Branch') {
     "Branch: $Branch" | Add-Content -LiteralPath $LogPath -Encoding UTF8
@@ -37,7 +44,10 @@ $arguments = @(
     '-ExecutionPolicy', 'Bypass',
     '-File', $BootstrapScript,
     '-InstallDir', $InstallDir,
-    '-SourceMode', $SourceMode
+    '-SourceMode', $SourceMode,
+    '-InstallMode', $InstallMode,
+    '-InstallerVersion', $InstallerVersion,
+    '-DashboardPort', $DashboardPort
 )
 
 if ($SourceMode -eq 'Branch') {
